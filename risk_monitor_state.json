@@ -1,0 +1,39 @@
+{
+  "positions": {
+    "JPM_9391377860": {
+      "status": "🟠 Weak",
+      "alert_key": "{\"action\": \"הידוק אגרסיבי\", \"sizing\": \"✅ תקין\", \"status\": \"🟠 Weak\", \"trigger\": \"חולשה - שבירת מבנה / פיזור\"}",
+      "updated_at": "2026-04-29T17:14:10.094820",
+      "last_alert_ts": 1777478519.705779
+    },
+    "MRVL_9118118916": {
+      "status": "🔥 Power",
+      "alert_key": "{\"action\": \"החזק Runner חופשי\", \"sizing\": \"📉 סיכון נמוך ($19 מול יעד $38)\", \"status\": \"🔥 Power\", \"trigger\": \"מובילה - עקוב אחרי מגמה\"}",
+      "updated_at": "2026-04-29T17:14:19.690680",
+      "last_alert_ts": 1777472236.207287
+    },
+    "MTZ_9190319665": {
+      "status": "🟡 Yellow Flag",
+      "alert_key": "{\"action\": \"לא להוסיף. שקול צמצום\", \"sizing\": \"📉 סיכון נמוך ($23 מול יעד $38)\", \"status\": \"🟡 Yellow Flag\", \"trigger\": \"סגירות חלשות - להקטין חשיפה אם התמיכה נשברת\"}",
+      "updated_at": "2026-04-29T17:14:30.549758",
+      "last_alert_ts": 1777479530.523342
+    }
+  },
+  "cluster": {
+    "status": "green",
+    "algo_cluster_pct": 4.11,
+    "updated_at": "2026-04-29T17:14:30.549841",
+    "last_alert_ts": 1776917176.798393
+  },
+  "manual": {
+    "status": "green",
+    "manual_cluster_pct": 27.37,
+    "updated_at": "2026-04-21T22:20:36.193818"
+  },
+  "market": {
+    "label": "COLD",
+    "note": "חשיפה אגרסיבית יחסית לשוק חלש",
+    "total_weight": 82.64,
+    "updated_at": "2026-04-21T22:20:36.193832"
+  }
+}

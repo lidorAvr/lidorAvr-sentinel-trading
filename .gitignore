@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.bak
+*.log
+*.xml
+_archive_scripts/
+_stable_backups/

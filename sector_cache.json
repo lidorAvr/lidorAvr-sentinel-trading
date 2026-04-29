@@ -1,0 +1,42 @@
+{
+  "AEHR": {
+    "sector": "Technology",
+    "industry": "Semiconductor Equipment & Materials",
+    "sector_etf": "XLK"
+  },
+  "HOOD": {
+    "sector": "Financial Services",
+    "industry": "Capital Markets",
+    "sector_etf": "XLF"
+  },
+  "JPM": {
+    "sector": "Financial Services",
+    "industry": "Banks - Diversified",
+    "sector_etf": "XLF"
+  },
+  "MRVL": {
+    "sector": "Technology",
+    "industry": "Semiconductors",
+    "sector_etf": "XLK"
+  },
+  "MTZ": {
+    "sector": "Industrials",
+    "industry": "Engineering & Construction",
+    "sector_etf": "XLI"
+  },
+  "QQQ": {
+    "sector": null,
+    "industry": null,
+    "sector_etf": null
+  },
+  "RVMD": {
+    "sector": "Healthcare",
+    "industry": "Biotechnology",
+    "sector_etf": "XLV"
+  },
+  "TSLA": {
+    "sector": "Consumer Cyclical",
+    "industry": "Auto Manufacturers",
+    "sector_etf": "XLY"
+  }
+}

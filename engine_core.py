@@ -1,0 +1,495 @@
+import time
+import pandas as pd
+import numpy as np
+import yfinance as yf
+from datetime import datetime
+import threading
+import requests
+import random
+from bs4 import BeautifulSoup
+
+ALGO_SYMBOL_LIMITS = {"QQQ": 10.0, "TSLA": 7.0, "JPM": 7.0, "PLTR": 6.0, "HOOD": 6.0}
+ALGO_CLUSTER_WARNING_PCT = 30.0
+ALGO_CLUSTER_CRITICAL_PCT = 35.0
+YF_CACHE = {}
+
+SECTOR_ETF_MAP = {
+    "Technology": "XLK", "Financial Services": "XLF", "Financial": "XLF", "Healthcare": "XLV",
+    "Consumer Cyclical": "XLY", "Consumer Defensive": "XLP", "Industrials": "XLI",
+    "Energy": "XLE", "Basic Materials": "XLB", "Communication Services": "XLC",
+    "Utilities": "XLU", "Real Estate": "XLRE",
+}
+
+SECTOR_CACHE = {
+    "QQQ": {"sector": "Technology", "industry": "Broad", "sector_etf": "XLK"},
+    "TSLA": {"sector": "Consumer Cyclical", "industry": "Auto", "sector_etf": "XLY"},
+    "JPM": {"sector": "Financial Services", "industry": "Banks", "sector_etf": "XLF"},
+    "PLTR": {"sector": "Technology", "industry": "Software", "sector_etf": "XLK"},
+    "HOOD": {"sector": "Financial Services", "industry": "Capital Markets", "sector_etf": "XLF"},
+    "AEHR": {"sector": "Technology", "industry": "Semiconductors", "sector_etf": "XLK"},
+    "MRVL": {"sector": "Technology", "industry": "Semiconductors", "sector_etf": "XLK"},
+    "RVMD": {"sector": "Healthcare", "industry": "Biotechnology", "sector_etf": "XLV"},
+    "MTZ": {"sector": "Industrials", "industry": "Engineering", "sector_etf": "XLI"},
+    "SPY": {"sector": "Market", "industry": "Market", "sector_etf": None}
+}
+
+yf_session = requests.Session()
+user_agents = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0'
+]
+
+def get_random_agent():
+    return random.choice(user_agents)
+
+def smart_delay():
+    time.sleep(random.uniform(0.5, 1.5))
+
+def direct_yahoo_scrape(symbol):
+    try:
+        url = f"https://finance.yahoo.com/quote/{symbol}"
+        headers = {'User-Agent': get_random_agent()}
+        response = requests.get(url, headers=headers, timeout=5)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        price_tag = soup.find('fin-streamer', {'data-symbol': symbol, 'data-field': 'regularMarketPrice'})
+        if price_tag:
+            price_str = price_tag.text.replace(',', '')
+            return float(price_str)
+    except Exception as e:
+        pass
+    return None
+
+def get_cached_history(symbol, period="1y", interval="1d", ttl=300):
+    cache_key = f"{symbol}_{period}_{interval}"
+    now = time.time()
+    if cache_key in YF_CACHE and (now - YF_CACHE[cache_key]["time"]) < ttl: 
+        return YF_CACHE[cache_key]["data"]
+    
+    smart_delay()
+    try:
+        
+        hist = yf.Ticker(symbol).history(period=period, interval=interval, auto_adjust=False)
+        if hist is not None and not hist.empty:
+            YF_CACHE[cache_key] = {"data": hist, "time": now}
+            return hist
+    except: 
+        pass
+    return pd.DataFrame()
+
+def get_live_price(symbol):
+    now = time.time()
+    cache_key = f"{symbol}_live_price"
+    if cache_key in YF_CACHE and (now - YF_CACHE[cache_key]["time"]) < 120:
+        return YF_CACHE[cache_key]["data"]
+
+    smart_delay()
+    
+    try:
+        
+        tk = yf.Ticker(symbol)
+        if 'last_price' in tk.fast_info:
+            price = float(tk.fast_info['last_price'])
+            YF_CACHE[cache_key] = {"data": price, "time": now}
+            return price
+    except:
+        pass
+        
+    scraped_price = direct_yahoo_scrape(symbol)
+    if scraped_price is not None:
+        YF_CACHE[cache_key] = {"data": scraped_price, "time": now}
+        return scraped_price
+
+    hist = get_cached_history(symbol, period="5d", interval="1d", ttl=300)
+    if hist is not None and not hist.empty:
+        try: 
+            price = float(hist["Close"].iloc[-1])
+            YF_CACHE[cache_key] = {"data": price, "time": now}
+            return price
+        except: pass
+        
+    return None
+
+def df_safe_low(close, ref):
+    if pd.isna(ref) or ref <= 0: return close
+    return min(close, ref)
+
+def _fetch_info(symbol, result):
+    try:
+        
+        tk = yf.Ticker(symbol)
+        result['info'] = tk.info or {}
+    except: pass
+
+def get_sector_bundle(symbol):
+    if symbol in SECTOR_CACHE: return SECTOR_CACHE[symbol]
+    result = {'info': {}}
+    t = threading.Thread(target=_fetch_info, args=(symbol, result))
+    t.start()
+    t.join(timeout=2.0) 
+    info = result.get('info', {})
+    sector = info.get("sector")
+    industry = info.get("industry")
+    sector_etf = SECTOR_ETF_MAP.get(sector)
+    bundle = {"sector": sector, "industry": industry, "sector_etf": sector_etf}
+    if sector: SECTOR_CACHE[symbol] = bundle
+    return bundle
+
+def safe_return(series, lookback):
+    try:
+        if series is None or len(series) < lookback: return None
+        a, b = float(series.iloc[-1]), float(series.iloc[-lookback])
+        if b == 0: return None
+        return a / b - 1
+    except: return None
+
+def calculate_atr_series(hist, window=14):
+    high_low = hist["High"] - hist["Low"]
+    high_close = (hist["High"] - hist["Close"].shift()).abs()
+    low_close = (hist["Low"] - hist["Close"].shift()).abs()
+    true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    return true_range.rolling(window=window, min_periods=window).mean()
+
+def compute_indicators(hist):
+    df = hist.copy()
+    df["MA10"] = df["Close"].rolling(10).mean()
+    df["MA20"] = df["Close"].rolling(20).mean()
+    df["MA50"] = df["Close"].rolling(50).mean()
+    df["MA150"] = df["Close"].rolling(150).mean()
+    df["MA200"] = df["Close"].rolling(200).mean()
+    df["ATR20"] = calculate_atr_series(df, 20)
+    df["ATR100"] = calculate_atr_series(df, 100)
+    df["AvgVol20"] = df["Volume"].rolling(20).mean()
+    df["Range"] = df["High"] - df["Low"]
+    df["ClosePos"] = np.where(df["Range"] > 0, (df["Close"] - df["Low"]) / df["Range"], 0.5)
+    df["UpDay"] = df["Close"] > df["Close"].shift(1)
+    df["DownDay"] = df["Close"] < df["Close"].shift(1)
+    df["GoodClose"] = df["ClosePos"] >= 0.6
+    df["BadClose"] = df["ClosePos"] <= 0.4
+    return df
+
+def detect_distribution_days(df):
+    out = df.copy()
+    out["DistributionDay"] = (
+        (out["Close"] < out["Open"]) & (out["Volume"] > 1.5 * out["AvgVol20"]) &
+        (out["Range"] > 1.2 * out["ATR20"]) & (out["ClosePos"] <= 0.35)
+    )
+    out["AccumulationDay"] = (
+        (out["Close"] > out["Open"]) & (out["Volume"] > 1.3 * out["AvgVol20"]) & (out["ClosePos"] >= 0.65)
+    )
+    return out
+
+def classify_trade_stage(total_r, days_held):
+    if total_r < 0: return "underwater"
+    if total_r < 1.0: return "early"
+    if total_r < 2.5: return "developing"
+    if total_r < 4.0: return "advanced"
+    return "runner"
+
+def map_time_efficiency(days_held, total_r):
+    if days_held >= 8 and total_r < 0.5: return "dead_money"
+    if days_held >= 15 and total_r < 1.0: return "slow"
+    return "ok"
+
+def compute_relative_strength_bundle(symbol, df, spy_hist=None):
+    bundle = get_sector_bundle(symbol)
+    sector_etf = bundle.get("sector_etf")
+    sector_hist = get_cached_history(sector_etf, "1y", "1d") if sector_etf else None
+    stock_close = df["Close"]
+    spy_close = spy_hist["Close"] if spy_hist is not None and len(spy_hist) >= 60 else None
+    sector_close = sector_hist["Close"] if sector_hist is not None and len(sector_hist) >= 60 else None
+    stock_ret20 = safe_return(stock_close, 20)
+    spy_ret20 = safe_return(spy_close, 20)
+    sector_ret20 = safe_return(sector_close, 20)
+    return {
+        "sector": bundle.get("sector"), "industry": bundle.get("industry"), "sector_etf": sector_etf,
+        "rs20_market": stock_ret20 - spy_ret20 if stock_ret20 is not None and spy_ret20 is not None else None,
+        "rs20_sector_market": sector_ret20 - spy_ret20 if sector_ret20 is not None and spy_ret20 is not None else None,
+        "rs20_stock_sector": stock_ret20 - sector_ret20 if stock_ret20 is not None and sector_ret20 is not None else None,
+    }
+
+def compute_behavior_features(symbol, df, days_held, spy_hist=None):
+    close, prev_close = df["Close"].iloc[-1], df["Close"].iloc[-2]
+    ma10, ma20, ma50 = df["MA10"].iloc[-1], df["MA20"].iloc[-1], df["MA50"].iloc[-1]
+    atr20, atr100 = df["ATR20"].iloc[-1], df["ATR100"].iloc[-1]
+    daily_move = abs(close - prev_close)
+    is_down_day = close < prev_close
+    atr_pct = (atr20 / close * 100) if close > 0 and pd.notna(atr20) else 0
+    atr_regime = atr20 / atr100 if pd.notna(atr20) and pd.notna(atr100) and atr100 > 0 else 1.0
+    stretch_ma10_atr = (close - ma10) / atr20 if pd.notna(ma10) and pd.notna(atr20) and atr20 > 0 else None
+    stretch_ma20_atr = (close - ma20) / atr20 if pd.notna(ma20) and pd.notna(atr20) and atr20 > 0 else None
+    down_move_atr = (prev_close - close) / atr20 if is_down_day and pd.notna(atr20) and atr20 > 0 else None
+    recent_high_20 = df["High"].tail(20).max()
+    dist_from_high_20 = (close / recent_high_20 - 1) * 100 if recent_high_20 > 0 else 0
+    ext10 = (close / ma10 - 1) * 100 if ma10 > 0 else 0
+    ext20 = (close / ma20 - 1) * 100 if ma20 > 0 else 0
+    rs_bundle = compute_relative_strength_bundle(symbol, df, spy_hist)
+    return {
+        "close": close, "prev_close": prev_close, "ma10": ma10, "ma20": ma20, "ma50": ma50,
+        "atr20": atr20, "atr_pct": atr_pct, "atr_regime": atr_regime,
+        "stretch_ma10_atr": stretch_ma10_atr, "stretch_ma20_atr": stretch_ma20_atr, "down_move_atr": down_move_atr,
+        "daily_move": daily_move, "is_down_day": is_down_day,
+        "dist_8d": int(df["DistributionDay"].tail(8).sum()),
+        "dist_12d": int(df["DistributionDay"].tail(12).sum()),
+        "accum_10d": int(df["AccumulationDay"].tail(10).sum()),
+        "good_closes_10": int(df["GoodClose"].tail(10).sum()),
+        "bad_closes_10": int(df["BadClose"].tail(10).sum()),
+        "dist_from_high_20": dist_from_high_20, "ext10": ext10, "ext20": ext20,
+        "close_below_ma10": close < ma10, "close_below_ma20": close < ma20, "close_below_ma50": close < ma50,
+        "consecutive_below_ma20": int((df["Close"].tail(2) < df["MA20"].tail(2)).sum() == 2),
+        "rs20_market": rs_bundle["rs20_market"], "rs20_sector_market": rs_bundle["rs20_sector_market"],
+        "rs20_stock_sector": rs_bundle["rs20_stock_sector"]
+    }
+
+def evaluate_hard_rules(features, setup_type, weight_pct, symbol, current_stop, total_r, stage, mgt_state):
+    if str(setup_type).upper() == "ALGO":
+        limit = ALGO_SYMBOL_LIMITS.get(symbol, 100.0)
+        if weight_pct > limit:
+            return {"rule": "algo_sizing_breach", "status": "🚨 חריגת סיכון אלגו", "action": "להפחית חשיפה", "trigger": f"חריגת Sizing (מגבלה: {limit:.1f}%)"}
+        return None
+    if current_stop > 0 and features["close"] <= current_stop:
+        return {"rule": "stop_breach", "status": "🚨 קריטי", "action": "יציאה מיידית 🚨" if mgt_state != "runner_mode" else "שקול סגירת יתרת Runner", "trigger": "מחיר נוכחי נמוך מסטופ"}
+    if features["dist_12d"] >= 3:
+        return {"rule": "heavy_distribution", "status": "🔴 Broken", "action": "יציאה / הידוק מידי" if mgt_state != "runner_mode" else "שקול סגירת יתרת Runner", "trigger": "3 ימי פיזור ב-12 ימים"}
+    if stage == "runner" and features["consecutive_below_ma20"]:
+        return {"rule": "runner_ma20_break", "status": "🔴 Broken", "action": "מימוש יתרה / יציאה לפי תוכנית", "trigger": "2 סגירות רצופות מתחת MA20"}
+    if features.get('stretch_ma20_atr') is not None and features.get('stretch_ma10_atr') is not None:
+        if features['stretch_ma20_atr'] > 3.0 and features['stretch_ma10_atr'] > 1.75:
+            return {'rule': 'climactic_risk_atr', 'status': '⚠️ Climactic', 'action': 'PENDING_MGT_STATE', 'trigger': 'המניה מתוחה מאוד ביחס ל-ATR (תנודתיות גבוהה)'}
+    if features["ext20"] > 18 and features["ext10"] > 10:
+        return {"rule": "climactic_risk_pct", "status": "⚠️ Climactic", "action": "PENDING_MGT_STATE", "trigger": "המניה מתוחה מאוד מעל הממוצעים (>18%)"}
+    return None
+
+def score_position(features, stage):
+    score = 50
+    score += 8 if not features["close_below_ma10"] else -8
+    score += 12 if not features["close_below_ma20"] else -15
+    score += 10 if not features["close_below_ma50"] else -12
+    if features["good_closes_10"] > features["bad_closes_10"]: score += 8
+    elif features["bad_closes_10"] > features["good_closes_10"]: score -= 10
+    score += min(features["accum_10d"] * 2, 6)
+    score -= features["dist_8d"] * 6
+    score -= features["dist_12d"] * 5
+    if features.get("rs20_market") is not None: score += 6 if features["rs20_market"] > 0 else -6
+    if features.get("rs20_stock_sector") is not None: score += 4 if features["rs20_stock_sector"] > 0 else -4
+    if features["dist_from_high_20"] >= -3: score += 6
+    elif features["dist_from_high_20"] <= -8: score -= 8
+    te = features.get("time_efficiency", "ok")
+    if te == "dead_money": score -= 12
+    elif te == "slow": score -= 6
+    if not pd.isna(features["atr20"]) and features["is_down_day"] and features["daily_move"] > 1.3 * features["atr20"]: score -= 10
+    if features.get('down_move_atr') is not None and features['down_move_atr'] > 1.2: score -= 8
+    if stage == "early":
+        if features["close_below_ma10"]: score -= 8
+    elif stage == "developing":
+        if features["close_below_ma10"]: score -= 6
+        if features["dist_8d"] >= 2: score -= 6
+    elif stage == "advanced":
+        if features["close_below_ma20"]: score -= 10
+    elif stage == "runner":
+        if features["close_below_ma20"]: score -= 12
+        if features.get("stretch_ma20_atr") is not None and features["stretch_ma20_atr"] > 3.0: score -= 4
+    return max(0, min(95, score))
+
+def map_score_to_status(score, hard_rule=None, features=None):
+    if hard_rule is not None: return hard_rule["status"]
+    
+    status = "🔴 Broken"
+    if score >= 85: status = "🔥 Power"
+    elif score >= 70: status = "🟢 Healthy"
+    elif score >= 55: status = "🟡 Yellow Flag"
+    elif score >= 40: status = "🟠 Weak"
+    
+    if status == "🟢 Healthy" and features is not None:
+        if features.get("bad_closes_10", 0) > features.get("good_closes_10", 0):
+            status = "🟡 תקין אך במעקב"
+            
+    return status
+
+def build_management_action(status, features, stage, current_stop, total_r, mgt_state):
+    close, ma10, ma20 = features["close"], features["ma10"], features["ma20"]
+    suggested_stop = current_stop
+    trigger, action = "", "מעקב"
+    if status == "🔥 Power":
+        if mgt_state == "runner_mode":
+            action, trigger = "החזק Runner חופשי", "מובילה - עקוב אחרי מגמה"
+        else: action, trigger = "החזקה (מובילה)", "המבנה תקין"
+    elif status == "🟢 Healthy":
+        if mgt_state == "runner_mode":
+            action, trigger = "החזק Runner חופשי", "מבנה תקין לאחר מימוש"
+            if total_r >= 1.5 and features["close_below_ma10"]:
+                suggested_stop = min(current_stop if current_stop > 0 else close, df_safe_low(close, ma10))
+                action, trigger = "קדם סטופ ל-Runner", "איבדה MA10 לאחר מימוש חלקי"
+        else:
+            action, trigger = "החזקה", "מבנה תקין"
+            if total_r >= 1.5 and features["close_below_ma10"]:
+                suggested_stop = min(current_stop if current_stop > 0 else close, df_safe_low(close, ma10))
+                action, trigger = "קדם סטופ ל-BE לפחות", "איבדה MA10 לאחר מהלך יפה"
+    elif "מעקב" in status or status == "🟡 Yellow Flag":
+        if mgt_state == "runner_mode": action, trigger = "הידוק ל-Runner", "אובדן מומנטום אחרי מימוש חלקי"
+        else: action, trigger = "לא להוסיף. שקול צמצום", "סגירות חלשות - להקטין חשיפה אם התמיכה נשברת"
+        suggested_stop = current_stop if stage in ("early", "developing") else ma20
+    elif status == "🟠 Weak":
+        if mgt_state == "runner_mode": action, trigger = "הידוק אגרסיבי ל-Runner", "חולשה לאחר מימוש חלקי"
+        else: action, trigger = "הידוק אגרסיבי", "חולשה - שבירת מבנה / פיזור"
+        suggested_stop = ma20 if stage in ("advanced", "runner") else ma10
+    elif status == "🔴 Broken":
+        if mgt_state == "runner_mode": action, trigger = "שקול סגירת יתרת Runner", "המבנה נשבר לאחר מימוש חלקי"
+        else: action, trigger = "יציאה / הידוק מידי", "המבנה נשבר"
+        suggested_stop = current_stop
+    elif status == "⚠️ Climactic":
+        if mgt_state == "runner_mode":
+            action, trigger = "Runner חופשי", "לשקול מימוש נוסף בשבירת MA10 או היפוך ווליום"
+            suggested_stop = max(current_stop, ma10) if current_stop > 0 else ma10
+        else:
+            action, trigger = "שקול מימוש חלקי", "Climactic - מתוחה מאוד"
+            suggested_stop = ma10
+            
+    if action == 'PENDING_MGT_STATE': action = "Runner חופשי - שקול מימוש נוסף בשבירת MA10" if mgt_state == "runner_mode" else "שקול מימוש חלקי"
+    return action, trigger, suggested_stop
+
+def evaluate_position_engine(symbol, entry_price, entry_date_str, current_stop, setup_type, mgt_state, weight_pct, total_r, target_risk_usd=0, actual_risk_usd=0, spy_hist=None):
+    try:
+        hist = get_cached_history(symbol, "6mo", "1d")
+        if hist is None or hist.empty or len(hist) < 60: return {"ok": False, "error": "missing_data", "data": None}
+        df = compute_indicators(hist)
+        df = detect_distribution_days(df)
+        try: days_held = (datetime.now() - pd.to_datetime(entry_date_str)).days if pd.notnull(pd.to_datetime(entry_date_str)) else 0
+        except: days_held = 0
+        stage = classify_trade_stage(total_r, days_held)
+        features = compute_behavior_features(symbol, df, days_held=days_held, spy_hist=spy_hist)
+        features["time_efficiency"] = map_time_efficiency(days_held, total_r)
+        
+        sizing_status = "✅ תקין"
+        if str(setup_type).upper() != "ALGO" and target_risk_usd > 0 and actual_risk_usd > 0:
+            if actual_risk_usd > target_risk_usd * 1.25:
+                sizing_status = f"⚠️ סיכון גבוה (${actual_risk_usd:,.0f} מול יעד ${target_risk_usd:,.0f})"
+            elif actual_risk_usd < target_risk_usd * 0.75:
+                sizing_status = f"📉 סיכון נמוך (${actual_risk_usd:,.0f} מול יעד ${target_risk_usd:,.0f})"
+
+        hard_rule = evaluate_hard_rules(features, setup_type, weight_pct, symbol, current_stop, total_r, stage, mgt_state)
+        issues = []
+        if str(setup_type).upper() != "ALGO":
+            if features["dist_8d"] >= 2: issues.append("2 ימי פיזור (8d)")
+            if features["dist_12d"] >= 3: issues.append("3 ימי פיזור (12d)")
+            if features["time_efficiency"] == "dead_money": issues.append("הון מת")
+            if not pd.isna(features["atr20"]) and features["is_down_day"] and features["daily_move"] > 1.3 * features["atr20"]: issues.append("חולשת ATR חריגה")
+            if features["bad_closes_10"] > features["good_closes_10"]: issues.append("סגירות חלשות")
+        
+        if hard_rule is not None:
+            action = hard_rule["action"]
+            if action == 'PENDING_MGT_STATE': action = "Runner חופשי - שקול מימוש בשבירת MA10" if mgt_state == "runner_mode" else "שקול מימוש חלקי"
+            return {"ok": True, "error": None, "data": {"status": hard_rule["status"], "sizing_status": sizing_status, "issues": issues, "action": action, "trigger": hard_rule["trigger"], "suggested_stop": current_stop, "score": None, "stage": stage, "features": features}}
+        
+        score = score_position(features, stage)
+        status = map_score_to_status(score, features=features)
+        action, trigger, suggested_stop = build_management_action(status, features, stage, current_stop, total_r, mgt_state)
+        
+        return {"ok": True, "error": None, "data": {"status": status, "sizing_status": sizing_status, "issues": issues, "action": action, "trigger": trigger, "suggested_stop": suggested_stop, "score": score, "stage": stage, "features": features}}
+    except Exception as e: return {"ok": False, "error": str(e), "data": None}
+
+def get_open_positions_campaign(df):
+    try:
+        open_positions = []
+        if "campaign_id" not in df.columns: return {"ok": False, "error": "no_campaign_id", "data": pd.DataFrame()}
+        work = df.copy()
+        for col in ["quantity", "price", "stop_loss", "initial_stop", "pnl_usd"]: work[col] = pd.to_numeric(work[col], errors="coerce").fillna(0)
+        valid_df = work[work["campaign_id"].notnull()]
+        if valid_df.empty: return {"ok": True, "error": None, "data": pd.DataFrame()}
+        for cid, group in valid_df.groupby("campaign_id"):
+            group = group.sort_values(["trade_date", "trade_id"])
+            net_qty = group["quantity"].sum()
+            if net_qty <= 0.001: continue
+            sym = group.iloc[0]["symbol"]
+            realized_pnl = group[group["side"].str.upper() == "SELL"]["pnl_usd"].sum()
+            buys = group[group["quantity"] > 0]
+            if buys.empty: continue
+            
+            first_date = buys["trade_date"].min()
+            first_day_buys = buys[buys["trade_date"] == first_date]
+            base_qty = float(first_day_buys["quantity"].sum())
+            base_price = float((first_day_buys["price"] * first_day_buys["quantity"]).sum() / base_qty) if base_qty > 0 else float(first_day_buys.iloc[0]["price"])
+            
+            subsequent_buys = buys[buys["trade_date"] > first_date]
+            add_on_count = len(subsequent_buys)
+            
+            avg_price = (buys["price"] * buys["quantity"]).sum() / buys["quantity"].sum()
+            initial_qty = base_qty 
+            
+            last_row = group.iloc[-1]
+            valid_sls = group[(group["stop_loss"] > 0) & (group["side"].str.upper() == "BUY")]["stop_loss"]
+            sl = valid_sls.iloc[-1] if not valid_sls.empty else 0
+            
+            valid_inits = first_day_buys[first_day_buys["initial_stop"] > 0]["initial_stop"]
+            init_sl = valid_inits.iloc[0] if not valid_inits.empty else 0
+            if init_sl >= base_price: init_sl = 0 
+            
+            has_sells = len(group[group["side"].str.upper() == "SELL"]) > 0
+            db_mgt_state = last_row.get("management_state")
+            mgt_state = "runner_mode" if has_sells else (db_mgt_state if pd.notna(db_mgt_state) and db_mgt_state else "full_position")
+            
+            open_positions.append({
+                "campaign_id": cid, "symbol": sym, "quantity": net_qty, "initial_qty": initial_qty,
+                "base_qty": base_qty, "base_price": base_price, "add_on_count": add_on_count,
+                "price": avg_price, "stop_loss": sl, "initial_stop": init_sl,
+                "setup_type": first_day_buys.iloc[0].get("setup_type", "Unknown"), "trade_id": first_day_buys.iloc[0].get("trade_id"),
+                "entry_date": first_date, "management_state": mgt_state, "realized_pnl": realized_pnl,
+            })
+        if not open_positions: return {"ok": True, "error": None, "data": pd.DataFrame()}
+        return {"ok": True, "error": None, "data": pd.DataFrame(open_positions).sort_values("symbol")}
+    except Exception as e: return {"ok": False, "error": str(e), "data": pd.DataFrame()}
+
+def compute_market_regime(spy_hist, qqq_hist=None):
+    try:
+        if spy_hist is None or len(spy_hist) < 50: return {"ok": False, "error": "no_data", "data": {"status": "Unknown", "color": "⚪", "text": "אין מספיק נתונים"}}
+        spy_close = spy_hist['Close'].iloc[-1]
+        spy_ma20 = spy_hist['Close'].rolling(20).mean().iloc[-1]
+        spy_ma50 = spy_hist['Close'].rolling(50).mean().iloc[-1]
+        score = 0
+        if spy_close > spy_ma20: score += 1
+        if spy_close > spy_ma50: score += 1
+        if spy_ma20 > spy_ma50: score += 1
+        if qqq_hist is not None and not qqq_hist.empty and len(qqq_hist) >= 50:
+            qqq_close = qqq_hist['Close'].iloc[-1]
+            qqq_ma20 = qqq_hist['Close'].rolling(20).mean().iloc[-1]
+            if qqq_close > qqq_ma20: score += 1
+        if score >= 3: return {"ok": True, "error": None, "data": {"status": "Hot", "color": "🔥", "text": "שוק שורי חזק - סביבה תומכת"}}
+        elif score == 2: return {"ok": True, "error": None, "data": {"status": "Warm", "color": "🟢", "text": "שוק חיובי - לנהל סיכונים רגיל"}}
+        elif score == 1: return {"ok": True, "error": None, "data": {"status": "Neutral", "color": "🟡", "text": "שוק מדשדש/מעורב - זהירות והקטנת סיכון"}}
+        else: return {"ok": True, "error": None, "data": {"status": "Cold", "color": "🔴", "text": "שוק דובי - סביבה עוינת, הגנה מקסימלית"}}
+    except Exception as e: return {"ok": False, "error": str(e), "data": {"status": "Unknown", "color": "⚪", "text": f"שגיאה: {e}"}}
+
+def get_minervini_analysis(symbol):
+    try:
+        hist = get_cached_history(symbol, "1y", "1d")
+        if hist is None or len(hist) < 200: 
+            return {"ok": False, "error": "missing_data", "data": ("⚠️ אין מספיק היסטוריית מחירים לניתוח או שגיאת שרת.", 0)}
+        close = hist['Close'].iloc[-1]
+        ma50 = hist['Close'].rolling(window=50).mean().iloc[-1]
+        ma150 = hist['Close'].rolling(window=150).mean().iloc[-1]
+        ma200 = hist['Close'].rolling(window=200).mean().iloc[-1]
+        low_52w = hist['Low'].min()
+        high_52w = hist['High'].max()
+        vol_curr = hist['Volume'].iloc[-1]
+        vol_50 = hist['Volume'].rolling(window=50).mean().iloc[-1]
+        r1 = close > ma150 and close > ma200
+        r2 = ma150 > ma200
+        r3 = close > ma50
+        r4 = close >= (low_52w * 1.30)
+        r5 = close >= (high_52w * 0.75)
+        r6_volume = vol_curr < vol_50
+        score = sum([r1, r2, r3, r4, r5]) * 2
+        
+        report = f"🔬 *דו\"ח מודיעין Trend Template - {symbol}:*\nמחיר נוכחי: `${close:.2f}`\n\n"
+        report += f"{'✅' if r1 else '❌'} 1. מחיר מעל ממוצעים 150 ו-200\n"
+        report += f"{'✅' if r2 else '❌'} 2. ממוצע 150 מעל ממוצע 200\n"
+        report += f"{'✅' if r3 else '❌'} 3. מחיר מעל ממוצע קצר 50\n"
+        report += f"{'✅' if r4 else '❌'} 4. מחיר מעל 30% משפל 52ש\n"
+        report += f"{'✅' if r5 else '❌'} 5. מרחק עד 25% משיא 52ש\n\n"
+        report += f"💡 *אינדיקציית VCP ווליום:*\n"
+        report += f"{'📉 ייבוש מחזורים' if r6_volume else '📈 מחזור ער'} (נוכחי: {vol_curr/1e6:.1f}M מול ממוצע: {vol_50/1e6:.1f}M)\n\n"
+        report += f"📊 *ציון תבנית מגמה:* {score}/10"
+        
+        return {"ok": True, "error": None, "data": (report, score)}
+    except Exception as e: 
+        return {"ok": False, "error": str(e), "data": ("❌ תקלה בשאיבת נתונים", 0)}
