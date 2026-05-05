@@ -1,0 +1,43 @@
+# Secrets
+.env
+.env.*
+*.env
+*secret*
+*token*
+*credential*
+*credentials*
+*key*
+
+# Runtime state
+*_state.json
+action_queue_state.json
+live_alert_dedupe_state.json
+plan_monitor_state.json
+post_entry_intake_push_state.json
+post_entry_intake_state.json
+risk_monitor_state.json
+sector_cache.json
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# Logs
+logs/
+*.log
+
+# Local backups and archives
+_stable_backups/
+.codex_patch_backup_*/
+*.bak
+*.bak_*
+*.before_*
+*.pre_sync*
+_archive_scripts/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,10 @@
+{
+  "total_deposited": 7500.0,
+  "risk_pct_input": 0.35,
+  "current_nav": 7875.142709235,
+  "current_nav_status": "manual_from_ibkr_changeinnav",
+  "current_nav_updated_at": "2026-04-30T12:14:43.532744+00:00",
+  "current_nav_report_generated_at": "2026-04-30T08:08:53Z",
+  "current_nav_source_tag": "ChangeInNAV",
+  "current_nav_source_field": "endingValue"
+}

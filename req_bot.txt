@@ -1,0 +1,10 @@
+pyTelegramBotAPI
+supabase
+python-dotenv
+requests
+pandas
+streamlit
+plotly
+yfinance
+yfinance
+openai>=1.14.0
