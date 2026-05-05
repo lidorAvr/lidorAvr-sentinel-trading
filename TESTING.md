@@ -22,3 +22,10 @@ If pytest is available:
 pytest
 
 If no tests exist yet, the first development milestone is to create minimal pytest tests for accounting and risk logic.
+
+
+## Minimal Offline Safety Tests
+
+Run:
+
+pytest -q tests/test_financial_invariants.py
