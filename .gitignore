@@ -1,7 +1,5 @@
 .env
+last_sync_date.txt
+sentinel_config.json
 __pycache__/
-*.bak
-*.log
-*.xml
-_archive_scripts/
-_stable_backups/
+*.pyc

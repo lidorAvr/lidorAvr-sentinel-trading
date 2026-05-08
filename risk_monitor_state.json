@@ -1,28 +1,46 @@
 {
   "positions": {
-    "JPM_9391377860": {
-      "status": "🟠 Weak",
-      "alert_key": "{\"action\": \"הידוק אגרסיבי\", \"sizing\": \"✅ תקין\", \"status\": \"🟠 Weak\", \"trigger\": \"חולשה - שבירת מבנה / פיזור\"}",
-      "updated_at": "2026-04-29T17:14:10.094820",
-      "last_alert_ts": 1777478519.705779
+    "CAT_9409547470": {
+      "status": "🔥 Power",
+      "alert_key": "{\"action\": \"החזקה (מובילה)\", \"sizing\": \"📉 סיכון נמוך ($23 מול יעד $38)\", \"status\": \"🔥 Power\", \"trigger\": \"המבנה תקין\"}",
+      "updated_at": "2026-05-08T10:17:31.860195",
+      "last_alert_ts": 1778226757.911692
     },
     "MRVL_9118118916": {
-      "status": "🔥 Power",
-      "alert_key": "{\"action\": \"החזק Runner חופשי\", \"sizing\": \"📉 סיכון נמוך ($19 מול יעד $38)\", \"status\": \"🔥 Power\", \"trigger\": \"מובילה - עקוב אחרי מגמה\"}",
-      "updated_at": "2026-04-29T17:14:19.690680",
-      "last_alert_ts": 1777472236.207287
-    },
-    "MTZ_9190319665": {
       "status": "🟡 Yellow Flag",
-      "alert_key": "{\"action\": \"לא להוסיף. שקול צמצום\", \"sizing\": \"📉 סיכון נמוך ($23 מול יעד $38)\", \"status\": \"🟡 Yellow Flag\", \"trigger\": \"סגירות חלשות - להקטין חשיפה אם התמיכה נשברת\"}",
-      "updated_at": "2026-04-29T17:14:30.549758",
-      "last_alert_ts": 1777479530.523342
+      "alert_key": "{\"action\": \"הידוק ל-Runner\", \"sizing\": \"📉 סיכון נמוך ($19 מול יעד $38)\", \"status\": \"🟡 Yellow Flag\", \"trigger\": \"אובדן מומנטום אחרי מימוש חלקי\"}",
+      "updated_at": "2026-05-08T10:17:40.479776",
+      "last_alert_ts": 1778226766.839174
+    },
+    "PLTR_9417969543": {
+      "status": "🔴 Broken",
+      "alert_key": "{\"action\": \"יציאה / הידוק מידי\", \"sizing\": \"✅ תקין\", \"status\": \"🔴 Broken\", \"trigger\": \"המבנה נשבר\"}",
+      "updated_at": "2026-05-08T10:17:47.671442",
+      "last_alert_ts": 1778230221.099564
+    },
+    "PWR_9415330854": {
+      "status": "⚠️ Climactic",
+      "alert_key": "{\"action\": \"שקול מימוש חלקי\", \"sizing\": \"✅ תקין\", \"status\": \"⚠️ Climactic\", \"trigger\": \"המניה מתוחה מאוד ביחס ל-ATR (תנודתיות גבוהה)\"}",
+      "updated_at": "2026-05-08T10:17:54.698765",
+      "last_alert_ts": 1778186908.47684
+    },
+    "TSLA_9419981765": {
+      "status": "🔥 Power",
+      "alert_key": "{\"action\": \"החזקה (מובילה)\", \"sizing\": \"✅ תקין\", \"status\": \"🔥 Power\", \"trigger\": \"המבנה תקין\"}",
+      "updated_at": "2026-05-08T10:18:03.194127",
+      "last_alert_ts": 1778186917.196278
+    },
+    "WCC_9409800348": {
+      "status": "🔥 Power",
+      "alert_key": "{\"action\": \"החזקה (מובילה)\", \"sizing\": \"📉 סיכון נמוך ($20 מול יעד $38)\", \"status\": \"🔥 Power\", \"trigger\": \"המבנה תקין\"}",
+      "updated_at": "2026-05-08T10:18:09.962617",
+      "last_alert_ts": 1778226798.187647
     }
   },
   "cluster": {
     "status": "green",
-    "algo_cluster_pct": 4.11,
-    "updated_at": "2026-04-29T17:14:30.549841",
+    "algo_cluster_pct": 9.15,
+    "updated_at": "2026-05-08T10:18:09.962723",
     "last_alert_ts": 1776917176.798393
   },
   "manual": {

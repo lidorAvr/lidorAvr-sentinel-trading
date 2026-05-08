@@ -40,7 +40,7 @@ def load_settings():
     except: pass
     return {"total_deposited": 7500.0, "risk_pct_input": 0.5}
 
-def save_settings(total_deposited, risk_pct_input):
+def save_settings(total_deposited, risk_pct_input, saved_nav=None):
     with open(SETTINGS_FILE, "w") as f:
         json.dump({"total_deposited": total_deposited, "risk_pct_input": risk_pct_input}, f)
 
