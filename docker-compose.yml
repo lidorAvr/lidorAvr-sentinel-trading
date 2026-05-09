@@ -1,5 +1,4 @@
 services:
-  # 1. הבוט שמסנכרן מול אינטראקטיב (ה-Direct Sync החדש)
   sentinel-bot:
     build: .
     container_name: sentinel-bot
@@ -10,18 +9,16 @@ services:
     volumes:
       - .:/app
 
-  # 2. הבוט של הטלגרם (ששולח התראות ומקבל ממך ציונים)
   telegram-bot:
     build: .
     container_name: telegram-bot
     restart: always
-    command: python3 telegram_bot.py
+    command: python3 telegram_bot_secure_runner.py
     env_file:
       - .env
     volumes:
       - .:/app
 
-  # 3. הדאשבורד (Streamlit)
   dashboard:
     build: .
     container_name: dashboard
