@@ -1,7 +1,4 @@
 import streamlit as st
-
-
-
 import pandas as pd
 import os
 import yfinance as yf
@@ -13,6 +10,7 @@ import numpy as np
 import json
 import xml.etree.ElementTree as ET
 import engine_core as ec
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 st.set_page_config(page_title="Sentinel Command Center", page_icon="🎯", layout="wide", initial_sidebar_state="expanded")
 
@@ -129,7 +127,12 @@ st.title("🎯 Sentinel Pro Command Center (Institutional Edition)")
 def compute_live_portfolio_data(open_trades_dict, _acc_size, _target_risk_usd, _spy_hist):
     live_positions = []
     if not open_trades_dict: return pd.DataFrame(live_positions)
-    
+
+    # שלב 1: מחמם את כל ה-cache במקביל — cache miss אחד לסמל, לא N קריאות סדרתיות
+    all_symbols = list({row['symbol'] for row in open_trades_dict})
+    prefetch_symbols_parallel(all_symbols)
+
+    # שלב 2: הלולאה הסדרתית — כל קריאה לרשת היא cache hit מיידי
     for row in open_trades_dict:
         sym, setup, qty = row['symbol'], row['setup_type'], row['quantity']
         entry, sl, init_sl = row['price'], row['stop_loss'], row['initial_stop']
@@ -187,6 +190,22 @@ def fetch_benchmark_data(ticker, start_date, end_date):
         return df
     except Exception as e:
         return pd.DataFrame()
+
+def _warm_symbol_cache(sym):
+    """מושך מחיר חי, היסטוריה, ומידע סקטור לסמל אחד — לשימוש מקבילי."""
+    ec.get_live_price(sym)
+    ec.get_cached_history(sym, "6mo", "1d")
+    ec.get_sector_bundle(sym)
+
+def prefetch_symbols_parallel(symbols, max_workers=8):
+    """מחמם את כל ה-cache של engine_core לכל הסמלים במקביל.
+    הלולאה הסדרתית שאחריה מקבלת cache hits מיידיים במקום קריאות רשת."""
+    if not symbols:
+        return
+    with ThreadPoolExecutor(max_workers=min(len(symbols), max_workers)) as ex:
+        futures = {ex.submit(_warm_symbol_cache, sym): sym for sym in symbols}
+        for f in as_completed(futures):
+            f.result()  # בולע exceptions — cache miss יטופל בנפרד בלולאה הראשית
 
 if df.empty:
     st.warning("No data found. Check your filters.")
@@ -264,7 +283,9 @@ else:
         win_rate, adj_rr, expectancy_r, total_pnl_net, total_r_net = 0, 0, 0, 0, 0
 
     open_dict = actual_open_trades.to_dict('records') if not actual_open_trades.empty else []
-    with st.spinner("Analyzing Live Battlefield..."):
+    n_pos = len(open_dict)
+    spinner_msg = f"מושך נתונים חיים ל-{n_pos} פוזיציות במקביל..." if n_pos > 0 else "מחשב..."
+    with st.spinner(spinner_msg):
         live_df = compute_live_portfolio_data(open_dict, current_acc_size, target_risk_usd, spy_hist)
         
     total_open_pnl = live_df['PnL'].sum() if not live_df.empty else 0
@@ -290,10 +311,12 @@ else:
     ai_str += f"- Database Win Rate (YTD): {win_rate*100:.1f}% | DB Net PnL: ${total_pnl_net:.2f}\n"
     ai_str += f"- Expectancy: {expectancy_r:.2f}R per trade | Adjusted R/R: {adj_rr:.2f}:1\n\n"
     ai_str += f"## 🔭 2. Live Battlefield (Open Positions)\n"
+    # שימוש במחירים שכבר חושבו ב-live_df — ללא קריאת רשת כפולה
+    _live_price_lookup = dict(zip(live_df['Symbol'], live_df['Current'])) if not live_df.empty else {}
     if not actual_open_trades.empty:
         for _, row in actual_open_trades.iterrows():
             sym, qty, entry, setup, sl, init_sl = row['symbol'], row['quantity'], row['price'], row['setup_type'], row['stop_loss'], row['initial_stop']
-            curr_p = ec.get_live_price(sym) or entry
+            curr_p = _live_price_lookup.get(sym, entry)
             open_pnl = (curr_p - entry) * qty
             base_price = row.get('base_price', entry)
             base_qty = row.get('base_qty', qty)
