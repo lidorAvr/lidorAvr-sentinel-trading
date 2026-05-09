@@ -491,5 +491,194 @@ def get_minervini_analysis(symbol):
         report += f"📊 *ציון תבנית מגמה:* {score}/10"
         
         return {"ok": True, "error": None, "data": (report, score)}
-    except Exception as e: 
+    except Exception as e:
         return {"ok": False, "error": str(e), "data": ("❌ תקלה בשאיבת נתונים", 0)}
+
+
+# ---------------------------------------------------------------------------
+# מדדים מינרביני — פונקציות חדשות (additive only, לא משנות קוד קיים)
+# ---------------------------------------------------------------------------
+
+def compute_initial_risk_metrics(base_price, initial_stop, base_qty, nav):
+    """
+    סיכון דולרי ו-% מהחשבון בכניסה.
+    מינרביני: "לעולם אל תסכן יותר מ-1-2.5% מהחשבון בעסקה אחת."
+    מחזיר מילון עם:
+      initial_risk_usd   — כמה $ בסיכון אם מגיעים לסטופ
+      initial_risk_pct   — % מה-NAV שבסיכון
+      sizing_grade       — 'ok' / 'oversized' / 'undersized' / 'missing_data'
+    """
+    if not (initial_stop > 0 and initial_stop < base_price and base_qty > 0 and nav > 0):
+        return {"initial_risk_usd": 0.0, "initial_risk_pct": 0.0, "sizing_grade": "missing_data"}
+    risk_usd = (base_price - initial_stop) * base_qty
+    risk_pct = (risk_usd / nav) * 100
+    if risk_pct > 2.5:
+        grade = "oversized"
+    elif risk_pct < 0.5:
+        grade = "undersized"
+    else:
+        grade = "ok"
+    return {
+        "initial_risk_usd": round(risk_usd, 2),
+        "initial_risk_pct": round(risk_pct, 3),
+        "sizing_grade": grade,
+    }
+
+
+def compute_r_efficiency(total_r, days_held):
+    """
+    R ליום — מדד יעילות הון של מינרביני.
+    מניה שמשיגה 3R ב-30 יום עדיפה על 3R ב-90 יום.
+    מחזיר מילון עם r_per_day ו-efficiency_label.
+    """
+    if days_held <= 0:
+        return {"r_per_day": 0.0, "efficiency_label": "אין נתון", "efficiency_color": "⚪"}
+    r_per_day = total_r / days_held
+    if total_r < 0:
+        label, color = "הפסד פעיל", "🔴"
+    elif r_per_day >= 0.10:
+        label, color = "יעיל מאוד", "🔥"
+    elif r_per_day >= 0.05:
+        label, color = "יעיל", "🟢"
+    elif r_per_day >= 0.02:
+        label, color = "סביר", "🟡"
+    elif days_held >= 8 and total_r < 0.5:
+        label, color = "הון מת", "🔴"
+    else:
+        label, color = "איטי", "🟠"
+    return {"r_per_day": round(r_per_day, 4), "efficiency_label": label, "efficiency_color": color}
+
+
+def compute_mfe_mae(symbol, entry_date_str, base_price, initial_stop):
+    """
+    MAE (Max Adverse Excursion) — הנקודה הגרועה ביותר מאז הכניסה.
+    MFE (Max Favorable Excursion) — הנקודה הטובה ביותר מאז הכניסה.
+
+    מינרביני משתמש ב-MAE/MFE לניתוח איכות ביצוע:
+      - MAE נמוך → כניסה טובה, המניה לא ירדה הרבה לאחר הכניסה
+      - MFE גבוה הרבה מעל exit R → יצאת מוקדם מדי ובזבזת פוטנציאל
+    מגביל לחלון ה-cache (1y). אם הכניסה ישנה יותר — מחזיר None.
+    """
+    try:
+        entry_dt = pd.to_datetime(entry_date_str)
+        hist = get_cached_history(symbol, "1y", "1d")
+        if hist is None or hist.empty:
+            return {"mfe_pct": None, "mae_pct": None, "mfe_r": None, "mae_r": None}
+        after_entry = hist[hist.index.normalize() >= entry_dt.normalize()]
+        if len(after_entry) < 2:
+            return {"mfe_pct": None, "mae_pct": None, "mfe_r": None, "mae_r": None}
+        period_high = float(after_entry["High"].max())
+        period_low = float(after_entry["Low"].min())
+        if base_price <= 0:
+            return {"mfe_pct": None, "mae_pct": None, "mfe_r": None, "mae_r": None}
+        mfe_pct = round((period_high - base_price) / base_price * 100, 2)
+        mae_pct = round((period_low - base_price) / base_price * 100, 2)
+        initial_risk = base_price - initial_stop if (initial_stop > 0 and initial_stop < base_price) else None
+        mfe_r = round((period_high - base_price) / initial_risk, 2) if initial_risk else None
+        mae_r = round((period_low - base_price) / initial_risk, 2) if initial_risk else None
+        return {"mfe_pct": mfe_pct, "mae_pct": mae_pct, "mfe_r": mfe_r, "mae_r": mae_r}
+    except Exception:
+        return {"mfe_pct": None, "mae_pct": None, "mfe_r": None, "mae_r": None}
+
+
+def analyze_addon_quality(buy_records):
+    """
+    בדיקת איכות Pyramiding לפי מינרביני:
+    "הוסף רק למניות מנצחות — לעולם לא average down."
+    buy_records: רשימת dict עם {'trade_date': ..., 'price': ..., 'quantity': ...}
+    מחזיר מילון עם:
+      has_addons          — האם יש add-on בכלל
+      all_addons_higher   — האם כל ה-add-ons במחיר גבוה מהבסיס (תקין לפי מינרביני)
+      worst_addon_vs_base — הסטייה הגרועה ביותר מהבסיס (שלילי = average down)
+      addon_count         — מספר ה-add-ons
+    """
+    if not buy_records or len(buy_records) <= 1:
+        return {"has_addons": False, "all_addons_higher": True, "worst_addon_vs_base": 0.0, "addon_count": 0}
+    records_sorted = sorted(buy_records, key=lambda r: pd.to_datetime(r["trade_date"]))
+    first_date = pd.to_datetime(records_sorted[0]["trade_date"])
+    base_price = float(records_sorted[0]["price"])
+    addons = [r for r in records_sorted if pd.to_datetime(r["trade_date"]) > first_date]
+    if not addons:
+        return {"has_addons": False, "all_addons_higher": True, "worst_addon_vs_base": 0.0, "addon_count": 0}
+    deviations = [(float(r["price"]) - base_price) / base_price * 100 for r in addons]
+    worst = round(min(deviations), 2)
+    return {
+        "has_addons": True,
+        "all_addons_higher": worst >= 0,
+        "worst_addon_vs_base": worst,
+        "addon_count": len(addons),
+    }
+
+
+def compute_trend_template_full(symbol):
+    """
+    Trend Template מלא — כל 8 הקריטריונים של מארק מינרביני
+    (Trade Like a Stock Market Wizard, פרק 7).
+
+    הפונקציה הקיימת get_minervini_analysis() בודקת 5 קריטריונים בלבד
+    ומשמשת לתצוגת טלגרם — לא משנים אותה.
+    פונקציה זו מחזירה dict מובנה לדאשבורד.
+
+    קריטריונים:
+      1. מחיר נוכחי > MA150 ו-MA200
+      2. MA150 > MA200
+      3. MA200 עולה לפחות חודש (21 יום מסחר)
+      4. MA50 > MA150 וגם MA50 > MA200
+      5. מחיר נוכחי > MA50
+      6. מחיר ≥ 30% מעל שפל 52 שבועות
+      7. מחיר ≤ 25% מתחת לשיא 52 שבועות
+      8. RS — מניה חזקה ביחס ל-SPY ב-12 חודשים האחרונים (proxy)
+    """
+    try:
+        hist = get_cached_history(symbol, "1y", "1d")
+        if hist is None or len(hist) < 200:
+            return {"ok": False, "error": "missing_data", "data": None}
+        close = float(hist["Close"].iloc[-1])
+        ma50 = float(hist["Close"].rolling(50).mean().iloc[-1])
+        ma150 = float(hist["Close"].rolling(150).mean().iloc[-1])
+        ma200_series = hist["Close"].rolling(200).mean()
+        ma200_now = float(ma200_series.iloc[-1])
+        ma200_month_ago = float(ma200_series.iloc[-22]) if len(ma200_series) >= 222 else None
+        low_52w = float(hist["Low"].min())
+        high_52w = float(hist["High"].max())
+        spy_hist = get_cached_history("SPY", "1y", "1d")
+        stock_ret12m = safe_return(hist["Close"], 252)
+        spy_ret12m = safe_return(spy_hist["Close"], 252) if spy_hist is not None and len(spy_hist) >= 252 else None
+
+        c1 = close > ma150 and close > ma200_now
+        c2 = ma150 > ma200_now
+        c3 = (ma200_now > ma200_month_ago) if ma200_month_ago is not None else None  # None = לא ניתן לחשב
+        c4 = ma50 > ma150 and ma50 > ma200_now
+        c5 = close > ma50
+        c6 = close >= low_52w * 1.30
+        c7 = close >= high_52w * 0.75
+        c8 = (stock_ret12m > spy_ret12m) if (stock_ret12m is not None and spy_ret12m is not None) else None
+
+        criteria = [c1, c2, c3, c4, c5, c6, c7, c8]
+        passed = sum(1 for c in criteria if c is True)
+        definitive = sum(1 for c in criteria if c is not None)
+        score_10 = round((passed / 8) * 10, 1)
+
+        return {
+            "ok": True,
+            "error": None,
+            "data": {
+                "close": close, "ma50": round(ma50, 2), "ma150": round(ma150, 2), "ma200": round(ma200_now, 2),
+                "low_52w": round(low_52w, 2), "high_52w": round(high_52w, 2),
+                "criteria": {
+                    "c1_price_above_ma150_ma200": c1,
+                    "c2_ma150_above_ma200": c2,
+                    "c3_ma200_uptrend_1m": c3,
+                    "c4_ma50_above_ma150_ma200": c4,
+                    "c5_price_above_ma50": c5,
+                    "c6_above_30pct_52w_low": c6,
+                    "c7_within_25pct_52w_high": c7,
+                    "c8_rs_above_spy_12m": c8,
+                },
+                "passed": passed,
+                "definitive": definitive,
+                "score_10": score_10,
+            },
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e), "data": None}

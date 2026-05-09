@@ -11,6 +11,7 @@ import json
 import xml.etree.ElementTree as ET
 import engine_core as ec
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
 st.set_page_config(page_title="Sentinel Command Center", page_icon="🎯", layout="wide", initial_sidebar_state="expanded")
 
@@ -169,12 +170,33 @@ def compute_live_portfolio_data(open_trades_dict, _acc_size, _target_risk_usd, _
         sizing_status = eval_res['data'].get('sizing_status', '✅ תקין') if eval_res['ok'] else "Unknown"
         
         sec_b = ec.get_sector_bundle(sym)
+
+        # מדדי מינרביני — חדשים
+        init_risk = ec.compute_initial_risk_metrics(base_price, init_sl, base_qty, _acc_size)
+        days_held = max((datetime.now() - pd.to_datetime(row['entry_date'])).days, 1) if row.get('entry_date') else 1
+        r_eff = ec.compute_r_efficiency(total_campaign_r, days_held)
+        mfe_mae = ec.compute_mfe_mae(sym, row.get('entry_date'), base_price, init_sl)
+
         live_positions.append({
             'Symbol': sym, 'Setup': setup, 'Exposure_USD': pos_value, 'Exposure_Pct': weight_pct,
             'PnL': open_pnl, 'Open_R': open_r_val, 'Total_R': total_campaign_r, 'Score': score, 'Status': status, 'Sizing': sizing_status,
             'Sector': sec_b.get('sector') or "Other", 'Entry': entry, 'Current': curr,
             'OriginalRisk': original_campaign_risk, 'GivebackRisk': giveback_risk_usd, 'LockedProfit': locked_profit_usd,
-            'CapitalRisk': current_open_loss_risk
+            'CapitalRisk': current_open_loss_risk,
+            # מינרביני — סיכון
+            'InitRisk_USD': init_risk['initial_risk_usd'],
+            'InitRisk_Pct': init_risk['initial_risk_pct'],
+            'SizingGrade': init_risk['sizing_grade'],
+            # מינרביני — יעילות זמן
+            'DaysHeld': days_held,
+            'R_per_Day': r_eff['r_per_day'],
+            'EfficiencyLabel': r_eff['efficiency_label'],
+            'EfficiencyColor': r_eff['efficiency_color'],
+            # מינרביני — MAE/MFE
+            'MFE_R': mfe_mae.get('mfe_r'),
+            'MAE_R': mfe_mae.get('mae_r'),
+            'MFE_Pct': mfe_mae.get('mfe_pct'),
+            'MAE_Pct': mfe_mae.get('mae_pct'),
         })
     return pd.DataFrame(live_positions)
 
@@ -392,6 +414,47 @@ else:
                 st.plotly_chart(fig_donut, use_container_width=True)
                 
             st.dataframe(live_df[['Symbol', 'Setup', 'Status', 'Sizing', 'Open_R', 'GivebackRisk', 'LockedProfit', 'CapitalRisk']].style.format({'Open_R': '{:.2f}R', 'GivebackRisk': '${:.0f}', 'LockedProfit': '${:.0f}', 'CapitalRisk': '${:.0f}'}), use_container_width=True, hide_index=True)
+
+            # ── תכנון vs בפועל — מינרביני ─────────────────────────────────
+            st.markdown("---")
+            st.subheader("📐 ניתוח סיכונים — תכנון vs בפועל (Minervini)")
+            for _, pos in live_df.iterrows():
+                is_algo = str(pos['Setup']).upper() == 'ALGO'
+                with st.expander(f"{pos['EfficiencyColor']} {pos['Symbol']} | {pos['Status']} | {pos['Total_R']:.2f}R | {pos['DaysHeld']}d"):
+                    pa1, pa2, pa3 = st.columns(3)
+
+                    # עמודה 1: סיכון
+                    with pa1:
+                        st.markdown("**⚖️ סיכון**")
+                        planned_r = target_risk_usd
+                        actual_r = pos['InitRisk_USD']
+                        if not is_algo and actual_r > 0:
+                            dev_pct = (actual_r - planned_r) / planned_r * 100 if planned_r > 0 else 0
+                            grade_map = {"ok": "✅ תקין", "oversized": "⚠️ גדול מדי", "undersized": "📉 קטן מדי", "missing_data": "❓ חסר סטופ"}
+                            grade_label = grade_map.get(pos['SizingGrade'], "❓")
+                            st.metric("תכנון", f"${planned_r:,.0f} ({risk_pct_input:.1f}%)")
+                            st.metric("בפועל", f"${actual_r:,.0f} ({pos['InitRisk_Pct']:.2f}%)", delta=f"{dev_pct:+.1f}%")
+                            st.caption(f"שיפוט מינרביני: {grade_label}")
+                        else:
+                            st.caption("ALGO — סיכון לפי מגבלת סמל")
+
+                    # עמודה 2: ביצועים
+                    with pa2:
+                        st.markdown("**📈 ביצועים**")
+                        st.metric("Total R", f"{pos['Total_R']:.2f}R")
+                        st.metric("R ליום", f"{pos['R_per_Day']:.3f}", help="R שהושג חלקי מספר ימי ההחזקה")
+                        st.caption(f"יעילות הון: {pos['EfficiencyLabel']}")
+
+                    # עמודה 3: MAE / MFE
+                    with pa3:
+                        st.markdown("**🎯 MAE / MFE**")
+                        if pos['MFE_R'] is not None:
+                            st.metric("MFE (שיא)", f"{pos['MFE_R']:.2f}R ({pos['MFE_Pct']:.1f}%)", help="המקסימום שהמניה עלתה מאז הכניסה")
+                            st.metric("MAE (תחתית)", f"{pos['MAE_R']:.2f}R ({pos['MAE_Pct']:.1f}%)", help="המקסימום שהמניה ירדה מאז הכניסה")
+                            if pos['MFE_R'] > 0 and pos['Total_R'] < pos['MFE_R'] * 0.5:
+                                st.warning(f"⚠️ בשיא הגעת ל-{pos['MFE_R']:.1f}R — נוצל רק {pos['Total_R']/pos['MFE_R']*100:.0f}% מהפוטנציאל")
+                        else:
+                            st.caption("MAE/MFE: אין נתון (כניסה > 12 חודשים)")
         else:
             st.info("No open positions to display.")
 
