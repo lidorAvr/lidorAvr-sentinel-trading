@@ -38,6 +38,9 @@ class TelegramGuard:
         cooldown_until = self._cooldown_until.get(chat_id, 0)
         if now < cooldown_until:
             return GuardDecision(False, "cooldown", int(cooldown_until - now))
+        if cooldown_until and now >= cooldown_until:
+            self._cooldown_until.pop(chat_id, None)
+            self._events[chat_id].clear()
 
         events = self._events[chat_id]
         while events and now - events[0] > self.window_seconds:
