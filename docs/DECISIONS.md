@@ -1,118 +1,108 @@
 # Architecture Decision Log
 
-This file records important architecture and workflow decisions.
+This file records significant architecture or design decisions made during development.
 
-Use it when a decision affects future development, deployment, safety, or data correctness.
+Each entry explains what was decided, why, and what alternatives were considered.
 
-## Decision template
+---
 
-```markdown
-### ADR-YYYYMMDD-001 — Short title
+## DEC-20260509-001 — Parallel symbol pre-fetch via ThreadPoolExecutor
 
-Status: proposed / accepted / replaced / rejected
-Date: YYYY-MM-DD
-Owner: user / agent / both
-
-Context:
-- ...
-
-Decision:
-- ...
-
-Why:
-- ...
-
-Consequences:
-- ...
-
-Related files:
-- ...
-```
-
-## Accepted decisions
-
-### ADR-20260509-001 — Use a secure Telegram runner before refactoring the Telegram bot
-
-Status: accepted
 Date: 2026-05-09
-Owner: both
+Status: implemented
 
-Context:
-- `telegram_bot.py` is long and contains many working flows.
-- Rewriting it all at once is high risk.
-- The system still needs admin-only access, rate limiting, and data-source disclosure.
+### Decision
 
-Decision:
-- Keep `telegram_bot.py` intact for now.
-- Run Telegram through `telegram_bot_secure_runner.py`.
-- Docker Compose should start Telegram using `python3 telegram_bot_secure_runner.py`.
+Use `concurrent.futures.ThreadPoolExecutor` to pre-fetch live prices, 6-month histories, and sector data for all open positions simultaneously before the serial analysis loop in `compute_live_portfolio_data`.
 
-Why:
-- This adds guardrails without a risky large rewrite.
-- It keeps current Telegram flows working.
-- It gives time to add tests and refactor gradually.
+### Rationale
 
-Consequences:
-- Future agents must not bypass the secure runner.
-- A future refactor may move these protections directly into smaller Telegram modules.
+The dashboard was making N sequential network calls (each with 0.5–1.5s smart_delay) for N open positions. Pre-fetching in parallel reduces wall time from N×1s to ~1.5s regardless of position count.
 
-Related files:
-- `telegram_bot.py`
-- `telegram_bot_secure_runner.py`
-- `docker-compose.yml`
+### Alternatives considered
 
-### ADR-20260509-002 — Track user requirements and agent tasks inside the repo
+- **yf.download() batch**: faster for price data but returns last close, not live price. Accuracy tradeoff not acceptable.
+- **Async/await**: would require restructuring the entire Streamlit app. Overkill for this use case.
+- **Increase cache TTL only**: does not help on first load or after cache expiry.
 
-Status: accepted
+### Constraints
+
+- engine_core.YF_CACHE is a module-level dict. Python's GIL makes simple dict reads/writes safe across threads.
+- smart_delay() still fires per thread — this is intentional to avoid Yahoo Finance rate limiting. Total wait is max(delays) not sum(delays).
+- @st.cache_data on compute_live_portfolio_data means the pre-fetch only runs on cache miss (every 180s).
+
+---
+
+## DEC-20260509-002 — Minervini Trend Template: new function, not modifying existing
+
 Date: 2026-05-09
-Owner: both
+Status: implemented
 
-Context:
-- The user wants efficient AI-agent development with minimal repeated explanations.
-- Requirements evolve over time.
-- Multiple agents may work on the repo.
+### Decision
 
-Decision:
-- Use `docs/USER_REQUIREMENTS.md` for user requirements.
-- Use `docs/AGENT_TASKS.md` for agent task tracking.
-- Use `docs/SYSTEM_STATE.md` for current truth.
+Create `compute_trend_template_full()` with all 8 Minervini criteria. Keep existing `get_minervini_analysis()` (5 criteria) unchanged.
 
-Why:
-- Reduces token waste.
-- Preserves context between sessions.
-- Helps agents avoid unrelated changes.
+### Rationale
 
-Consequences:
-- Agents should update these files when doing meaningful work.
-- These docs must remain concise and current.
+`get_minervini_analysis()` is consumed by `telegram_bot.py` and returns a formatted Hebrew string with a score out of 10. Changing its score formula would break Telegram display without a migration plan.
 
-Related files:
-- `docs/USER_REQUIREMENTS.md`
-- `docs/AGENT_TASKS.md`
-- `docs/SYSTEM_STATE.md`
+### Consequence
 
-### ADR-20260509-003 — Treat fallback data as uncertainty, not truth
+Two coexisting Trend Template functions:
+- `get_minervini_analysis()`: Telegram-facing, 5 criteria, stable.
+- `compute_trend_template_full()`: dashboard-facing, 8 criteria, structured dict.
 
-Status: accepted
+A future refactor should unify these once the Telegram display is updated.
+
+---
+
+## DEC-20260509-003 — IBKR sync state in local JSON, not Supabase
+
 Date: 2026-05-09
-Owner: both
+Status: implemented
 
-Context:
-- Market data, NAV, and external sources may be unavailable or stale.
-- The user makes trading decisions based on system output.
+### Decision
 
-Decision:
-- User-facing reports must mark fallback/cached/estimated values clearly.
+Track IBKR sync state in `/app/ibkr_sync_state.json` on the local filesystem.
 
-Why:
-- Prevents misleading confidence.
-- Keeps the system honest.
+### Rationale
 
-Consequences:
-- Report builders must include data-source labels when relevant.
-- Tests should protect fallback disclosure behavior.
+Writing sync state to Supabase would introduce a network dependency in the sync loop itself. If Supabase is down, the sync loop would also fail to record state. A local JSON file is self-contained, survives Supabase outages, and is easily inspectable for debugging.
 
-Related files:
-- `docs/DATA_CONTRACTS.md`
-- `telegram_bot_secure_runner.py`
-- `engine_core.py`
+### Alternatives considered
+
+- **Supabase table**: more visible but creates circular dependency.
+- **Extend sentinel_config.json**: mixes account settings with sync state.
+- **Plain text file (old approach)**: insufficient for multi-field state.
+
+### Constraint
+
+If the /app volume is not persistent across Docker rebuilds, state resets. Acceptable — worst case is one extra sync attempt on restart.
+
+---
+
+## DEC-20260509-004 — Planned R:R deferred: requires Supabase schema change
+
+Date: 2026-05-09
+Status: deferred / blocked
+
+### Decision
+
+Do not implement true planned R:R in this session. Defer until `target_price` field is added to the Supabase `trades` table.
+
+### Rationale
+
+True planned R:R = (target_price - entry) / (entry - initial_stop). No target price field exists in current schema. Using a fabricated proxy would violate the data contract: "The system must show truth only."
+
+### What is implemented instead
+
+- Planned risk $ (target_risk_usd from config) vs actual risk $ (original_campaign_risk).
+- Planned risk % of NAV vs actual risk % of NAV.
+
+### Prerequisites for full implementation
+
+1. Add `target_price NUMERIC` to Supabase trades table.
+2. Update docs/DATA_CONTRACTS.md.
+3. Update DB Manager in dashboard for target price entry.
+4. Update Telegram backlog flow to capture target price.
+This is a HIGH risk schema change — requires a dedicated task.
