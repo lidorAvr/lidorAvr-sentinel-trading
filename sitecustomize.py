@@ -4,7 +4,8 @@ import time
 from collections import defaultdict, deque
 
 ADMIN_ID = os.getenv('TELEGRAM_ADMIN_ID')
-CONFIG_PATH = os.getenv('SENTINEL_CONFIG_PATH', '/app/sentinel_config.json')
+DEFAULT_CONFIG_PATH = '/home/orangepi/sentinel_trading/sentinel_config.json'
+CONFIG_PATH = os.getenv('SENTINEL_CONFIG_PATH', DEFAULT_CONFIG_PATH)
 
 _original_open = builtins.open
 
@@ -30,7 +31,7 @@ def _guard_decision(chat_id, max_messages=8, window_seconds=60, cooldown_seconds
 
     until = _cooldown_until.get(chat_id, 0)
     if now < until:
-        return False, 'cooldown', int(until - now)
+        return False, 'cooldown', int(until - now))
     if until and now >= until:
         _cooldown_until.pop(chat_id, None)
         _events[chat_id].clear()
