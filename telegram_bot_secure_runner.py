@@ -37,18 +37,18 @@ def guard_decision(chat_id):
 
 def guard_message(reason):
     if reason == 'unauthorized':
-        return 'Access denied.'
-    return 'Rate limit reached. Try again later.'
+        return '⛔ אין הרשאה להשתמש בבוט הזה.'
+    return '⏳ קצב הודעות גבוה מדי. נסה שוב בעוד כמה רגעים.'
 
 
 def truth_suffix(text):
     if not isinstance(text, str):
         return text
-    if 'Data source:' in text:
+    if 'מקור נתונים:' in text or 'Data source:' in text:
         return text
-    markers = ['portfolio', 'risk', 'Drill-down', 'market regime']
+    markers = ['חדר מצב', 'דו"ח', 'חשיפת תיק', 'Drill-down', 'משטר שוק', 'פוזיציות']
     if any(marker in text for marker in markers):
-        return text + '\n\nData source: Live/Cached by availability. Treat fallback values as estimates before trading action.'
+        return text + '\n\nℹ️ *מקור נתונים:* Live/Cached לפי זמינות. אם מחיר חי או NAV לא זמינים, יש להתייחס לנתון כהערכה ולאמת מול IBKR לפני פעולה.'
     return text
 
 
