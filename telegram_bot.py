@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from datetime import datetime
 import xml.etree.ElementTree as ET
 import engine_core as ec
+import telegram_formatters as tf
 
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -35,10 +36,31 @@ def get_account_settings():
     except: return {"total_deposited": 7500.0, "risk_pct_input": 0.5}
 
 def get_main_menu():
+    """תפריט ראשי — 4 קטגוריות בלבד, ממנו צוללים לתפריטי תת."""
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(types.KeyboardButton("🔍 סריקת יומן (Backlog)"), types.KeyboardButton("📊 חדר מצב (פוזיציות)"))
-    markup.add(types.KeyboardButton("🧹 ארכיון עסקאות (Legacy)"), types.KeyboardButton("🔬 סקירת מניה"))
-    markup.add(types.KeyboardButton("❓ פקודות מערכת"))
+    markup.add(types.KeyboardButton("📊 מצב תיק"), types.KeyboardButton("🔬 ניתוח"))
+    markup.add(types.KeyboardButton("📚 יומן"), types.KeyboardButton("❓ עזרה"))
+    return markup
+
+def get_portfolio_menu():
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
+    markup.add(types.KeyboardButton("📊 חדר מצב (פוזיציות)"))
+    markup.add(types.KeyboardButton("🌡️ משטר שוק וסיכונים"))
+    markup.add(types.KeyboardButton("⬅️ חזרה לתפריט ראשי"))
+    return markup
+
+def get_analysis_menu():
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
+    markup.add(types.KeyboardButton("🔬 סקירת מניה"))
+    markup.add(types.KeyboardButton("🧠 ניתוח מינרביני מלא"))
+    markup.add(types.KeyboardButton("⬅️ חזרה לתפריט ראשי"))
+    return markup
+
+def get_journal_menu():
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
+    markup.add(types.KeyboardButton("🔍 סריקת יומן (Backlog)"))
+    markup.add(types.KeyboardButton("🧹 ארכיון עסקאות (Legacy)"))
+    markup.add(types.KeyboardButton("⬅️ חזרה לתפריט ראשי"))
     return markup
 
 def get_rating_keyboard(t_id, field):
@@ -277,6 +299,56 @@ def handle_all_messages(message):
         bot.send_message(chat_id, "❌ הפעולה בוטלה. חוזרים לתפריט הראשי.", reply_markup=get_main_menu())
         return
 
+    # ── תפריטים היררכיים ──────────────────────────────────────────────
+    if text == "⬅️ חזרה לתפריט ראשי":
+        if chat_id in user_state: del user_state[chat_id]
+        bot.send_message(chat_id, f"{RTL}🏠 *תפריט ראשי*", reply_markup=get_main_menu(), parse_mode="Markdown")
+        return
+
+    if text == "📊 מצב תיק":
+        bot.send_message(chat_id, f"{RTL}📊 *מצב תיק — בחר פעולה:*", reply_markup=get_portfolio_menu(), parse_mode="Markdown")
+        return
+
+    if text == "🔬 ניתוח":
+        bot.send_message(chat_id, f"{RTL}🔬 *ניתוח — בחר פעולה:*", reply_markup=get_analysis_menu(), parse_mode="Markdown")
+        return
+
+    if text == "📚 יומן":
+        bot.send_message(chat_id, f"{RTL}📚 *יומן — בחר פעולה:*", reply_markup=get_journal_menu(), parse_mode="Markdown")
+        return
+
+    if text in ["❓ עזרה", "❓ פקודות מערכת", "/help"]:
+        help_txt = (
+            f"{RTL}🛡️ *Sentinel — מדריך פקודות*\n"
+            f"{RTL}───────────────\n"
+            f"{RTL}📊 *מצב תיק* — פוזיציות ומשטר שוק\n"
+            f"{RTL}🔬 *ניתוח* — סקירת מניה ו-Trend Template\n"
+            f"{RTL}📚 *יומן* — מילוי יומן וארכיון\n"
+            f"{RTL}───────────────\n"
+            f"{RTL}/portfolio — חדר מצב\n"
+            f"{RTL}/trade SYMBOL — ניתוח עומק לפוזיציה\n"
+            f"{RTL}/mentor SYMBOL — Trend Template מלא\n"
+            f"{RTL}/analyze SYMBOL — ניתוח VCP מינרביני\n"
+            f"{RTL}/next — יומן (הבא)\n"
+        )
+        return bot.send_message(chat_id, help_txt, reply_markup=get_main_menu(), parse_mode="Markdown")
+
+    if text == "🧠 ניתוח מינרביני מלא":
+        bot.send_message(chat_id, f"{RTL}🧠 *ניתוח Trend Template מלא (8 קריטריונים):*\nהקלד סימול מניה (לדוגמה: AAPL):", parse_mode="Markdown")
+        user_state[chat_id] = {'action': 'mentor_symbol'}
+        return
+
+    if text.startswith("/mentor ") or text.startswith("/mentor\n"):
+        sym_raw = text.split(" ", 1)[-1].strip().upper()
+        if sym_raw:
+            _loading = bot.send_message(chat_id, f"⏳ מנתח Trend Template עבור {sym_raw}...", parse_mode="Markdown")
+            tt_res = ec.compute_trend_template_full(sym_raw)
+            report = tf.fmt_minervini_trend_template(sym_raw, tt_res)
+            try: bot.delete_message(chat_id, _loading.message_id)
+            except: pass
+            bot.send_message(chat_id, report, reply_markup=get_analysis_menu(), parse_mode="Markdown")
+        return
+
     if text.startswith("/analyze "):
         symbol = text.split(" ")[1].upper()
         bot.send_message(chat_id, f"⏳ מנתח נתונים עבור {symbol}...", parse_mode="Markdown")
@@ -331,10 +403,8 @@ def handle_all_messages(message):
             pos_res = ec.get_open_positions_campaign(df)
             open_pos = pos_res["data"] if pos_res["ok"] else pd.DataFrame()
             account_settings = get_account_settings()
-            
             ibkr_nav = get_ibkr_nav()
             acc_size = ibkr_nav if ibkr_nav else float(account_settings.get("total_deposited", 7500.0))
-            
             exp = {"ALGO": 0, "VCP": 0, "EP": 0, "OTHER": 0}
             if not open_pos.empty:
                 for _, row in open_pos.iterrows():
@@ -345,14 +415,7 @@ def handle_all_messages(message):
                     else: exp["OTHER"] += val
             total_exp = sum(exp.values())
             total_pct = (total_exp / acc_size) * 100 if acc_size > 0 else 0
-            rep = f"{RTL}🌡️ *דו\"ח משטר שוק וסיכונים*\n〰️〰️〰️〰️〰️〰️〰️〰️〰️\n\n"
-            if regime["ok"]:
-                rd = regime["data"]
-                rep += f"*סטטוס שוק:* {rd['color']} {rd['status']}\n*המלצת סיכון:* _{rd['text']}_\n\n"
-            else: rep += f"*סטטוס שוק:* ⚪ לא ידוע ({regime['error']})\n\n"
-            rep += f"📊 *חשיפת תיק קיימת:* `{total_pct:.1f}%`\n"
-            if acc_size > 0:
-                rep += f"• אלגו: `{(exp['ALGO']/acc_size)*100:.1f}%`\n• דיסקרשן (VCP): `{(exp['VCP']/acc_size)*100:.1f}%`\n• דיסקרשן (EP): `{(exp['EP']/acc_size)*100:.1f}%`\n"
+            rep = tf.fmt_regime_report(regime, total_pct, exp["ALGO"], exp["VCP"], exp["EP"], acc_size)
             bot.edit_message_text(rep, chat_id, msg_id, parse_mode="Markdown")
         except Exception as e: bot.edit_message_text(f"❌ תקלה בחישוב משטר שוק: {e}", chat_id, msg_id)
         return
@@ -520,7 +583,33 @@ def handle_all_messages(message):
             msg += f"{RTL}▸ סך הכל רווח מוגן (Secured): `${total_secured:,.2f}`\n"
             msg += f"{RTL}▸ סיכון ויתור רווח צף (Giveback): `${total_giveback_risk:,.2f}`\n"
             msg += f"{RTL}▸ חשיפה כללית: `{total_weight:.1f}%` מקרן הבסיס\n"
-            msg += f"\n{RTL}🤖 *בקרת סיכונים אשכול אלגו:*\n{RTL}▸ חשיפה כוללת אלגו: `{algo_cluster_pct:.1f}%` מהקרן\n"
+            if algo_count > 0:
+                msg += f"\n{RTL}🤖 *בקרת אשכול אלגו:*\n{RTL}▸ חשיפה אלגו: `{algo_cluster_pct:.1f}%` מהקרן\n"
+
+            # שורת coaching מינרביני
+            spy_hist_caching = ec.get_cached_history("SPY", "1y", "1d")
+            regime_for_coaching = ec.compute_market_regime(spy_hist_caching)
+            regime_status_str = regime_for_coaching.get('data', {}).get('status', '') if regime_for_coaching.get('ok') else ''
+            try:
+                all_res = supabase.table("trades").select("campaign_id,pnl_usd,trade_date").execute()
+                camp_all = pd.DataFrame(all_res.data)
+                if not camp_all.empty and 'campaign_id' in camp_all.columns:
+                    closed_cids = camp_all.groupby('campaign_id')['pnl_usd'].sum()
+                    wins_c = (closed_cids > 0).sum()
+                    wr_c = wins_c / len(closed_cids) if len(closed_cids) > 0 else 0
+                else:
+                    wr_c = 0
+            except: wr_c = 0
+            coaching_insights = ec.generate_minervini_coaching(
+                win_rate=wr_c, expectancy_r=0, adj_rr=0,
+                oversized_count=0, market_regime_status=regime_status_str,
+                streak_losses=0, total_r_net=0
+            )
+            if coaching_insights:
+                msg += f"\n{RTL}🎓 *מינרביני אומר:*\n"
+                for ins in coaching_insights[:2]:  # מקסימום 2 insights בטלגרם
+                    clean_ins = ins.replace('<b>', '*').replace('</b>', '*')
+                    msg += f"{RTL}▸ {clean_ins}\n"
 
             try: bot.delete_message(chat_id, loading_msg.message_id)
             except: pass
@@ -549,7 +638,18 @@ def handle_all_messages(message):
             bot.send_message(chat_id, f"⏳ מושך נתונים טכניים ומנתח את {symbol}...", parse_mode="Markdown")
             report_res = ec.get_minervini_analysis(symbol)
             report = report_res["data"][0] if report_res["ok"] else str(report_res.get("error", "Error")).replace("_", " ")
-            bot.send_message(chat_id, report, parse_mode="Markdown")
+            bot.send_message(chat_id, report, reply_markup=get_analysis_menu(), parse_mode="Markdown")
+            del user_state[chat_id]
+            return
+
+        if action == 'mentor_symbol':
+            symbol = text.strip().upper()
+            _loading = bot.send_message(chat_id, f"⏳ מנתח Trend Template מלא עבור {symbol}...", parse_mode="Markdown")
+            tt_res = ec.compute_trend_template_full(symbol)
+            report = tf.fmt_minervini_trend_template(symbol, tt_res)
+            try: bot.delete_message(chat_id, _loading.message_id)
+            except: pass
+            bot.send_message(chat_id, report, reply_markup=get_analysis_menu(), parse_mode="Markdown")
             del user_state[chat_id]
             return
 

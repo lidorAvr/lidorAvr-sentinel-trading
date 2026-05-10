@@ -682,3 +682,39 @@ def compute_trend_template_full(symbol):
         }
     except Exception as e:
         return {"ok": False, "error": str(e), "data": None}
+
+
+def generate_minervini_coaching(win_rate, expectancy_r, adj_rr, oversized_count=0,
+                                 market_regime_status="", streak_losses=0, total_r_net=0):
+    """
+    מייצר רשימת תובנות coaching לפי מתודולוגיית מארק מינרביני.
+    כל insight הוא string בעברית עם emoji מתאים.
+    משמש בטאב Minervini Mentor בדאשבורד ובסיכום /portfolio בטלגרם.
+    """
+    insights = []
+    regime_lower = str(market_regime_status).lower()
+
+    if regime_lower in ['downtrend', 'ירידה', 'correction', 'תיקון']:
+        insights.append("🔴 <b>שוק בירידה</b> — מינרביני: 'הגן על ההון שלך. הקטן חשיפה ל-0-25%. אל תוסיף פוזיציות חדשות בסביבה כזו.'")
+
+    if streak_losses >= 3:
+        insights.append(f"⚠️ <b>{streak_losses} הפסדים רצופים</b> — מינרביני: 'הקטן גדלים ב-50% עד שהשוק חוזר לקנות ממך. זה הגנה, לא חולשה.'")
+
+    if win_rate < 0.40 and win_rate > 0:
+        insights.append(f"⚠️ <b>שיעור הצלחה {win_rate*100:.0f}%</b> — מינרביני: 'פחות מ-40% ניצחונות. רשום ולמד את הכשלונות — מה היה שגוי בסטאפ?'")
+
+    if expectancy_r < 0:
+        insights.append(f"🔴 <b>Expectancy שלילית ({expectancy_r:.2f}R)</b> — מינרביני: 'הפסק להוסיף פוזיציות עד שה-Expectancy חיובית. כל טרייד נוסף גורע מהחשבון.'")
+    elif expectancy_r > 0 and expectancy_r < 0.3:
+        insights.append(f"🟡 <b>Expectancy נמוכה ({expectancy_r:.2f}R)</b> — מינרביני: 'הדרך לשפר: הגדל R:R ממוצע, צמצם הפסדים מוקדם יותר.'")
+
+    if adj_rr < 1.5 and adj_rr > 0:
+        insights.append(f"🟡 <b>Payoff Ratio {adj_rr:.2f}:1</b> — מינרביני: 'כוון לפחות 2:1. תן לרווחים לרוץ — אל תמכור מוקדם מדי.'")
+
+    if oversized_count > 0:
+        insights.append(f"⚠️ <b>{oversized_count} פוזיציות בסיכון מעל 2.5% NAV</b> — מינרביני: 'הקטן גדלים. כלל ה-1-2.5% הוא קו ההגנה הראשון שלך.'")
+
+    if total_r_net > 5:
+        insights.append(f"💡 <b>+{total_r_net:.1f}R מצטבר</b> — מינרביני: 'תיק מצליח. שמור על הדיסציפלינה ואל תגדיל סיכון מתוך ביטחון יתר.'")
+
+    return insights

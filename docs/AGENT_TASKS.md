@@ -332,6 +332,48 @@ Rollback:
 - Revert TZ env from docker-compose + revert main.py + revert risk_monitor.py
 - All safe — no Supabase changes
 
+### TASK-20260510-003 — Dashboard performance, enrichment, Telegram UX, Minervini Mentor
+
+Status: implemented
+Source requirement: new session 2026-05-10
+Assigned to: agent
+Risk: Low
+Affected services: dashboard, telegram-bot
+
+Goal:
+- Fix remaining dashboard performance bottlenecks (cache warm period, market regime caching)
+- Add Trend Template (8 criteria) + Add-on quality to Command Center per-position expanders
+- Add new "Minervini Mentor" tab (streak, strengths/weaknesses, coaching insights)
+- Add planned-vs-actual metrics to Visual Journal closed campaigns
+- Create telegram_formatters.py (RTL formatting helpers)
+- Redesign Telegram menus to hierarchical structure (4 main categories → sub-menus)
+- Add /mentor SYMBOL command for full Trend Template check in Telegram
+- Add generate_minervini_coaching() to engine_core
+- Add Minervini coaching insight at bottom of /portfolio report
+
+Progress log:
+- 2026-05-10: All changes implemented. pytest 24/24 ✅. All files syntax-validated.
+
+Validation:
+- [x] pytest -q: 24/24 pass
+- [x] dashboard.py syntax OK
+- [x] telegram_bot.py syntax OK
+- [x] telegram_formatters.py syntax OK
+- [x] engine_core.py syntax OK
+- [ ] Deploy on Orange Pi
+- [ ] Verify dashboard Minervini Mentor tab renders correctly
+- [ ] Verify Telegram hierarchical menus work
+- [ ] Verify /mentor AAPL returns correct output
+
+Files touched:
+- dashboard.py (performance + enrichment + Minervini Mentor tab)
+- engine_core.py (generate_minervini_coaching() — additive only)
+- telegram_bot.py (menus + /mentor + formatters import)
+- telegram_formatters.py (NEW file)
+
+Rollback:
+- git revert on all 4 files — safe (no Supabase schema changes)
+
 ## Completed / validated tasks
 
 Move validated tasks here when done.

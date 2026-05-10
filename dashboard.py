@@ -31,6 +31,13 @@ SETTINGS_FILE = "sentinel_config.json"
 
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def get_cached_market_regime():
+    """מחשב משטר שוק ומאחסן ב-Streamlit cache 10 דקות — ללא קריאת רשת בכל re-run."""
+    s = ec.get_cached_history("SPY", "1y", "1d")
+    q = ec.get_cached_history("QQQ", "1y", "1d")
+    return ec.compute_market_regime(s, q)
+
 def load_settings():
     try:
         if os.path.exists(SETTINGS_FILE):
@@ -75,9 +82,9 @@ CMAP_HEATMAP = 'Bluered_r' if cb_mode else 'RdYlGn'
 st.sidebar.markdown("---")
 
 st.sidebar.subheader("🌡️ Market Regime")
+regime = get_cached_market_regime()
+# spy_hist נשלף מ-cache של engine_core (כבר חם) לשימוש הלאה
 spy_hist = ec.get_cached_history("SPY", "1y", "1d")
-qqq_hist = ec.get_cached_history("QQQ", "1y", "1d")
-regime = ec.compute_market_regime(spy_hist, qqq_hist)
 if regime['ok']:
     rd = regime['data']
     st.sidebar.markdown(f"**{rd['color']} {rd['status']}**")
@@ -124,14 +131,14 @@ if st.sidebar.button("🔄 Force Refresh Sync"): st.cache_data.clear(); st.rerun
 
 st.title("🎯 Sentinel Pro Command Center (Institutional Edition)")
 
-@st.cache_data(ttl=180, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def compute_live_portfolio_data(open_trades_dict, _acc_size, _target_risk_usd, _spy_hist):
     live_positions = []
     if not open_trades_dict: return pd.DataFrame(live_positions)
 
-    # שלב 1: מחמם את כל ה-cache במקביל — cache miss אחד לסמל, לא N קריאות סדרתיות
+    # שלב 1: מחמם במקביל — סמבולים + SPY/QQQ לכל הפונקציות (MAE, TT, RS)
     all_symbols = list({row['symbol'] for row in open_trades_dict})
-    prefetch_symbols_parallel(all_symbols)
+    prefetch_symbols_parallel(all_symbols + ["SPY", "QQQ"])
 
     # שלב 2: הלולאה הסדרתית — כל קריאה לרשת היא cache hit מיידי
     for row in open_trades_dict:
@@ -183,6 +190,7 @@ def compute_live_portfolio_data(open_trades_dict, _acc_size, _target_risk_usd, _
             'Sector': sec_b.get('sector') or "Other", 'Entry': entry, 'Current': curr,
             'OriginalRisk': original_campaign_risk, 'GivebackRisk': giveback_risk_usd, 'LockedProfit': locked_profit_usd,
             'CapitalRisk': current_open_loss_risk,
+            'CampaignId': row.get('campaign_id'),
             # מינרביני — סיכון
             'InitRisk_USD': init_risk['initial_risk_usd'],
             'InitRisk_Pct': init_risk['initial_risk_pct'],
@@ -214,13 +222,14 @@ def fetch_benchmark_data(ticker, start_date, end_date):
         return pd.DataFrame()
 
 def _warm_symbol_cache(sym):
-    """מושך מחיר חי, היסטוריה, ומידע סקטור לסמל אחד — לשימוש מקבילי."""
+    """מושך מחיר חי, היסטוריה שנתית, ומידע סקטור לסמל — לשימוש מקבילי.
+    "1y" נדרש גם ל-MAE/MFE וגם ל-Trend Template (compute_trend_template_full)."""
     try:
         ec.get_live_price(sym)
-        ec.get_cached_history(sym, "6mo", "1d")
+        ec.get_cached_history(sym, "1y", "1d")
         ec.get_sector_bundle(sym)
     except Exception:
-        pass  # cache miss יטופל בנפרד בלולאה הראשית
+        pass
 
 def prefetch_symbols_parallel(symbols, max_workers=8):
     """מחמם את כל ה-cache של engine_core לכל הסמלים במקביל.
@@ -238,6 +247,15 @@ else:
     df_sorted = df.sort_values('trade_date')
     pos_res = ec.get_open_positions_campaign(df_sorted)
     actual_open_trades = pos_res["data"] if pos_res["ok"] else pd.DataFrame()
+
+    # בניית lookup של קמפיין → רשימת BUY rows לחישוב Add-on quality
+    campaign_buy_records = {}
+    if not actual_open_trades.empty and 'campaign_id' in actual_open_trades.columns:
+        for _, op in actual_open_trades.iterrows():
+            cid = op.get('campaign_id')
+            if cid and 'campaign_id' in df_sorted.columns:
+                buys = df_sorted[(df_sorted['campaign_id'] == cid) & (df_sorted['side'].str.upper() == 'BUY')]
+                campaign_buy_records[cid] = buys[['trade_date', 'price', 'quantity']].to_dict('records')
     
     closed_campaigns = []
     if 'campaign_id' in df_sorted.columns:
@@ -394,7 +412,7 @@ else:
     m4.metric("Total R Realized (DB)", f"{total_r_net:.1f}R")
     m5.metric("Total Net PnL (DB)", f"${total_pnl_net:,.2f}")
 
-    tabs = st.tabs(["🚀 Command Center (Live)", "📊 Performance Matrix", "🎯 Strategy Forensics", "📅 Visual Journal", "🛠️ DB Manager"])
+    tabs = st.tabs(["🚀 Command Center (Live)", "📊 Performance Matrix", "🎯 Strategy Forensics", "📅 Visual Journal", "🧠 Minervini Mentor", "🛠️ DB Manager"])
 
     with tabs[0]:
         st.subheader("Live Portfolio Allocation & Risk Heatmap")
@@ -424,7 +442,7 @@ else:
             for _, pos in live_df.iterrows():
                 is_algo = str(pos['Setup']).upper() == 'ALGO'
                 with st.expander(f"{pos['EfficiencyColor']} {pos['Symbol']} | {pos['Status']} | {pos['Total_R']:.2f}R | {pos['DaysHeld']}d"):
-                    pa1, pa2, pa3 = st.columns(3)
+                    pa1, pa2, pa3, pa4 = st.columns(4)
 
                     # עמודה 1: סיכון
                     with pa1:
@@ -458,6 +476,34 @@ else:
                                 st.warning(f"⚠️ בשיא הגעת ל-{pos['MFE_R']:.1f}R — נוצל רק {pos['Total_R']/pos['MFE_R']*100:.0f}% מהפוטנציאל")
                         else:
                             st.caption("MAE/MFE: אין נתון (כניסה > 12 חודשים)")
+
+                    # עמודה 4: Trend Template + Add-on Quality
+                    with pa4:
+                        st.markdown("**📋 Trend Template (Minervini)**")
+                        tt = ec.compute_trend_template_full(pos['Symbol'])
+                        if tt['ok']:
+                            td = tt['data']
+                            cmap_tt = {True: "✅", False: "❌", None: "➖"}
+                            score_color = "🟢" if td['passed'] >= 7 else ("🟡" if td['passed'] >= 5 else "🔴")
+                            st.metric("ציון", f"{td['passed']}/8 {score_color}")
+                            tt_labels = ["מחיר>MA150/200", "MA150>MA200", "MA200↑", "MA50>MA150/200", "מחיר>MA50", "30%↑שפל", "25%↓שיא", "RS>SPY"]
+                            for lbl, val in zip(tt_labels, td['criteria'].values()):
+                                st.caption(f"{cmap_tt[val]} {lbl}")
+                        else:
+                            st.caption("Trend Template: אין נתונים")
+
+                        st.markdown("**🔺 Add-on Quality**")
+                        cid = pos.get('CampaignId')
+                        buy_recs = campaign_buy_records.get(cid, [])
+                        addon_res = ec.analyze_addon_quality(buy_recs)
+                        if addon_res['has_addons']:
+                            worst = addon_res['worst_addon_vs_base']
+                            if addon_res['all_addons_higher']:
+                                st.caption(f"✅ פירמידה תקינה ({addon_res['addon_count']} חיזוקים, גרוע: {worst:+.1f}%)")
+                            else:
+                                st.caption(f"⚠️ Average Down! ({addon_res['addon_count']} חיזוקים, גרוע: {worst:+.1f}%)")
+                        else:
+                            st.caption("➖ ללא חיזוקים (כניסה אחת)")
         else:
             st.info("No open positions to display.")
 
@@ -590,10 +636,26 @@ else:
                                         </div>
                                         """, unsafe_allow_html=True)
 
+                                # מטריקות מינרביני לקמפיין סגור
+                                entry_d = row.get('entry_date')
+                                close_d = row.get('close_date')
+                                if entry_d is not None and close_d is not None:
+                                    days_h = max((pd.to_datetime(close_d) - pd.to_datetime(entry_d)).days, 1)
+                                    r_day = r_realized / days_h if days_h > 0 else 0
+                                    act_risk_pct = (act_risk / current_acc_size * 100) if act_risk > 0 and current_acc_size > 0 else None
+                                    mc1, mc2, mc3, mc4 = st.columns(4)
+                                    mc1.metric("ימי אחזקה", f"{days_h}d")
+                                    mc2.metric("R ליום", f"{r_day:.3f}R", help="יעילות הון לפי מינרביני")
+                                    if act_risk > 0:
+                                        mc3.metric("סיכון בפועל", f"${act_risk:.0f}", delta=f"{act_risk_pct:.2f}%" if act_risk_pct else None)
+                                    else:
+                                        mc3.metric("סיכון בפועל", "N/A")
+                                    mc4.metric("יעד סיכון", f"${target_risk_usd:.0f} ({risk_pct_input:.1f}%)")
+
                                 n_val = row.get('management_notes')
                                 if n_val and str(n_val) not in ["None", "Skipped", "nan"]:
                                     st.info(f"📝 **תובנות ניהול:** {n_val}")
-                                
+
                                 st.markdown("**📖 היסטוריית פעולות (Timeline):**")
                                 for ev in row['events']:
                                     icon = "🛒" if ev['side'] == 'BUY' else ("💰" if ev['pnl'] > 0 else "🩸")
@@ -610,6 +672,108 @@ else:
         else: st.info("No campaigns closed yet.")
 
     with tabs[4]:
+        st.subheader("🧠 Minervini Mentor — ניתוח מעמיק ואסטרטגיה")
+        st.caption("המנטור מנתח את הביצועים שלך ומספק תובנות לפי מתודולוגיית מארק מינרביני.")
+
+        # ─── ציון מנטור כולל (Trend Template ממוצע) ────────────────────
+        st.markdown("---")
+        st.subheader("📊 ציון Trend Template — פוזיציות פתוחות")
+        if not live_df.empty:
+            tt_scores = []
+            for sym in live_df['Symbol'].unique():
+                tt = ec.compute_trend_template_full(sym)
+                if tt['ok']:
+                    tt_scores.append((sym, tt['data']['passed'], tt['data']['score_10']))
+            if tt_scores:
+                avg_tt = sum(s[1] for s in tt_scores) / len(tt_scores)
+                mentor_color = "🟢" if avg_tt >= 6.5 else ("🟡" if avg_tt >= 5 else "🔴")
+                tt_cols = st.columns(len(tt_scores) + 1)
+                with tt_cols[0]:
+                    st.metric(f"ממוצע {mentor_color}", f"{avg_tt:.1f}/8")
+                for i, (sym, passed, score) in enumerate(tt_scores):
+                    c_icon = "🟢" if passed >= 7 else ("🟡" if passed >= 5 else "🔴")
+                    tt_cols[i+1].metric(f"{sym} {c_icon}", f"{passed}/8")
+            else:
+                st.info("אין נתוני Trend Template לפוזיציות הפתוחות.")
+        else:
+            st.info("אין פוזיציות פתוחות.")
+
+        # ─── שרשרת ניצחונות / הפסדים ───────────────────────────────────
+        st.markdown("---")
+        st.subheader("🔥 שרשרת (Streak) — קמפיינים אחרונים")
+        if not camp_df.empty:
+            last_results = camp_df.sort_values('close_date')['pnl_usd'].apply(lambda x: 'W' if x > 0 else 'L').tolist()
+            if last_results:
+                streak_type = last_results[-1]
+                streak_count = 0
+                for r in reversed(last_results):
+                    if r == streak_type:
+                        streak_count += 1
+                    else:
+                        break
+                streak_label = f"{'🏆 שרשרת ניצחונות' if streak_type == 'W' else '💔 שרשרת הפסדים'} — {streak_count} רצוף"
+                streak_color = C_WIN if streak_type == 'W' else C_LOSS
+                st.markdown(f"<div style='font-size:1.4em; font-weight:bold; color:{streak_color}; direction:rtl;'>{streak_label}</div>", unsafe_allow_html=True)
+                st.caption(f"סה״כ קמפיינים: {len(camp_df)} | שיעור הצלחה: {win_rate*100:.1f}%")
+                # הצגת 10 אחרונים
+                last10 = last_results[-10:]
+                st.markdown(" ".join(["🟢" if r == 'W' else "🔴" for r in last10]) + " ← אחרון")
+        else:
+            st.info("אין קמפיינים סגורים עדיין.")
+
+        # ─── חוזקות וחולשות ─────────────────────────────────────────────
+        st.markdown("---")
+        st.subheader("💪 חוזקות ⚡ חולשות")
+        c_strength, c_weakness = st.columns(2)
+        with c_strength:
+            st.markdown("**💪 חוזקות**")
+            if win_rate >= 0.50:
+                st.success(f"✅ שיעור הצלחה טוב: {win_rate*100:.1f}%")
+            if expectancy_r > 0:
+                st.success(f"✅ Expectancy חיובית: {expectancy_r:.2f}R לטרייד")
+            if adj_rr >= 2.0:
+                st.success(f"✅ Payoff Ratio מצוין: {adj_rr:.2f}:1")
+            if not live_df.empty:
+                best_pos = live_df.loc[live_df['Total_R'].idxmax()]
+                if best_pos['Total_R'] > 1.0:
+                    st.success(f"✅ פוזיציית ריצה: {best_pos['Symbol']} ב-{best_pos['Total_R']:.2f}R")
+            if not camp_df.empty:
+                if total_r_net > 0:
+                    st.success(f"✅ סה״כ R מצטבר חיובי: +{total_r_net:.1f}R")
+        with c_weakness:
+            st.markdown("**⚡ חולשות — לשים לב**")
+            if win_rate < 0.40:
+                st.error(f"🔴 שיעור הצלחה נמוך: {win_rate*100:.1f}% — מינרביני: 'למד מכל כישלון'")
+            if expectancy_r < 0:
+                st.error(f"🔴 Expectancy שלילית: {expectancy_r:.2f}R — 'אל תוסיף עד שזה חיובי'")
+            if not live_df.empty:
+                oversized = live_df[live_df['SizingGrade'] == 'oversized']
+                if not oversized.empty:
+                    st.warning(f"⚠️ {len(oversized)} פוזיציות בסיכון מעל 2.5%: {', '.join(oversized['Symbol'].tolist())}")
+                high_mae = live_df[live_df['MAE_R'].notna() & (live_df['MAE_R'] < -1.5)]
+                if not high_mae.empty:
+                    st.warning(f"⚠️ MAE גבוה: {', '.join(high_mae['Symbol'].tolist())} — 'בדוק תקפות הסטופ'")
+            if regime.get('ok') and regime.get('data', {}).get('status', '').lower() in ['downtrend', 'ירידה']:
+                st.error("🔴 שוק בירידה — מינרביני: 'עמוד על הגנה, 0-25% חשיפה'")
+
+        # ─── תובנות המנטור ───────────────────────────────────────────────
+        st.markdown("---")
+        st.subheader("🎓 מה מינרביני היה אומר עכשיו?")
+        regime_status = regime.get('data', {}).get('status', '') if regime.get('ok') else ''
+        oversized_count = len(live_df[live_df['SizingGrade'] == 'oversized']) if not live_df.empty else 0
+        streak_losses = streak_count if (not camp_df.empty and last_results and streak_type == 'L') else 0
+        insights = ec.generate_minervini_coaching(
+            win_rate=win_rate, expectancy_r=expectancy_r, adj_rr=adj_rr,
+            oversized_count=oversized_count, market_regime_status=regime_status,
+            streak_losses=streak_losses, total_r_net=total_r_net
+        )
+        if insights:
+            for insight in insights:
+                st.markdown(f"<div style='background:#1a1e24; border-right:4px solid #f0a500; padding:12px; border-radius:8px; margin-bottom:8px; direction:rtl; text-align:right;'>{insight}</div>", unsafe_allow_html=True)
+        else:
+            st.success("✅ מינרביני: 'מצוין! המערכת במצב תקין. המשך לפעול לפי הכללים.'")
+
+    with tabs[5]:
         st.subheader("🛠️ DB Manager (Data Correction)")
         st.caption("כאן ניתן לתקן נתונים כולל סטופ התחלתי והערות ניהול.")
         if not df_sorted.empty:
