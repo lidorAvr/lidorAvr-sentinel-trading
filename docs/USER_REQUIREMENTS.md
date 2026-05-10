@@ -408,7 +408,7 @@ Acceptance criteria:
 - [x] `compute_market_regime` returns `signals` dict with raw values (spy_close, spy_ma20, spy_ma50, qqq_close, qqq_ma20, boolean signals, score/max_score).
 - [x] `fmt_regime_report` renders each criterion with ✅/❌ and actual dollar values.
 - [x] Score shown as N/4 (or N/3 if QQQ unavailable).
-- [ ] Verified on server with live data.
+- [ ] Verified on server with live data after deployment.
 
 Implementation notes:
 - `engine_core.py compute_market_regime` now returns `signals` key inside `data` dict — backward compatible.
@@ -429,39 +429,46 @@ Priority: High
 
 User request:
 - Bot is passive (only responds to commands). Should proactively recommend risk adjustments.
-- Risk sizing should be based on an algorithm using last 50 closed campaigns.
-- Last 10 campaigns get 2x weight to prioritize recent behavior over history.
-- Strong period (weighted win rate ≥ 60%, no 3-loss streak): step up risk by one level.
-- Weak period (weighted win rate < 40% OR 3+ consecutive losses): step down fast (two levels).
+- Risk sizing based on last 50 closed campaigns; last 10 get 2x weight.
+- Strong period (weighted WR ≥ 60%, no 3-loss streak): step up risk by one level.
+- Weak period (weighted WR < 40% OR 3+ consecutive losses): step down fast (two levels).
 - Neutral: hold current level.
 - Output must show both % of NAV and dollar amount per trade.
-- Track whether user follows recommendations (adherence statistics).
-- Algorithm determines suggested risk %; manual override still allowed.
+- Confirmation via Telegram buttons: ✅ updates config; ❌ requires mandatory written reason.
+- All decisions logged to risk_journal.json.
+- Track adherence statistics (/stats command).
+- Risk ladder: min 0.35%, max 2.50%.
 
 Acceptance criteria:
-- [x] `adaptive_risk_engine.py` created with `compute_closed_campaigns`, `compute_adaptive_risk`, `compute_adherence_stats`, `mark_adherence`.
-- [x] Risk ladder: [0.25, 0.35, 0.50, 0.75, 1.00, 1.25, 1.50]%.
+- [x] `adaptive_risk_engine.py` created: `compute_closed_campaigns`, `compute_adaptive_risk`, `compute_adherence_stats`, `mark_adherence`, `log_risk_journal`, `update_risk_pct`.
+- [x] RISK_LADDER: [0.35, 0.50, 0.75, 1.00, 1.25, 1.50, 2.00, 2.50]%.
 - [x] Weighted win rate: last 10 campaigns weight=2, campaigns 11–50 weight=1.
 - [x] Streak detection: consecutive wins/losses from most recent campaign.
 - [x] Recommendations logged to `risk_recommendations.json` (last 200 entries).
 - [x] `fmt_adaptive_risk_block` added to `telegram_formatters.py`.
-- [x] Adaptive risk block appended to `🌡️ משטר שוק` Telegram report.
-- [x] Adaptive risk block appended to `/portfolio` (📊 חדר מצב) Telegram report.
-- [ ] `mark_adherence` called when user manually changes `risk_pct_input` (not yet wired).
-- [ ] Adherence stats display command in Telegram (future: `/stats`).
-- [ ] Verified on server with real closed campaign data.
+- [x] Adaptive risk block in `🌡️ משטר שוק` and `/portfolio` (📊 חדר מצב) Telegram reports.
+- [x] Proactive alert in `risk_monitor.py` with InlineKeyboard YES/NO, 24h throttle per direction.
+- [x] YES callback: updates `sentinel_config.json` via `update_risk_pct`, marks adherence, logs to risk_journal.
+- [x] NO callback: asks for mandatory written reason, logs rejection + reason to risk_journal.
+- [x] `/stats` command: shows total/evaluated/followed/not_followed/adherence_pct + last 10 icons.
+- [ ] `mark_adherence` wired to sentinel_config.json watch (detect manual changes outside Telegram).
+- [ ] Dashboard integration: show algorithm-suggested risk % vs actual, alert on manual deviation.
+- [ ] Verified on server with real closed campaign data after deployment.
 
 Implementation notes:
-- `adaptive_risk_engine.py` is a standalone module — no existing code was modified except adding the import to `telegram_bot.py` and the wiring blocks.
-- Error in adaptive risk block is silently ignored (try/except) so it never breaks the main report.
-- The `followed` field in the log JSON is `null` until `mark_adherence` is called.
-- Dashboard integration (risk % shown as algorithm-suggested + override alert) is a future task.
+- `adaptive_risk_engine.py` is standalone — no existing code was modified except import + wiring blocks.
+- Adaptive risk block silently skips (try/except) on error — never breaks the main Telegram report.
+- `followed` field in log is `null` until user responds to Telegram button (or `mark_adherence` called).
+- `risk_journal.json` (500 entries) is the canonical decision log; `risk_recommendations.json` (200 entries) is the adherence tracker.
+- Both JSON files are runtime-only — not committed to git.
 
 Related files:
 - `adaptive_risk_engine.py` (new)
 - `telegram_formatters.py`
 - `telegram_bot.py`
+- `risk_monitor.py`
 - `risk_recommendations.json` (runtime, auto-created)
+- `risk_journal.json` (runtime, auto-created)
 
 ---
 

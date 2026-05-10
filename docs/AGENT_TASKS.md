@@ -63,6 +63,64 @@ Rollback:
 
 ## Active tasks
 
+### TASK-20260510-004 — Adaptive risk engine + regime transparency + proactive alerts
+
+Status: implemented
+Source requirement: REQ-20260510-005 / REQ-20260510-006
+Assigned to: agent
+Risk: Medium
+Affected services: telegram-bot, risk-monitor
+
+Goal:
+- Fix market regime report to show raw SPY/QQQ signals (not just verdict).
+- Build adaptive risk engine based on last 50 closed campaigns (2x weight on last 10).
+- Send proactive risk-change alerts via Telegram with ✅/❌ inline buttons.
+- Confirmation flow: YES updates sentinel_config.json; NO prompts for mandatory reason.
+- Log all decisions to risk_journal.json.
+- Add /stats command for adherence statistics.
+- Update RISK_LADDER to [0.35 … 2.50]%.
+
+Plan:
+1. engine_core.py: extend compute_market_regime to return raw signals dict.
+2. telegram_formatters.py: update fmt_regime_report to show ✅/❌ per criterion; add fmt_adaptive_risk_block.
+3. adaptive_risk_engine.py (new): RISK_LADDER, compute_closed_campaigns, compute_adaptive_risk, update_risk_pct, log_risk_journal, mark_adherence, compute_adherence_stats.
+4. risk_monitor.py: send_telegram_with_keyboard helper + proactive alert at end of main() with 24h throttle.
+5. telegram_bot.py: risk_confirm callback, risk_reject_reason state, /stats command.
+
+Progress log:
+- 2026-05-10: All changes implemented. 24/24 tests pass. Committed (5f85069). Not yet deployed.
+
+Validation:
+- [x] pytest -q: 24/24 pass
+- [x] AST syntax check: all 3 modified files OK
+- [x] Committed to main (5f85069)
+- [ ] git push to origin/main
+- [ ] Deploy on Orange Pi: docker compose restart telegram-bot risk-monitor
+- [ ] Verify regime report shows ✅/❌ signals in Telegram
+- [ ] Verify proactive risk alert arrives with buttons (requires ≥3 closed campaigns)
+- [ ] Test YES button → sentinel_config.json updated + risk_journal.json entry written
+- [ ] Test NO button → reason prompt appears → reason logged
+- [ ] Test /stats command
+
+Remaining follow-up (not started):
+1. mark_adherence wired to sentinel_config.json watch (detect manual risk_pct changes outside Telegram).
+2. Dashboard integration: show algorithm-recommended risk % vs actual, alert on manual deviation.
+3. /stats to also show last N rejected reasons for pattern analysis.
+
+Files touched:
+- adaptive_risk_engine.py (NEW)
+- engine_core.py
+- telegram_formatters.py
+- telegram_bot.py
+- risk_monitor.py
+- docs/USER_REQUIREMENTS.md
+
+Rollback:
+- git revert 5f85069 + docker compose restart telegram-bot risk-monitor
+- risk_journal.json and risk_recommendations.json are local runtime files — not committed, safe to delete if needed
+
+---
+
 ### TASK-20260509-001 — Verify secure Telegram deployment on server
 
 Status: validated

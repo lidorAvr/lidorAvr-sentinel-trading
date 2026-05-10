@@ -208,6 +208,84 @@ telegram_formatters.py must not import telebot, supabase, or engine_core to rema
 
 ---
 
+## DEC-20260510-006 — Adaptive risk state stored in local JSON, not Supabase
+
+Date: 2026-05-10
+Status: implemented
+
+### Decision
+
+Store risk recommendations log (`risk_recommendations.json`) and risk decision journal (`risk_journal.json`) as local JSON files. Do not write to Supabase.
+
+### Rationale
+
+These are operational/meta files about the system's own behavior, not trading data. Writing them to Supabase would require schema changes (new tables), Supabase connectivity for every recommendation cycle, and would mix financial truth data with system telemetry.
+
+Two separate files serve different purposes:
+- `risk_recommendations.json` (200 entries): lightweight adherence tracker, updated live by callbacks.
+- `risk_journal.json` (500 entries): full decision audit log with reasons, read for analysis.
+
+### Alternatives considered
+
+- **Single file**: would mix recommendation metadata with decision notes, making each file harder to reason about.
+- **Supabase table**: high risk, requires migration, couples the risk monitor to DB availability.
+- **sentinel_config.json extension**: mixes account settings with operational history.
+
+### Constraint
+
+Both files are runtime-only. They must be added to `.gitignore` to avoid committing ephemeral state to the repository. If the Docker volume is ephemeral, history is lost on rebuild — acceptable (data is operational, not financial truth).
+
+---
+
+## DEC-20260510-007 — Proactive risk alerts throttled to once per 24h per direction
+
+Date: 2026-05-10
+Status: implemented
+
+### Decision
+
+Send a proactive risk change alert at most once per 24 hours, and only when the direction (`up` / `down_fast`) changes from the last alert sent. Direction `hold` never triggers an alert.
+
+### Rationale
+
+The risk monitor runs every 300 seconds. Without throttling, the same "step up risk" recommendation would fire every 5 minutes during a winning streak. The 24h window matches the practical update cadence (risk is adjusted at most once per trading day). Direction-change gating ensures a new alert fires immediately if the situation deteriorates from "up" to "down_fast", regardless of the 24h window.
+
+### Alternatives considered
+
+- **Once per trading session**: harder to define for weekend/holiday edges.
+- **Manual trigger only**: defeats the "proactive" goal.
+- **Always fire on direction change, no time throttle**: could flood if data fluctuates around a threshold boundary.
+
+### Constraint
+
+State is stored in `risk_monitor_state.json["risk_alert"]`. If this file is deleted, the next cycle will fire regardless of recency — acceptable as a safe default.
+
+---
+
+## DEC-20260510-008 — Risk confirmation flow: inline keyboard callbacks, not slash commands
+
+Date: 2026-05-10
+Status: implemented
+
+### Decision
+
+Use Telegram InlineKeyboardMarkup with `callback_data` for the YES/NO risk confirmation flow. Rejection reason is collected via a follow-up free-text message using `user_state`.
+
+### Rationale
+
+Inline buttons are the standard Telegram UX for binary decisions. They stay attached to the original alert message, making the flow self-contained. The rejection reason must be free text (cannot be a button) — collecting it via `user_state["action"] = "risk_reject_reason"` reuses the established multi-step flow pattern already in `telegram_bot.py`.
+
+### Alternatives considered
+
+- **Slash commands (`/confirm`, `/reject`)**: not discoverable, user must type them.
+- **Reply keyboard buttons**: would replace the persistent menu, breaking navigation state.
+
+### Constraint
+
+The `risk_confirm` callback handler must be added before the generic `v|` handler in `handle_queries` to avoid routing conflicts. Callback data format: `risk_confirm|{YES|NO}|{rec_pct}|{curr_pct}` — all fields needed because callback context is stateless in telebot.
+
+---
+
 ## DEC-20260509-004 — Planned R:R deferred: requires Supabase schema change
 
 Date: 2026-05-09

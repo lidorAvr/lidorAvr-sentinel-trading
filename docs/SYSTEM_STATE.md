@@ -1,5 +1,44 @@
 # Current System State
 
+## Changes — 2026-05-10 (session 3: adaptive risk engine + proactive alerts)
+
+### adaptive_risk_engine.py (NEW FILE)
+- RISK_LADDER: `[0.35, 0.50, 0.75, 1.00, 1.25, 1.50, 2.00, 2.50]` (min 0.35%, max 2.50%)
+- `compute_closed_campaigns(df)`: extracts closed campaigns (net_qty ≈ 0) from trades DataFrame, sorted newest→oldest.
+- `compute_adaptive_risk(closed_camps, current_risk_pct, nav)`: weighted win rate algorithm, streak detection, step-up/step-down logic, returns full recommendation dict.
+- `update_risk_pct(new_pct)`: reads/writes `sentinel_config.json` atomically.
+- `log_risk_journal(entry)`: appends decisions to `risk_journal.json` (500 entries).
+- `mark_adherence(rec_pct, actual_pct, followed, reason="")`: updates latest entry in `risk_recommendations.json`.
+- `compute_adherence_stats()`: returns total/evaluated/followed/not_followed/adherence_pct + last 10 icons.
+- `_log_recommendation(rec)`: auto-called by `compute_adaptive_risk`, logs to `risk_recommendations.json` (200 entries).
+
+### engine_core.py
+- `compute_market_regime`: now returns raw `signals` dict inside `data` key: spy_close, spy_ma20, spy_ma50, qqq_close, qqq_ma20, four boolean flags, score, max_score. Backward compatible.
+
+### telegram_formatters.py
+- `fmt_regime_report`: now renders raw SPY/QQQ signals with ✅/❌ and actual $ values under "📐 בסיס ציון N/4".
+- `fmt_adaptive_risk_block` (new): renders adaptive risk recommendation block (heat score, streaks, win rates, directional recommendation with % and $).
+
+### risk_monitor.py
+- `import adaptive_risk_engine as are` added.
+- `send_telegram_with_keyboard(text, markup)` helper added.
+- Proactive adaptive risk alert at end of `main()`: computes recommendation, skips if direction=="hold", throttles to once per 24h per direction, sends InlineKeyboard with `risk_confirm|YES|{rec_pct}|{curr_pct}` and `risk_confirm|NO|{rec_pct}|{curr_pct}` callbacks. State saved in `risk_monitor_state.json["risk_alert"]`.
+
+### telegram_bot.py
+- `import adaptive_risk_engine as are` added.
+- `risk_confirm|YES` callback: calls `are.update_risk_pct`, `are.mark_adherence(followed=True)`, `are.log_risk_journal`, edits original message to show confirmation.
+- `risk_confirm|NO` callback: sets `user_state[chat_id]["action"] = "risk_reject_reason"`, edits message to prompt for reason.
+- `risk_reject_reason` state handler: collects reason, calls `are.mark_adherence(followed=False, reason=...)`, `are.log_risk_journal`, confirms to user.
+- `/stats` command: calls `are.compute_adherence_stats()`, displays formatted adherence report.
+- `/help` text updated to include `/stats`.
+- Adaptive risk block appended to both `🌡️ משטר שוק` and `📊 חדר מצב` handlers.
+
+### Runtime files (auto-created, not committed to git)
+- `risk_recommendations.json` — recommendation log, last 200 entries, `followed` field updated by callbacks.
+- `risk_journal.json` — full decision journal, last 500 entries, written on YES/NO response.
+
+---
+
 ## Changes — 2026-05-10 (session 2: dashboard + telegram upgrade)
 
 ### dashboard.py
@@ -58,14 +97,15 @@ Docker Compose services (unchanged):
 
 **Session 1 changes (2026-05-09/10): deployed to Orange Pi.**
 **Session 2 changes (2026-05-10): pushed to main (commit ad2d5c1) — NOT YET DEPLOYED.**
+**Session 3 changes (2026-05-10): committed locally (5f85069) — NOT YET PUSHED OR DEPLOYED.**
 
 | Service | Code version | Deployed | Status |
 |---------|-------------|---------|--------|
 | sentinel-bot | v16.0 + ZoneInfo timezone fix | ✅ deployed | pending morning sync validation |
 | dashboard | parallel pre-fetch + Minervini metrics + Mentor tab + performance fixes | ⚠️ NOT deployed | requires: docker compose up -d --build dashboard |
-| engine_core | +5 Minervini functions + generate_minervini_coaching() | ⚠️ NOT deployed | bundled with dashboard rebuild |
-| telegram-bot | hierarchical menus + /mentor + formatters | ⚠️ NOT deployed | requires: docker compose up -d --build telegram-bot |
-| risk-monitor | market-hours cooldown + TZ fix | ✅ deployed | overnight spam fixed |
+| engine_core | +5 Minervini functions + coaching + regime signals | ⚠️ NOT deployed | bundled with dashboard rebuild |
+| telegram-bot | hierarchical menus + /mentor + formatters + adaptive risk + /stats | ⚠️ NOT deployed | requires: docker compose restart telegram-bot |
+| risk-monitor | market-hours cooldown + TZ fix + proactive risk alerts | ⚠️ NOT deployed | requires: docker compose restart risk-monitor |
 
 ## What changed in this session (2026-05-09)
 
@@ -136,34 +176,42 @@ Open validation:
 
 ## Pending follow-up items (not started)
 
-1. Deploy session 2 changes: `docker compose up -d --build dashboard telegram-bot` on Orange Pi.
-2. fmt_position_card() in /portfolio loop (Phase 4 Telegram refactor — medium risk).
-3. analyze_addon_quality() in Visual Journal (closed campaigns).
-4. Add target_price field to Supabase schema for true planned R:R (HIGH risk — separate task).
-5. "Weekly mentor review" automated Telegram message (future feature).
-6. Improve market regime with breadth indicators (% stocks above MA50, A/D line).
-7. Per-closed-campaign Trend Template retrospective.
+1. **Deploy sessions 2+3**: `git push` then on Orange Pi: `git pull && docker compose up -d --build dashboard && docker compose restart telegram-bot risk-monitor`
+2. Wire `mark_adherence` to sentinel_config.json change detection (detect manual risk_pct edits outside Telegram).
+3. Dashboard integration: show algorithm-suggested risk % vs actual + deviation alert.
+4. fmt_position_card() in /portfolio loop (Phase 4 Telegram refactor — medium risk).
+5. analyze_addon_quality() in Visual Journal (closed campaigns).
+6. Add target_price field to Supabase schema for true planned R:R (HIGH risk — separate task).
+7. "Weekly mentor review" automated Telegram message (future feature).
+8. Improve market regime with breadth indicators (% stocks above MA50, A/D line).
+9. Per-closed-campaign Trend Template retrospective.
 
-## Deployment instructions (when ready)
+## Deployment instructions (sessions 2 + 3 combined)
 
-Run on Orange Pi:
+Run on Windows first:
+```bash
+git push origin main
+```
 
+Then on Orange Pi:
 ```bash
 cd ~/sentinel_trading
 git pull
-docker compose up -d --build sentinel-bot dashboard
-docker compose logs -f sentinel-bot
-docker compose logs -f dashboard
+docker compose up -d --build dashboard
+docker compose restart telegram-bot risk-monitor
+docker compose logs telegram-bot --tail=20
+docker compose logs risk-monitor --tail=20
 ```
 
-Only rebuild affected services. `telegram-bot` and `risk-monitor` are unchanged.
+`sentinel-bot` does NOT need restart (no changes to main.py).
 
 Smoke tests after deployment:
-- Check /app/ibkr_sync_state.json exists and updates
-- Check /app/ibkr_reports/ directory is created
-- Open dashboard and verify positions load faster
-- Verify planned-vs-actual section appears for open positions
-- Run pytest -q on server to confirm tests pass
+- `🌡️ משטר שוק` in Telegram → should show ✅/❌ per SPY/QQQ criterion + adaptive risk block
+- `📊 חדר מצב` → should show adaptive risk block at bottom
+- `/stats` → should return adherence report (empty is fine initially)
+- Open dashboard → verify Minervini Mentor tab renders, positions load faster
+- Verify /mentor AAPL returns 8-criteria output
+- Run `pytest -q` on server to confirm 24/24 pass
 
 ## Changes — 2026-05-10 (post-deployment fixes)
 
