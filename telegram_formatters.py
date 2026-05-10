@@ -70,12 +70,24 @@ def fmt_summary_footer(total_open_pnl: float, total_disc_pnl: float,
 def fmt_regime_report(regime: dict, exposure_pct: float,
                       exp_algo: float, exp_vcp: float, exp_ep: float,
                       acc_size: float) -> str:
-    """דוח משטר שוק קומפקטי."""
+    """דוח משטר שוק — עם נתוני בסיס שקופים."""
     lines = [f"{RTL}🌡️ *דו\"ח משטר שוק*\n{RTL}{SEP}\n"]
     if regime.get('ok'):
         rd = regime['data']
         lines.append(f"{RTL}*שוק:* {rd['color']} {rd['status']}")
         lines.append(f"{RTL}_המלצה: {rd['text']}_")
+        sig = rd.get('signals', {})
+        if sig:
+            chk = lambda v: "✅" if v else "❌"
+            na = lambda v: "—" if v is None else f"${v:,.2f}"
+            score = sig.get('score', '?')
+            max_score = sig.get('max_score', 4)
+            lines.append(f"\n{RTL}📐 *בסיס ציון {score}/{max_score}:*")
+            lines.append(f"{RTL}  {chk(sig.get('spy_above_ma20'))} SPY `{na(sig.get('spy_close'))}` מעל MA20 `{na(sig.get('spy_ma20'))}`")
+            lines.append(f"{RTL}  {chk(sig.get('spy_above_ma50'))} SPY מעל MA50 `{na(sig.get('spy_ma50'))}`")
+            lines.append(f"{RTL}  {chk(sig.get('spy_ma20_above_ma50'))} MA20 מעל MA50 (מגמה)")
+            if sig.get('qqq_above_ma20') is not None:
+                lines.append(f"{RTL}  {chk(sig.get('qqq_above_ma20'))} QQQ `{na(sig.get('qqq_close'))}` מעל MA20 `{na(sig.get('qqq_ma20'))}`")
     else:
         lines.append(f"{RTL}*שוק:* ⚪ לא ידוע")
     lines.append(f"\n{RTL}📊 *חשיפה קיימת:* `{exposure_pct:.1f}%`")
@@ -86,6 +98,38 @@ def fmt_regime_report(regime: dict, exposure_pct: float,
             lines.append(f"{RTL}  ▸ VCP: `{exp_vcp/acc_size*100:.1f}%`")
         if exp_ep > 0:
             lines.append(f"{RTL}  ▸ EP: `{exp_ep/acc_size*100:.1f}%`")
+    return "\n".join(lines)
+
+
+def fmt_adaptive_risk_block(risk_rec: dict) -> str:
+    """בלוק המלצת סיכון אדפטיבי — מוצג בדוח משטר שוק ובסיכום תיק."""
+    if not risk_rec.get('ok'):
+        msg = risk_rec.get('message', 'אין מספיק נתונים')
+        return f"\n{RTL}{SEP}\n{RTL}🎯 *סיכון אדפטיבי:* ⚪ {msg}"
+    lines = [f"\n{RTL}{SEP}", f"{RTL}🎯 *המלצת סיכון אדפטיבי*"]
+    lines.append(f"{RTL}חום מסחר: {risk_rec['heat_color']} *{risk_rec['heat_label']}* (ציון: `{risk_rec['heat_score']:.0f}%`)")
+    if risk_rec['win_streak'] > 0:
+        lines.append(f"{RTL}  ▸ רצף רווחים: `{risk_rec['win_streak']}` עסקאות")
+    elif risk_rec['loss_streak'] > 0:
+        lines.append(f"{RTL}  ▸ ⚠️ רצף הפסדים: `{risk_rec['loss_streak']}` עסקאות")
+    lines.append(f"{RTL}  ▸ שיעור הצלחה (10 אחרונות): `{risk_rec['recent_10_wr']:.0f}%`")
+    lines.append(f"{RTL}  ▸ שיעור הצלחה (50 אחרונות): `{risk_rec['all_50_wr']:.0f}%`")
+    curr_pct = risk_rec['current_risk_pct']
+    rec_pct = risk_rec['recommended_risk_pct']
+    curr_usd = risk_rec['current_risk_usd']
+    rec_usd = risk_rec['recommended_risk_usd']
+    direction = risk_rec['direction']
+    if direction == 'up':
+        arrow = "⬆️"
+    elif direction == 'down_fast':
+        arrow = "⬇️⬇️"
+    else:
+        arrow = "➡️"
+    lines.append(f"\n{RTL}{arrow} *{risk_rec['step_type']}*")
+    if rec_pct == curr_pct:
+        lines.append(f"{RTL}  שמור על `{rec_pct:.2f}%` — `${rec_usd:,.0f}` לעסקה")
+    else:
+        lines.append(f"{RTL}  `{curr_pct:.2f}%` (`${curr_usd:,.0f}`) ← → `{rec_pct:.2f}%` (`${rec_usd:,.0f}`)")
     return "\n".join(lines)
 
 

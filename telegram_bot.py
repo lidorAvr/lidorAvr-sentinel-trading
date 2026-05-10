@@ -7,6 +7,7 @@ from datetime import datetime
 import xml.etree.ElementTree as ET
 import engine_core as ec
 import telegram_formatters as tf
+import adaptive_risk_engine as are
 
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -270,6 +271,51 @@ def handle_queries(call):
         bot.send_message(chat_id, "❌ הפעולה בוטלה.", reply_markup=get_main_menu())
         if chat_id in user_state: del user_state[chat_id]
         bot.answer_callback_query(call.id)
+    elif data.startswith("risk_confirm|"):
+        bot.answer_callback_query(call.id)
+        parts = data.split("|")
+        action = parts[1]
+        rec_pct = float(parts[2])
+        curr_pct = float(parts[3])
+        account_settings = get_account_settings()
+        nav = float(account_settings.get("nav", account_settings.get("total_deposited", 7500.0)))
+
+        if action == "YES":
+            success = are.update_risk_pct(rec_pct)
+            are.mark_adherence(recommended_pct=rec_pct, actual_pct=rec_pct, followed=True)
+            are.log_risk_journal({
+                "direction": "up" if rec_pct > curr_pct else "down_fast",
+                "current_risk_pct": curr_pct,
+                "recommended_risk_pct": rec_pct,
+                "action": "confirmed",
+                "actual_pct_set": rec_pct,
+                "nav": nav,
+            })
+            status = "✅" if success else "⚠️ שגיאת שמירה"
+            try:
+                bot.edit_message_text(
+                    f"{RTL}{status} *סיכון עודכן ל-{rec_pct:.2f}%*\n"
+                    f"{RTL}(${round(nav * rec_pct / 100):,.0f} לעסקה) — נשמר ביומן הסיכון.",
+                    chat_id, call.message.message_id, parse_mode="Markdown"
+                )
+            except Exception:
+                bot.send_message(chat_id, f"{status} סיכון עודכן ל-{rec_pct:.2f}%", parse_mode="Markdown")
+
+        elif action == "NO":
+            user_state[chat_id] = {
+                "action": "risk_reject_reason",
+                "rec_pct": rec_pct,
+                "curr_pct": curr_pct,
+                "original_msg_id": call.message.message_id,
+            }
+            try:
+                bot.edit_message_text(
+                    f"{RTL}❌ *דוחה שינוי סיכון*\n{RTL}המלצה: `{rec_pct:.2f}%` ← נדחתה\n\n{RTL}📝 חובה: הסבר את הסיבה (יירשם ביומן):",
+                    chat_id, call.message.message_id, parse_mode="Markdown"
+                )
+            except Exception:
+                bot.send_message(chat_id, f"{RTL}📝 *הסבר מדוע דחית:*", parse_mode="Markdown")
+
     elif data.startswith("v|"):
         bot.answer_callback_query(call.id)
         parts = data.split('|')
@@ -284,7 +330,7 @@ def handle_queries(call):
             else:
                 save_val = "Skipped" if val == 'Skipped' else val
                 supabase.table("trades").update({field: save_val}).eq("trade_id", t_id).execute()
-            
+
             bot.delete_message(chat_id, call.message.message_id)
             get_next_missing(chat_id)
         except Exception as e: bot.send_message(chat_id, f"❌ *תקלה בעדכון:* {str(e)}", parse_mode="Markdown")
@@ -297,6 +343,32 @@ def handle_all_messages(message):
     if text in ["ביטול", "cancel", "/cancel", "❌ ביטול"]:
         if chat_id in user_state: del user_state[chat_id]
         bot.send_message(chat_id, "❌ הפעולה בוטלה. חוזרים לתפריט הראשי.", reply_markup=get_main_menu())
+        return
+
+    # ── טיפול ב-state פעיל ─────────────────────────────────────────────
+    active_state = user_state.get(chat_id, {})
+    if active_state.get("action") == "risk_reject_reason":
+        reason = text.strip()
+        rec_pct = active_state["rec_pct"]
+        curr_pct = active_state["curr_pct"]
+        account_settings = get_account_settings()
+        nav = float(account_settings.get("nav", account_settings.get("total_deposited", 7500.0)))
+        are.mark_adherence(recommended_pct=rec_pct, actual_pct=curr_pct, followed=False, reason=reason)
+        are.log_risk_journal({
+            "direction": "up" if rec_pct > curr_pct else "down_fast",
+            "current_risk_pct": curr_pct,
+            "recommended_risk_pct": rec_pct,
+            "action": "rejected",
+            "reason": reason,
+            "actual_pct_set": curr_pct,
+            "nav": nav,
+        })
+        del user_state[chat_id]
+        bot.send_message(
+            chat_id,
+            f"{RTL}📝 *הדחייה נרשמה ביומן הסיכון*\n{RTL}המלצה `{rec_pct:.2f}%` נדחתה.\n{RTL}סיבה: _{reason}_",
+            reply_markup=get_main_menu(), parse_mode="Markdown"
+        )
         return
 
     # ── תפריטים היררכיים ──────────────────────────────────────────────
@@ -330,8 +402,29 @@ def handle_all_messages(message):
             f"{RTL}/mentor SYMBOL — Trend Template מלא\n"
             f"{RTL}/analyze SYMBOL — ניתוח VCP מינרביני\n"
             f"{RTL}/next — יומן (הבא)\n"
+            f"{RTL}/stats — סטטיסטיקת ציות להמלצות סיכון\n"
         )
         return bot.send_message(chat_id, help_txt, reply_markup=get_main_menu(), parse_mode="Markdown")
+
+    if text in ["/stats", "📊 סטטיסטיקת ציות"]:
+        stats = are.compute_adherence_stats()
+        if not stats.get("ok"):
+            bot.send_message(chat_id, f"⚪ {stats.get('message', 'שגיאה')}", parse_mode="Markdown")
+            return
+        last_str = " ".join(stats.get("last_actions", []))
+        msg = (
+            f"{RTL}📊 *סטטיסטיקת ציות — המלצות סיכון*\n"
+            f"{RTL}───────────────\n"
+            f"{RTL}סה\"כ המלצות: `{stats['total_recommendations']}`\n"
+            f"{RTL}הוערכו: `{stats['evaluated']}`\n"
+            f"{RTL}אושרו ✅: `{stats['followed']}`\n"
+            f"{RTL}נדחו ❌: `{stats['not_followed']}`\n"
+        )
+        if stats["adherence_pct"] is not None:
+            msg += f"{RTL}ציות כללי: `{stats['adherence_pct']:.0f}%`\n"
+        if last_str:
+            msg += f"{RTL}10 האחרונות: {last_str}"
+        return bot.send_message(chat_id, msg, parse_mode="Markdown")
 
     if text == "🧠 ניתוח מינרביני מלא":
         bot.send_message(chat_id, f"{RTL}🧠 *ניתוח Trend Template מלא (8 קריטריונים):*\nהקלד סימול מניה (לדוגמה: AAPL):", parse_mode="Markdown")
@@ -416,6 +509,15 @@ def handle_all_messages(message):
             total_exp = sum(exp.values())
             total_pct = (total_exp / acc_size) * 100 if acc_size > 0 else 0
             rep = tf.fmt_regime_report(regime, total_pct, exp["ALGO"], exp["VCP"], exp["EP"], acc_size)
+            # --- Adaptive Risk Block ---
+            try:
+                current_risk_pct = float(account_settings.get("risk_pct_input", 0.5))
+                nav_for_risk = ibkr_nav if ibkr_nav else float(account_settings.get("nav", acc_size))
+                closed_camps = are.compute_closed_campaigns(df)
+                risk_rec = are.compute_adaptive_risk(closed_camps, current_risk_pct, nav_for_risk)
+                rep += tf.fmt_adaptive_risk_block(risk_rec)
+            except Exception:
+                pass
             bot.edit_message_text(rep, chat_id, msg_id, parse_mode="Markdown")
         except Exception as e: bot.edit_message_text(f"❌ תקלה בחישוב משטר שוק: {e}", chat_id, msg_id)
         return
@@ -610,6 +712,16 @@ def handle_all_messages(message):
                 for ins in coaching_insights[:2]:  # מקסימום 2 insights בטלגרם
                     clean_ins = ins.replace('<b>', '*').replace('</b>', '*')
                     msg += f"{RTL}▸ {clean_ins}\n"
+
+            # --- Adaptive Risk Recommendation ---
+            try:
+                current_risk_pct = float(account_settings.get("risk_pct_input", 0.5))
+                nav_for_risk = float(account_settings.get("nav", acc_size))
+                closed_camps = are.compute_closed_campaigns(df)
+                risk_rec = are.compute_adaptive_risk(closed_camps, current_risk_pct, nav_for_risk)
+                msg += tf.fmt_adaptive_risk_block(risk_rec)
+            except Exception:
+                pass
 
             try: bot.delete_message(chat_id, loading_msg.message_id)
             except: pass

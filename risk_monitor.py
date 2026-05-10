@@ -5,6 +5,7 @@ from supabase import create_client
 from dotenv import load_dotenv
 import xml.etree.ElementTree as ET
 import engine_core as ec
+import adaptive_risk_engine as are
 
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -88,6 +89,11 @@ def send_telegram(text):
     if not ADMIN_ID: return
     try: bot.send_message(ADMIN_ID, text, parse_mode="Markdown")
     except Exception as e: print(f"Telegram send failed: {e}")
+
+def send_telegram_with_keyboard(text, markup):
+    if not ADMIN_ID: return
+    try: bot.send_message(ADMIN_ID, text, parse_mode="Markdown", reply_markup=markup)
+    except Exception as e: print(f"Telegram send_keyboard failed: {e}")
 
 def main():
     state = load_state()
@@ -212,6 +218,62 @@ def main():
             
     state["positions"] = new_position_state
     state["cluster"] = {"status": cluster_status, "algo_cluster_pct": round(algo_cluster_pct, 2), "updated_at": datetime.utcnow().isoformat(), "last_alert_ts": last_cluster_alert}
+
+    # --- Adaptive Risk Proactive Alert ---
+    try:
+        current_risk_pct = float(account_settings.get("risk_pct_input", 0.5))
+        nav_for_risk = float(account_settings.get("nav", acc_size))
+        closed_camps = are.compute_closed_campaigns(df)
+        risk_rec = are.compute_adaptive_risk(closed_camps, current_risk_pct, nav_for_risk)
+
+        if risk_rec.get("ok") and risk_rec["direction"] != "hold":
+            prev_alert = state.get("risk_alert", {})
+            last_risk_ts = prev_alert.get("ts", 0)
+            last_direction = prev_alert.get("direction", "")
+
+            same_direction_recently = (
+                last_direction == risk_rec["direction"]
+                and (now_ts - last_risk_ts) < 24 * 3600
+            )
+
+            if not same_direction_recently:
+                rec_pct = risk_rec["recommended_risk_pct"]
+                curr_pct = risk_rec["current_risk_pct"]
+                curr_usd = risk_rec["current_risk_usd"]
+                rec_usd = risk_rec["recommended_risk_usd"]
+                arrow = "⬆️" if risk_rec["direction"] == "up" else "⬇️⬇️"
+                heat = risk_rec["heat_score"]
+                step = risk_rec["step_type"]
+
+                alert_text = (
+                    f"{RTL}🎯 *התראת סיכון אדפטיבי*\n"
+                    f"{RTL}───────────────\n"
+                    f"{RTL}חום מסחר: {risk_rec['heat_color']} `{heat:.0f}%` | {step}\n"
+                    f"{RTL}רמה נוכחית: `{curr_pct:.2f}%` (`${curr_usd:,.0f}` לעסקה)\n"
+                    f"{RTL}{arrow} המלצה: `{rec_pct:.2f}%` (`${rec_usd:,.0f}` לעסקה)\n\n"
+                    f"{RTL}האם לאשר שינוי סיכון?"
+                )
+                markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+                markup.add(
+                    telebot.types.InlineKeyboardButton(
+                        "✅ מאשר שינוי",
+                        callback_data=f"risk_confirm|YES|{rec_pct}|{curr_pct}"
+                    ),
+                    telebot.types.InlineKeyboardButton(
+                        "❌ דוחה (חובה: הסבר)",
+                        callback_data=f"risk_confirm|NO|{rec_pct}|{curr_pct}"
+                    )
+                )
+                send_telegram_with_keyboard(alert_text, markup)
+                state["risk_alert"] = {
+                    "direction": risk_rec["direction"],
+                    "ts": now_ts,
+                    "rec_pct": rec_pct,
+                    "curr_pct": curr_pct,
+                }
+    except Exception as e:
+        print(f"Risk alert error: {e}")
+
     save_state(state)
 
 if __name__ == "__main__":

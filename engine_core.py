@@ -442,21 +442,45 @@ def get_open_positions_campaign(df):
 def compute_market_regime(spy_hist, qqq_hist=None):
     try:
         if spy_hist is None or len(spy_hist) < 50: return {"ok": False, "error": "no_data", "data": {"status": "Unknown", "color": "⚪", "text": "אין מספיק נתונים"}}
-        spy_close = spy_hist['Close'].iloc[-1]
-        spy_ma20 = spy_hist['Close'].rolling(20).mean().iloc[-1]
-        spy_ma50 = spy_hist['Close'].rolling(50).mean().iloc[-1]
+        spy_close = float(spy_hist['Close'].iloc[-1])
+        spy_ma20 = float(spy_hist['Close'].rolling(20).mean().iloc[-1])
+        spy_ma50 = float(spy_hist['Close'].rolling(50).mean().iloc[-1])
         score = 0
-        if spy_close > spy_ma20: score += 1
-        if spy_close > spy_ma50: score += 1
-        if spy_ma20 > spy_ma50: score += 1
+        s1 = spy_close > spy_ma20
+        s2 = spy_close > spy_ma50
+        s3 = spy_ma20 > spy_ma50
+        if s1: score += 1
+        if s2: score += 1
+        if s3: score += 1
+        qqq_close = qqq_ma20 = None
+        s4 = None
         if qqq_hist is not None and not qqq_hist.empty and len(qqq_hist) >= 50:
-            qqq_close = qqq_hist['Close'].iloc[-1]
-            qqq_ma20 = qqq_hist['Close'].rolling(20).mean().iloc[-1]
-            if qqq_close > qqq_ma20: score += 1
-        if score >= 3: return {"ok": True, "error": None, "data": {"status": "Hot", "color": "🔥", "text": "שוק שורי חזק - סביבה תומכת"}}
-        elif score == 2: return {"ok": True, "error": None, "data": {"status": "Warm", "color": "🟢", "text": "שוק חיובי - לנהל סיכונים רגיל"}}
-        elif score == 1: return {"ok": True, "error": None, "data": {"status": "Neutral", "color": "🟡", "text": "שוק מדשדש/מעורב - זהירות והקטנת סיכון"}}
-        else: return {"ok": True, "error": None, "data": {"status": "Cold", "color": "🔴", "text": "שוק דובי - סביבה עוינת, הגנה מקסימלית"}}
+            qqq_close = float(qqq_hist['Close'].iloc[-1])
+            qqq_ma20 = float(qqq_hist['Close'].rolling(20).mean().iloc[-1])
+            s4 = qqq_close > qqq_ma20
+            if s4: score += 1
+        signals = {
+            "spy_close": round(spy_close, 2),
+            "spy_ma20": round(spy_ma20, 2),
+            "spy_ma50": round(spy_ma50, 2),
+            "spy_above_ma20": s1,
+            "spy_above_ma50": s2,
+            "spy_ma20_above_ma50": s3,
+            "qqq_close": round(qqq_close, 2) if qqq_close else None,
+            "qqq_ma20": round(qqq_ma20, 2) if qqq_ma20 else None,
+            "qqq_above_ma20": s4,
+            "score": score,
+            "max_score": 4 if s4 is not None else 3,
+        }
+        if score >= 3:
+            status, color, text = "Hot", "🔥", "שוק שורי חזק - סביבה תומכת"
+        elif score == 2:
+            status, color, text = "Warm", "🟢", "שוק חיובי - לנהל סיכונים רגיל"
+        elif score == 1:
+            status, color, text = "Neutral", "🟡", "שוק מדשדש/מעורב - זהירות והקטנת סיכון"
+        else:
+            status, color, text = "Cold", "🔴", "שוק דובי - סביבה עוינת, הגנה מקסימלית"
+        return {"ok": True, "error": None, "data": {"status": status, "color": color, "text": text, "signals": signals}}
     except Exception as e: return {"ok": False, "error": str(e), "data": {"status": "Unknown", "color": "⚪", "text": f"שגיאה: {e}"}}
 
 def get_minervini_analysis(symbol):
