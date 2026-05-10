@@ -1,5 +1,42 @@
 # Current System State
 
+## Changes — 2026-05-10 (session 2: dashboard + telegram upgrade)
+
+### dashboard.py
+- `get_cached_market_regime()` new function: wraps SPY/QQQ fetch + compute_market_regime in `@st.cache_data(ttl=600)`. Prevents re-computation on every Streamlit re-run.
+- `_warm_symbol_cache`: period changed from "6mo" to "1y". Fixes cache miss for MAE/MFE (`compute_mfe_mae` needs "1y") and for Trend Template (`compute_trend_template_full` needs "1y").
+- `compute_live_portfolio_data`: SPY + QQQ added to parallel prefetch. TTL raised 180→300s. campaign_id added to live_positions dict.
+- Campaign buy records lookup built after `actual_open_trades` for Add-on quality analysis.
+- Command Center expander: expanded from 3 to 4 columns. Column 4: Trend Template 8 criteria + Add-on quality per position.
+- New "🧠 Minervini Mentor" tab (tabs[4]): avg TT score, win/loss streak, strengths, weaknesses, dynamic coaching insights.
+- Visual Journal: days held + R-per-day + actual vs planned risk metrics added per closed campaign.
+- DB Manager moved from tabs[4] to tabs[5].
+- Tabs definition updated to 6 tabs.
+
+### engine_core.py (additive only)
+- `generate_minervini_coaching(win_rate, expectancy_r, adj_rr, oversized_count, market_regime_status, streak_losses, total_r_net)`: returns list of Hebrew coaching insights based on Minervini methodology. Used by dashboard Mentor tab and Telegram /portfolio.
+
+### telegram_bot.py
+- Import: `import telegram_formatters as tf` added.
+- `get_main_menu()` redesigned: 4 category buttons only (מצב תיק / ניתוח / יומן / עזרה).
+- New functions: `get_portfolio_menu()`, `get_analysis_menu()`, `get_journal_menu()`.
+- New handlers: "📊 מצב תיק", "🔬 ניתוח", "📚 יומן", "❓ עזרה", "⬅️ חזרה לתפריט ראשי", "🧠 ניתוח מינרביני מלא".
+- `/mentor SYMBOL` command: calls `compute_trend_template_full()` and formats via `tf.fmt_minervini_trend_template()`.
+- `mentor_symbol` user_state action: prompts for symbol then runs /mentor flow.
+- Regime report: now uses `tf.fmt_regime_report()`.
+- `/portfolio`: appends top 2 Minervini coaching insights at summary.
+- All `analyze_symbol` responses now return `get_analysis_menu()` keyboard.
+
+### telegram_formatters.py (NEW FILE)
+- RTL formatting helpers for consistent, readable Hebrew Telegram messages.
+- `fmt_position_card()`: unified position card for /portfolio.
+- `fmt_summary_footer()`: portfolio summary block.
+- `fmt_regime_report()`: market regime report.
+- `fmt_minervini_trend_template()`: 8-criteria Trend Template output.
+- Formatting rules: RTL markers, `▸` field prefix, em-dash separators, backtick numbers.
+
+
+
 This file is a concise source of truth for the current repo state.
 
 Update it after meaningful architecture, deployment, or workflow changes.
@@ -19,14 +56,15 @@ Docker Compose services (unchanged):
 
 ## Code state vs deployed state
 
-**All changes deployed to Orange Pi as of 2026-05-10.**
+**Session 1 changes (2026-05-09/10): deployed to Orange Pi.**
+**Session 2 changes (2026-05-10): pushed to main (commit ad2d5c1) — NOT YET DEPLOYED.**
 
 | Service | Code version | Deployed | Status |
 |---------|-------------|---------|--------|
 | sentinel-bot | v16.0 + ZoneInfo timezone fix | ✅ deployed | pending morning sync validation |
-| dashboard | parallel pre-fetch + Minervini metrics + exception fix | ✅ deployed | working |
-| engine_core | +5 new Minervini functions | ✅ deployed | 24/24 tests pass |
-| telegram-bot | secure runner (unchanged) | ✅ deployed | confirmed active |
+| dashboard | parallel pre-fetch + Minervini metrics + Mentor tab + performance fixes | ⚠️ NOT deployed | requires: docker compose up -d --build dashboard |
+| engine_core | +5 Minervini functions + generate_minervini_coaching() | ⚠️ NOT deployed | bundled with dashboard rebuild |
+| telegram-bot | hierarchical menus + /mentor + formatters | ⚠️ NOT deployed | requires: docker compose up -d --build telegram-bot |
 | risk-monitor | market-hours cooldown + TZ fix | ✅ deployed | overnight spam fixed |
 
 ## What changed in this session (2026-05-09)
@@ -85,21 +123,26 @@ Open validation:
 4. Supabase write flows must remain explicit and traceable.
 5. Telegram output must remain Hebrew-friendly and not too verbose.
 
-## Pending validation (tomorrow)
+## Pending validation (next deploy)
 
 1. Confirm IBKR sync fires at 07:xx Israel time (first real test of timezone fix).
 2. Confirm /app/ibkr_reports/ directory created and XML file saved.
 3. Confirm NAV updated in sentinel_config.json after morning sync.
 4. Confirm no overnight alert spam from risk_monitor (market-hours gate working).
+5. Verify Minervini Mentor tab renders correctly (after dashboard deploy).
+6. Verify /mentor AAPL returns 8-criteria output (after telegram-bot deploy).
+7. Verify hierarchical Telegram menus work end-to-end.
+8. Measure dashboard load time on second interaction on Orange Pi.
 
 ## Pending follow-up items (not started)
 
-1. Wire compute_trend_template_full() output into dashboard UI.
-2. Wire analyze_addon_quality() results into dashboard (open + closed campaigns).
-3. Add planned-vs-actual section to Visual Journal tab (closed campaigns).
+1. Deploy session 2 changes: `docker compose up -d --build dashboard telegram-bot` on Orange Pi.
+2. fmt_position_card() in /portfolio loop (Phase 4 Telegram refactor — medium risk).
+3. analyze_addon_quality() in Visual Journal (closed campaigns).
 4. Add target_price field to Supabase schema for true planned R:R (HIGH risk — separate task).
-5. Improve market regime with breadth indicators (% stocks above MA50, A/D line).
-6. Manually time dashboard load under 3 seconds on Orange Pi.
+5. "Weekly mentor review" automated Telegram message (future feature).
+6. Improve market regime with breadth indicators (% stocks above MA50, A/D line).
+7. Per-closed-campaign Trend Template retrospective.
 
 ## Deployment instructions (when ready)
 

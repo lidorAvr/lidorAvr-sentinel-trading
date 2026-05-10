@@ -134,6 +134,80 @@ Uses UTC-based range (11:00–21:00 UTC) to avoid dependency on tzdata in Docker
 
 ---
 
+## DEC-20260510-003 — Market regime cached at Streamlit layer (TTL=600s)
+
+Date: 2026-05-10
+Status: implemented
+
+### Decision
+
+Wrap `compute_market_regime()` + its SPY/QQQ fetch in a `@st.cache_data(ttl=600)` Streamlit function, `get_cached_market_regime()`. This is separate from engine_core's own `YF_CACHE` (TTL=300s).
+
+### Rationale
+
+Streamlit re-runs the entire script on every user interaction (button click, filter change, etc.). On each re-run, `ec.get_cached_history("SPY", "1y", "1d")` was called synchronously in the sidebar before any tab content rendered. Even though engine_core has its own 5-min cache, the pandas market regime computation itself added overhead on every re-run.
+
+Streamlit's `@st.cache_data` caches the return value across re-runs within the same process, not just within the same seconds. This means repeated user interactions (changing filters, viewing different tabs) get an instant regime result without any computation.
+
+### Alternatives considered
+
+- **engine_core cache only (TTL=300s)**: helps with network calls but not with Streamlit re-run overhead.
+- **Store regime in st.session_state**: works but requires manual invalidation logic.
+
+### Constraint
+
+The returned DataFrame (`spy_hist`) is not returned from the cached function to avoid pickle overhead. After calling `get_cached_market_regime()`, `spy_hist` is retrieved separately via `ec.get_cached_history()` — which is a near-instant cache hit since the cached function just warmed it.
+
+---
+
+## DEC-20260510-004 — Hierarchical Telegram menus (4 categories → sub-menus)
+
+Date: 2026-05-10
+Status: implemented
+
+### Decision
+
+Replace the flat 5-button main menu with 4 category buttons (מצב תיק / ניתוח / יומן / עזרה) that each lead to a sub-menu. All original commands remain reachable.
+
+### Rationale
+
+The original menu had 5 buttons with no logical grouping. As features were added (market regime, drill-down, etc.), the menu grew cluttered. A hierarchical structure scales cleanly as features are added.
+
+### Alternatives considered
+
+- **Inline keyboard buttons**: can't be used for ReplyKeyboard (persistent menu) flows — requires callback queries.
+- **Single command list only (no keyboard)**: less discoverable for mobile users.
+
+### Constraint
+
+All existing slash commands (/portfolio, /next, /trade, /analyze) remain functional and bypass the menu hierarchy. Backward compatibility preserved.
+
+---
+
+## DEC-20260510-005 — telegram_formatters.py as separate formatting module
+
+Date: 2026-05-10
+Status: implemented
+
+### Decision
+
+Create `telegram_formatters.py` as a pure formatting helper module (no Supabase, no bot, no engine_core imports). Import it into `telegram_bot.py` as `import telegram_formatters as tf`.
+
+### Rationale
+
+Per the Phase 4 refactor plan in ROADMAP.md, `telegram_bot.py` should be split into smaller modules. Starting with a `telegram_formatters.py` that only contains string-building functions is the lowest-risk first step — it has no logic, no state, and no network calls. It can grow independently of the main bot file.
+
+### Alternatives considered
+
+- **Inline formatting in telegram_bot.py (status quo)**: makes the file harder to maintain.
+- **Full Phase 4 refactor now**: too large for one session — risk of breaking existing flows.
+
+### Constraint
+
+telegram_formatters.py must not import telebot, supabase, or engine_core to remain a pure utility. If a formatter needs computed data, the caller computes it and passes it in as a parameter.
+
+---
+
 ## DEC-20260509-004 — Planned R:R deferred: requires Supabase schema change
 
 Date: 2026-05-09

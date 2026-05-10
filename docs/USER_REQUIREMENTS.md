@@ -277,6 +277,122 @@ Related files:
 - `docker-compose.yml`
 - `requirements.txt`
 
+---
+
+### REQ-20260510-001 — Dashboard performance: eliminate residual slow loads
+
+Status: implemented
+Owner: both
+Area: dashboard
+Priority: High
+
+User request:
+- Dashboard is still very slow despite the parallel prefetch added in the previous session.
+- All data should load within seconds on repeated interactions, not just first load.
+
+Acceptance criteria:
+- [x] `_warm_symbol_cache` fetches "1y" history (same period as MAE/MFE and Trend Template — no cache miss)
+- [x] SPY + QQQ added to parallel prefetch so regime and RS calculations are pre-warmed
+- [x] `compute_market_regime` wrapped in `@st.cache_data(ttl=600)` — not recomputed on every Streamlit re-run
+- [x] `compute_live_portfolio_data` TTL raised from 180s to 300s
+- [ ] Load time measured on Orange Pi under 3 seconds on second interaction (manual test pending)
+
+Implementation notes:
+- Root causes found: (1) _warm_symbol_cache fetched "6mo" but MAE/MFE and TT need "1y" → cache miss per position. (2) SPY/QQQ were fetched synchronously in sidebar before any parallel warmup. (3) market regime was recomputed on every Streamlit re-run despite slow upstream calls.
+- Fix is fully additive — no formula or data changes.
+
+Related files:
+- `dashboard.py`
+
+---
+
+### REQ-20260510-002 — Dashboard enrichment: Minervini depth + visual intelligence
+
+Status: implemented
+Owner: both
+Area: dashboard
+Priority: High
+
+User request:
+- Dashboard is too sparse. Missing data, explanations, and depth.
+- Show Trend Template 8 criteria per position.
+- Show Add-on quality (pyramiding check).
+- Show strengths and weaknesses of the system.
+- Show understanding of strategy, where performance is strong, where it's weak.
+
+Acceptance criteria:
+- [x] Trend Template 8-criteria shown per open position in Command Center expander (4th column)
+- [x] Add-on quality (pyramiding above entry) shown per open position
+- [x] New "🧠 Minervini Mentor" tab: avg TT score, win/loss streak, strengths, weaknesses, coaching insights
+- [x] Visual Journal: days held + R-per-day + actual vs planned risk shown per closed campaign
+- [ ] Wire analyze_addon_quality for closed campaigns (Visual Journal tab) — not yet done
+- [ ] Trend Template tab or dedicated section for all open positions at once — not yet done
+- [ ] target_price in Supabase for true planned R:R — blocked (schema change)
+
+Related files:
+- `dashboard.py`
+- `engine_core.py`
+
+---
+
+### REQ-20260510-003 — Telegram: RTL formatting, hierarchical menus, Minervini commands
+
+Status: implemented
+Owner: both
+Area: Telegram
+Priority: High
+
+User request:
+- Telegram messages are not RTL-friendly — too cluttered or missing important info.
+- Too many buttons on the main menu — overwhelming.
+- Want hierarchical menus: main category → sub-menu.
+- Want to upgrade to a cleaner, more actionable format.
+
+Acceptance criteria:
+- [x] Main menu reduced to 4 categories: מצב תיק / ניתוח / יומן / עזרה
+- [x] Sub-menus per category with back button
+- [x] telegram_formatters.py created: RTL formatting helpers (fmt_position_card, fmt_summary_footer, fmt_regime_report, fmt_minervini_trend_template)
+- [x] /mentor SYMBOL command: full 8-criteria Trend Template in Telegram
+- [x] 🧠 ניתוח מינרביני מלא button in analysis sub-menu
+- [x] Regime report uses tf.fmt_regime_report() (cleaner RTL)
+- [x] Minervini coaching insight appended to /portfolio summary
+- [ ] fmt_position_card() used in /portfolio loop (portfolio loop still uses inline strings — planned for Phase 4 refactor)
+- [ ] Rate limit / rapid message test not yet done
+
+Related files:
+- `telegram_bot.py`
+- `telegram_formatters.py`
+
+---
+
+### REQ-20260510-004 — Minervini as system mentor
+
+Status: implemented
+Owner: both
+Area: risk engine / dashboard / Telegram
+Priority: High
+
+User request:
+- Continue integrating Mark Minervini's methodology, thinking, and recommendations.
+- The system should feel like Minervini is a mentor sitting inside it.
+- Provide coaching, context, strengths, weaknesses — not just numbers.
+
+Acceptance criteria:
+- [x] generate_minervini_coaching() in engine_core: coaching insights based on win_rate, expectancy, streak, regime, oversized positions
+- [x] Insights rendered in Minervini Mentor tab (dashboard)
+- [x] Insights appended to /portfolio Telegram report (top 2 insights)
+- [x] Trend Template 8 criteria per position with color-coded score
+- [x] Add-on quality check (pyramiding discipline) per position
+- [ ] Per-closed-campaign Trend Template retrospective (not yet done)
+- [ ] "Weekly mentor review" automated Telegram message (not yet done — future feature)
+
+Related files:
+- `engine_core.py`
+- `dashboard.py`
+- `telegram_bot.py`
+
+---
+
 ## Completed / validated requirements
 
 Move requirements here only after validation on server.
