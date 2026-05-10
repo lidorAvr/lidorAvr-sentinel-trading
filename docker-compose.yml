@@ -6,6 +6,8 @@ services:
     command: python3 main.py
     env_file:
       - .env
+    environment:
+      - TZ=Asia/Jerusalem
     volumes:
       - .:/app
 
@@ -38,6 +40,8 @@ services:
     command: python risk_monitor.py
     env_file:
       - .env
+    environment:
+      - TZ=Asia/Jerusalem
     volumes:
       - .:/app
     depends_on:

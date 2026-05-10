@@ -215,9 +215,12 @@ def fetch_benchmark_data(ticker, start_date, end_date):
 
 def _warm_symbol_cache(sym):
     """מושך מחיר חי, היסטוריה, ומידע סקטור לסמל אחד — לשימוש מקבילי."""
-    ec.get_live_price(sym)
-    ec.get_cached_history(sym, "6mo", "1d")
-    ec.get_sector_bundle(sym)
+    try:
+        ec.get_live_price(sym)
+        ec.get_cached_history(sym, "6mo", "1d")
+        ec.get_sector_bundle(sym)
+    except Exception:
+        pass  # cache miss יטופל בנפרד בלולאה הראשית
 
 def prefetch_symbols_parallel(symbols, max_workers=8):
     """מחמם את כל ה-cache של engine_core לכל הסמלים במקביל.
@@ -227,7 +230,7 @@ def prefetch_symbols_parallel(symbols, max_workers=8):
     with ThreadPoolExecutor(max_workers=min(len(symbols), max_workers)) as ex:
         futures = {ex.submit(_warm_symbol_cache, sym): sym for sym in symbols}
         for f in as_completed(futures):
-            f.result()  # בולע exceptions — cache miss יטופל בנפרד בלולאה הראשית
+            f.result()
 
 if df.empty:
     st.warning("No data found. Check your filters.")

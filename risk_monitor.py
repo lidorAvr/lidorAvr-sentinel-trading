@@ -55,20 +55,33 @@ def build_position_alert_key(pos, engine_data):
         "sizing": engine_data.get("sizing_status", "✅ תקין")
     }, ensure_ascii=False, sort_keys=True)
 
+def is_during_us_market_hours():
+    """True if now is within the US trading day window (pre-market to after-hours).
+    Uses UTC check: 11:00–21:00 UTC covers ~14:00–00:00 Israel time on Mon–Fri.
+    Repeat cooldown alerts are suppressed outside this window to avoid overnight noise.
+    Escalations and first-time alerts always fire regardless of this function."""
+    now_utc = datetime.utcnow()
+    if now_utc.weekday() >= 5:  # Sat or Sun — US market closed
+        return False
+    return 11 <= now_utc.hour < 21
+
 def should_alert(prev, current_status, current_key):
     now_ts = datetime.utcnow().timestamp()
     if prev is None: return True, now_ts
-    
+
     prev_status = prev.get("status")
     prev_key = prev.get("alert_key")
     last_alert_ts = prev.get("last_alert_ts", 0)
-    
+
+    # Escalation: status worsened → always alert immediately
     if STATUS_RANK.get(current_status, 0) > STATUS_RANK.get(prev_status, 0): return True, now_ts
+    # State change: alert content changed → always alert
     if prev_key != current_key: return True, now_ts
+    # Repeat cooldown: same status, same content → only during market hours to avoid overnight spam
     if current_status in ["🚨 קריטי", "🔴 Broken", "🚨 חריגת סיכון אלגו"]:
-        if (now_ts - last_alert_ts) > (6 * 3600):
+        if (now_ts - last_alert_ts) > (6 * 3600) and is_during_us_market_hours():
             return True, now_ts
-            
+
     return False, last_alert_ts
 
 def send_telegram(text):

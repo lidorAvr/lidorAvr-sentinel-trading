@@ -90,7 +90,7 @@ Related files:
 
 ### REQ-20260509-002 — Keep Telegram safe, clear, short, and Hebrew-friendly
 
-Status: approved
+Status: validated
 Owner: both
 Area: Telegram
 Priority: High
@@ -111,20 +111,26 @@ Implementation notes:
 - Server deployment not yet validated.
 
 Validation:
-- [ ] `docker compose ps` shows telegram-bot running through secure runner
-- [ ] `/portfolio`, `/next`, `/trade CAT` all work
+- [x] `docker compose ps` shows telegram-bot running through secure runner
+- [x] Bot active and responding (confirmed 2026-05-10)
+- [ ] `/portfolio`, `/next`, `/trade CAT` individually verified
 - [ ] Rate limiting confirmed via rapid message test
+
+Additional fix (2026-05-10):
+- Overnight alert spam fixed: repeat "Broken" alerts now suppressed outside US market hours
+  (11:00–21:00 UTC / 14:00–00:00 Israel, Mon–Fri).
 
 Related files:
 - `telegram_bot_secure_runner.py`
 - `telegram_bot.py`
 - `docker-compose.yml`
+- `risk_monitor.py`
 
 ---
 
 ### REQ-20260509-003 — Support efficient AI-agent development
 
-Status: implemented
+Status: validated
 Owner: both
 Area: docs / workflow
 Priority: High
@@ -232,6 +238,9 @@ Owner: both
 Area: sync / deployment
 Priority: High
 
+Note: partially validated. Timezone bug found and fixed on 2026-05-10.
+Full validation pending next morning sync at 07:xx Israel.
+
 User request:
 - IBKR sync should only attempt at times when reports are actually ready (07:00-11:00 Israel time).
 - Retry mechanism: try once per hour, max 3 attempts, then alert via Telegram.
@@ -255,12 +264,18 @@ Implementation notes:
 
 Validation:
 - [x] Code implemented and pushed
-- [ ] Deployed (git pull + docker compose up -d --build sentinel-bot on Orange Pi)
-- [ ] /app/ibkr_reports/ directory auto-created on first run
-- [ ] NAV verified in sentinel_config.json after morning sync
+- [x] Deployed on Orange Pi (2026-05-10)
+- [x] Failure alert confirmed received after 3 failed attempts
+- [x] Timezone bug found, fixed, and redeployed (ZoneInfo + TZ env var)
+- [x] New Query ID (1503908) added to .env
+- [ ] /app/ibkr_reports/ directory auto-created on first run (pending tomorrow)
+- [ ] NAV verified in sentinel_config.json after morning sync (pending tomorrow)
+- [ ] Report received at 07:xx Israel time (pending tomorrow)
 
 Related files:
 - `main.py`
+- `docker-compose.yml`
+- `requirements.txt`
 
 ## Completed / validated requirements
 

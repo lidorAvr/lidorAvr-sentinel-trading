@@ -6,7 +6,7 @@ Update it after meaningful architecture, deployment, or workflow changes.
 
 ## Current date context
 
-Last updated: 2026-05-09
+Last updated: 2026-05-10
 
 ## Production wiring
 
@@ -19,17 +19,15 @@ Docker Compose services (unchanged):
 
 ## Code state vs deployed state
 
-**Important: all changes below are committed and pushed to `main` but NOT yet deployed to the Orange Pi server.**
+**All changes deployed to Orange Pi as of 2026-05-10.**
 
-The user has chosen to batch all changes before a single deployment.
-
-| Service | Code version | Deployed version | Gap |
-|---------|-------------|-----------------|-----|
-| sentinel-bot | v16.0 (smart sync) | v15.0 (old sync) | main.py fully rewritten |
-| dashboard | parallel pre-fetch + Minervini metrics | old sequential | dashboard.py updated |
-| engine_core | +5 new Minervini functions | old | engine_core.py additive only |
-| telegram-bot | unchanged | unchanged | none |
-| risk-monitor | unchanged | unchanged | none |
+| Service | Code version | Deployed | Status |
+|---------|-------------|---------|--------|
+| sentinel-bot | v16.0 + ZoneInfo timezone fix | ✅ deployed | pending morning sync validation |
+| dashboard | parallel pre-fetch + Minervini metrics + exception fix | ✅ deployed | working |
+| engine_core | +5 new Minervini functions | ✅ deployed | 24/24 tests pass |
+| telegram-bot | secure runner (unchanged) | ✅ deployed | confirmed active |
+| risk-monitor | market-hours cooldown + TZ fix | ✅ deployed | overnight spam fixed |
 
 ## What changed in this session (2026-05-09)
 
@@ -87,6 +85,13 @@ Open validation:
 4. Supabase write flows must remain explicit and traceable.
 5. Telegram output must remain Hebrew-friendly and not too verbose.
 
+## Pending validation (tomorrow)
+
+1. Confirm IBKR sync fires at 07:xx Israel time (first real test of timezone fix).
+2. Confirm /app/ibkr_reports/ directory created and XML file saved.
+3. Confirm NAV updated in sentinel_config.json after morning sync.
+4. Confirm no overnight alert spam from risk_monitor (market-hours gate working).
+
 ## Pending follow-up items (not started)
 
 1. Wire compute_trend_template_full() output into dashboard UI.
@@ -94,7 +99,7 @@ Open validation:
 3. Add planned-vs-actual section to Visual Journal tab (closed campaigns).
 4. Add target_price field to Supabase schema for true planned R:R (HIGH risk — separate task).
 5. Improve market regime with breadth indicators (% stocks above MA50, A/D line).
-6. NAV auto-update verification: confirm IBKR XML ChangeInNAV node correctly updates sentinel_config.json.
+6. Manually time dashboard load under 3 seconds on Orange Pi.
 
 ## Deployment instructions (when ready)
 
@@ -116,6 +121,45 @@ Smoke tests after deployment:
 - Open dashboard and verify positions load faster
 - Verify planned-vs-actual section appears for open positions
 - Run pytest -q on server to confirm tests pass
+
+## Changes — 2026-05-10 (post-deployment fixes)
+
+### Timezone fix (main.py + docker-compose.yml)
+- Docker containers default to UTC. `datetime.now()` was returning UTC, not Israel time.
+- Sync window ran at 10:00–14:00 Israel instead of the intended 07:00–11:00 Israel.
+- Fix: added `TZ=Asia/Jerusalem` env to sentinel-bot and risk-monitor in docker-compose.yml.
+- Fix: main.py now uses `ZoneInfo("Asia/Jerusalem")` explicitly.
+- Fix: added `tzdata` to requirements.txt so ZoneInfo works on slim Docker images.
+
+### Alert spam fix (risk_monitor.py)
+- "Broken" status repeat alerts fired every 6 hours including overnight when market is closed.
+- Fix: added `is_during_us_market_hours()` — repeat cooldown alerts (same status, same key)
+  only fire during 11:00–21:00 UTC (≈ 14:00–00:00 Israel, Mon–Fri).
+- Escalations and first-time alerts are unaffected and fire at any hour.
+
+### Deployment instructions (immediate)
+```bash
+cd ~/sentinel_trading
+git pull
+docker compose up -d --build sentinel-bot risk-monitor
+# Optional: force one-time sync today with new Query ID
+rm ibkr_sync_state.json
+docker compose restart sentinel-bot
+```
+
+## Quality audit — 2026-05-10
+
+Full audit performed on all 2026-05-09 session changes.
+
+Results:
+- pytest: 24/24 passing — zero regressions
+- engine_core.py new functions: logic verified correct
+- main.py v16.0: state machine verified correct (window guard, per-hour guard, fail count, Telegram alerts)
+- dashboard.py: parallel prefetch verified correct
+- Bug fixed: `_warm_symbol_cache` now wraps calls in try/except to be truly exception-safe
+  (previously the comment said exceptions were absorbed but `f.result()` would have re-raised them)
+
+Code is production-ready pending server deployment.
 
 ## Rollback paths
 

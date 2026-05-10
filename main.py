@@ -5,6 +5,9 @@ import glob as file_glob
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 
 REPORTS_DIR = "/app/ibkr_reports"
 SYNC_STATE_FILE = "/app/ibkr_sync_state.json"
@@ -136,7 +139,7 @@ if __name__ == "__main__":
         log("Telegram credentials not found in environment!")
 
     while True:
-        now = datetime.now()
+        now = datetime.now(ISRAEL_TZ)
         today = now.strftime("%Y-%m-%d")
         state = load_sync_state()
 

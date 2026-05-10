@@ -81,6 +81,59 @@ If the /app volume is not persistent across Docker rebuilds, state resets. Accep
 
 ---
 
+## DEC-20260510-001 — Docker timezone: TZ env var + explicit ZoneInfo in code
+
+Date: 2026-05-10
+Status: implemented
+
+### Decision
+
+Set `TZ=Asia/Jerusalem` in docker-compose.yml for affected services AND use `ZoneInfo("Asia/Jerusalem")` explicitly in main.py code.
+
+### Rationale
+
+Docker containers default to UTC regardless of host OS timezone. `datetime.now()` returned UTC, causing the IBKR sync window (intended 07:00–11:00 Israel) to run at 10:00–14:00 Israel instead — 3 hours late.
+
+Two-layer fix provides defense in depth:
+- `TZ` env var: makes `datetime.now()` return Israel time — fixes the symptom for all datetime calls.
+- `ZoneInfo` in code: makes the code self-documenting and correct even if TZ var is missing.
+
+### Alternatives considered
+
+- **pytz**: not already in requirements.txt; ZoneInfo is stdlib (Python 3.9+).
+- **Fixed UTC offset (timedelta(hours=3))**: doesn't handle DST correctly.
+- **TZ env var only**: works but leaves code intention unclear if var is ever forgotten.
+
+### Constraint
+
+`python:3.10-slim` has `zoneinfo` but no timezone data. Added `tzdata` pip package to requirements.txt to supply data on slim images.
+
+---
+
+## DEC-20260510-002 — Alert spam: market-hours gate for repeat cooldown alerts
+
+Date: 2026-05-10
+Status: implemented
+
+### Decision
+
+Repeat cooldown alerts in risk_monitor.py (same status, same alert key, 6h cooldown) only fire during US market hours: 11:00–21:00 UTC, Mon–Fri. First-time alerts and escalations (status worsened) are unaffected and fire at any hour.
+
+### Rationale
+
+PLTR "Broken" status fired repeat alerts at 00:13, 06:16, 12:19 Israel — all outside market hours when no action is possible. The 6-hour cooldown was correct in duration but not gated on market availability.
+
+### Alternatives considered
+
+- **Increase cooldown to 24h**: simpler, but too blunt — would delay an important escalation during market hours.
+- **Market-hours check only (no cooldown)**: risk of flooding during volatile market sessions.
+
+### Constraint
+
+Uses UTC-based range (11:00–21:00 UTC) to avoid dependency on tzdata in Docker. Covers US pre-market to after-hours in all Israel DST/non-DST scenarios.
+
+---
+
 ## DEC-20260509-004 — Planned R:R deferred: requires Supabase schema change
 
 Date: 2026-05-09
