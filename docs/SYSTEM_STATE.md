@@ -95,17 +95,17 @@ Docker Compose services (unchanged):
 
 ## Code state vs deployed state
 
-**Session 1 changes (2026-05-09/10): deployed to Orange Pi.**
-**Session 2 changes (2026-05-10): pushed to main (commit ad2d5c1) — NOT YET DEPLOYED.**
-**Session 3 changes (2026-05-10): committed locally (5f85069) — NOT YET PUSHED OR DEPLOYED.**
+**Session 1 changes (2026-05-09/10): deployed to Orange Pi. ✅**
+**Session 2 changes (2026-05-10): deployed to Orange Pi (2026-05-10, session 4). ✅**
+**Session 3 changes (2026-05-10): deployed to Orange Pi (2026-05-10, session 4). ✅**
 
 | Service | Code version | Deployed | Status |
 |---------|-------------|---------|--------|
-| sentinel-bot | v16.0 + ZoneInfo timezone fix | ✅ deployed | pending morning sync validation |
-| dashboard | parallel pre-fetch + Minervini metrics + Mentor tab + performance fixes | ⚠️ NOT deployed | requires: docker compose up -d --build dashboard |
-| engine_core | +5 Minervini functions + coaching + regime signals | ⚠️ NOT deployed | bundled with dashboard rebuild |
-| telegram-bot | hierarchical menus + /mentor + formatters + adaptive risk + /stats | ⚠️ NOT deployed | requires: docker compose restart telegram-bot |
-| risk-monitor | market-hours cooldown + TZ fix + proactive risk alerts | ⚠️ NOT deployed | requires: docker compose restart risk-monitor |
+| sentinel-bot | v16.0 + ZoneInfo timezone fix | ✅ deployed | active |
+| dashboard | parallel pre-fetch + Minervini metrics + Mentor tab + performance fixes | ✅ deployed | active |
+| engine_core | +5 Minervini functions + coaching + regime signals | ✅ deployed | active |
+| telegram-bot | hierarchical menus + /mentor + formatters + adaptive risk + /stats | ✅ deployed | active |
+| risk-monitor | market-hours cooldown + TZ fix + proactive risk alerts | ✅ deployed | active |
 
 ## What changed in this session (2026-05-09)
 
@@ -174,17 +174,19 @@ Open validation:
 7. Verify hierarchical Telegram menus work end-to-end.
 8. Measure dashboard load time on second interaction on Orange Pi.
 
-## Pending follow-up items (not started)
+## Upgrade plan — Minervini Decision OS (session 4, 2026-05-10)
 
-1. **Deploy sessions 2+3**: `git push` then on Orange Pi: `git pull && docker compose up -d --build dashboard && docker compose restart telegram-bot risk-monitor`
-2. Wire `mark_adherence` to sentinel_config.json change detection (detect manual risk_pct edits outside Telegram).
-3. Dashboard integration: show algorithm-suggested risk % vs actual + deviation alert.
-4. fmt_position_card() in /portfolio loop (Phase 4 Telegram refactor — medium risk).
-5. analyze_addon_quality() in Visual Journal (closed campaigns).
-6. Add target_price field to Supabase schema for true planned R:R (HIGH risk — separate task).
-7. "Weekly mentor review" automated Telegram message (future feature).
-8. Improve market regime with breadth indicators (% stocks above MA50, A/D line).
-9. Per-closed-campaign Trend Template retrospective.
+Full upgrade plan approved and saved at: `C:\Users\lidor\.claude\plans\cached-hatching-stallman.md`
+
+### Remaining phases (in order):
+1. **שלב 1A ✅ pending** — תיקון NAV key bug: `dashboard.py` קורא `"current_nav"` אבל sentinel_config.json כותב `"nav"` → הדאשבורד מציג $7,500 במקום $7,922
+2. **שלב 1B ✅ pending** — SQL migration בטוח: `ADD COLUMN IF NOT EXISTS initial_stop, mae, mfe`
+3. **שלב 2 pending** — analytics_engine.py חדש: rolling windows 10/30/50, Expectancy, Payoff, PF, MFE capture, stop adherence + tests
+4. **שלב 3 pending** — upgrade adaptive_risk_engine.py: multi-factor algorithm (Expectancy+PF+Payoff) במקום weighted win rate בלבד
+5. **שלב 4 pending** — Dashboard: טאב System Health חדש (שביעי)
+6. **שלב 5 pending** — Dashboard: גרפי Rolling Intelligence בטאב Performance Matrix
+7. **שלב 6 pending** — Telegram: הודעות explainable (verdict+evidence+action+data note)
+8. **שלב 7 pending** — AI Master Context Export: structured JSON + human summary
 
 ## Deployment instructions (sessions 2 + 3 combined)
 
