@@ -29,6 +29,10 @@ def _error_xml(code):
     return f"<FlexStatementResponse><ErrorCode>{code}</ErrorCode></FlexStatementResponse>"
 
 def _success_xml(ref="REF123456"):
+    return f"<FlexStatementResponse><Status>Success</Status><ReferenceCode>{ref}</ReferenceCode></FlexStatementResponse>"
+
+def _success_xml_legacy(ref="REF123456"):
+    """Old lowercase <code> format — kept for backward-compat coverage."""
     return f"<FlexStatementResponse><Status>Success</Status><code>{ref}</code></FlexStatementResponse>"
 
 def _statement_xml(nav=12345.67, trade_count=3):
@@ -208,7 +212,6 @@ class TestRunIbkrSync:
         assert result["nav"] is None
 
     def test_missing_ref_code_returns_temporary(self, tmp_path):
-        # XML with no <code> element
         send_xml = "<FlexStatementResponse><Status>Success</Status></FlexStatementResponse>"
         with (patch.dict(os.environ, {"IBKR_TOKEN": "tok"}),
               patch("ibkr_sync_runner.requests.get",
@@ -216,6 +219,19 @@ class TestRunIbkrSync:
               patch("ibkr_sync_runner.time.sleep")):
             result = m.run_ibkr_sync()
         assert result["status"] == "temporary"
+
+    def test_legacy_lowercase_code_element_accepted(self, tmp_path):
+        """<code> (old lowercase format) must still be accepted as fallback."""
+        with (patch.dict(os.environ, {"IBKR_TOKEN": "tok"}),
+              patch("ibkr_sync_runner.requests.get") as mock_get,
+              patch("ibkr_sync_runner.time.sleep"),
+              patch("ibkr_sync_runner._REPORTS_DIR", str(tmp_path))):
+            mock_get.side_effect = [
+                self._make_send_resp(_success_xml_legacy("LEGACYREF")),
+                self._make_send_resp(_statement_xml(nav=9000.0)),
+            ]
+            result = m.run_ibkr_sync()
+        assert result["status"] == "success"
 
     def test_nav_updated_in_config_on_success(self, tmp_path):
         cfg_path = str(tmp_path / "sentinel_config.json")
