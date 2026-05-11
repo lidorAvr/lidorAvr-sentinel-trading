@@ -1,5 +1,29 @@
 # Current System State
 
+## Changes — 2026-05-11 (session 7: tracking cleanup + pytest.ini)
+
+### Housekeeping (no production code changed)
+
+**`pytest.ini`** (NEW)
+- Added root-level `pytest.ini` with `testpaths = tests` so `pytest -q` works from repo root without collecting `scripts/archive/` files that depend on missing `dotenv`.
+- Before: `pytest -q` from root crashed on `scripts/archive/test_xml_ibkr.py` and `test_infra.py`. After: 596 passed, 1 warning.
+
+**`docs/AGENT_TASKS.md`**
+- TASK-20260511-001 through TASK-20260511-007 all updated from `todo` → `implemented`.
+- Code audit confirmed all tasks were fully implemented in prior sessions but tracking files were not updated.
+
+**`docs/ROADMAP.md`**
+- Phase 3 updated: `in progress` → `complete`.
+- Phase 3B updated: `planned` → `complete`, all 9 deliverables listed with ✅.
+- Phase 5 updated: `in progress` → `complete`, Portfolio Heat Map + Earnings Risk + Discretionary/ALGO/Combined stats added to done list.
+
+### Test suite
+
+- **596 tests, 0 failures** (unchanged — no production code touched)
+- `pytest -q` now works from repo root (previously required `pytest tests/ -q`)
+
+---
+
 ## Changes — 2026-05-11 (session 6: IBKR pipeline fixes + manual XML upload + NAV key fix)
 
 ### Production bugs fixed (all deployed ✅)
@@ -247,6 +271,7 @@ Docker Compose services:
 | Session 4 (2026-05-10) | Timezone fix + spam fix | ✅ Orange Pi |
 | Session 5 (2026-05-11) | PDF reports + test suite + dev menu | ✅ Orange Pi |
 | Session 6 (2026-05-11) | 6 bug fixes + XML upload + NAV key fix | ✅ Orange Pi |
+| Session 7 (2026-05-11) | pytest.ini + tracking docs cleanup | ✅ docs only |
 
 ## IBKR sync status
 

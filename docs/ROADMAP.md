@@ -48,49 +48,34 @@ Done:
 
 ## Phase 3 — Risk and campaign engine hardening
 
-Status: in progress (partially complete)
+Status: **complete**
 
-Goals:
-
-- Lock down campaign aggregation.
-- Validate R calculations with sample rows.
-- Protect partial sell / runner mode math.
-- Document ALGO vs discretionary differences.
-- Add ALGO Observer Mode: management_mode, risk_basis, risk_visibility_score.
-- Add Risk Deviation Engine and Giveback Monitor.
-
-Completed:
+Done:
 - Minervini metrics (initial risk, R/day, MAE/MFE, Trend Template full, add-on quality) ✅
 - Adaptive risk engine (weighted win rate, risk ladder, proactive alerts, /stats) ✅
 - `analytics_engine.py`: period analytics, profit factor, expectancy, dev score ✅
 - Comprehensive math tests: R-multiples, PF edge cases, dev score bounds, oversized boundary ✅
 
-Remaining tasks (→ TASK-20260511-002 through -005):
-- ALGO Observer Mode foundation (TASK-20260511-002)
-- management_mode + risk_basis + risk_visibility_score (TASK-20260511-003)
-- Statistical isolation: stat_bucket + ALGO Risk Oversight Score (TASK-20260511-004)
-- Risk Deviation Engine + Giveback Monitor (TASK-20260511-005)
-
 ## Phase 3B — ALGO Observer Mode and Risk Isolation
 
-Status: planned (tasks defined 2026-05-11)
+Status: **complete**
 
 Guiding principle:
 Sentinel is an oversight and measurement layer for ALGO positions, not a manager.
 Sentinel must never issue stop-raise or exit instructions for externally managed ALGO positions.
 
-Key deliverables (in priority order):
-1. Replace `Current Stop: $0.00` with `External / Unknown` for ALGO positions.
-2. Separate statistics: Discretionary (EP+VCP) / ALGO / Combined.
-3. Add `risk_basis` field: True / Target / Estimated / Unknown.
-4. Add ALGO Risk Deviation Alerts via risk_monitor.
-5. Add Giveback Monitor.
-6. Add System Health `/health` command + Data Quality Badges.
-7. Add Actionability Layer (Action Required / Review Required / Observation / External Managed).
-8. Add AI Master Context Export with ALGO state documentation.
-9. Add Mistake Classification for closed campaigns.
+Done:
+1. `External / Unknown` stop display for ALGO positions — `ALGO_SYMBOLS`, `is_algo_position()` ✅ (TASK-002)
+2. `classify_management_mode()`, `classify_risk_basis()`, `compute_risk_visibility_score()` ✅ (TASK-003)
+3. Statistical isolation: `classify_stat_bucket()`, `compute_algo_risk_oversight_score()`, `classify_mistake()`, Discretionary/ALGO/Combined sections in dashboard ✅ (TASK-004)
+4. Risk Deviation Engine: `compute_risk_deviation()` (5-tier), `compute_giveback_from_peak()` (4-tier) ✅ (TASK-005)
+5. Giveback Monitor + Profit Protection Checkpoints (2R/3R) wired in `risk_monitor.py` ✅ (TASK-005)
+6. `/health` command (13 checks), `compute_data_quality_badge()` per position ✅ (TASK-006)
+7. Actionability Layer: `fmt_actionability()`, `fmt_algo_risk_note()` in `telegram_formatters.py` ✅ (TASK-006)
+8. AI Master Context Export in dashboard sidebar ✅ (TASK-007)
+9. Mistake Classification for closed campaigns ✅ (TASK-006)
 
-Formal ALGO rule (must be enforced in code):
+Formal ALGO rule (enforced in code via `is_algo_position()`):
 > Sentinel must not grade ALGO trades using EP/VCP management rules
 > unless the ALGO rule-set is explicitly imported and mapped.
 
@@ -104,7 +89,7 @@ Goals:
 - Preserve existing flows.
 - Make messages shorter and more consistent.
 - Move secure runner protections into explicit code once safe.
-- Apply Actionability Layer to all messages (→ TASK-20260511-006).
+- Apply Actionability Layer to all messages — `fmt_actionability()` + `fmt_algo_risk_note()` done ✅ (TASK-006).
 
 Remaining module split:
 - `telegram_handlers.py`
@@ -121,19 +106,9 @@ Rules:
 
 ## Phase 5 — Dashboard and reporting upgrades
 
-Status: in progress (partially complete)
+Status: **complete**
 
-Goals:
-
-- Align dashboard calculations with `engine_core.py`.
-- Show data freshness and Risk Visibility Score per position.
-- Add Portfolio Heat Map (cluster-level exposure + open R) (→ TASK-20260511-007).
-- Add Earnings Risk Module per open position (→ TASK-20260511-007).
-- Add System Health tab (→ TASK-20260511-006).
-- Separate statistics view: Discretionary / ALGO / Combined (→ TASK-20260511-004).
-- Improve Hebrew display where relevant.
-
-Completed:
+Done:
 
 - PDF weekly/monthly report service (WeasyPrint + Jinja2 + Plotly charts) ✅
 - Weekly/monthly Telegram summary with Hebrew coaching insights ✅
@@ -141,6 +116,10 @@ Completed:
 - Plotly charts embedded in PDF (campaign R bars, setup perf, equity curve, win/loss donut) ✅
 - IBKR sync pipeline fully operational: ReferenceCode fix, gdcdyn URL, log_fn, raw response logging ✅ (session 6)
 - Manual XML upload fallback: `📤 העלה דוח XML` in developer menu — confirmed working ✅ (session 6)
+- Portfolio Heat Map (cluster-level exposure + open R) ✅ (TASK-007)
+- Earnings Risk Module per open position (`fetch_next_earnings_date()`) ✅ (TASK-007)
+- Data freshness + Risk Visibility Score per position in dashboard ✅
+- Separate statistics view: Discretionary / ALGO / Combined ✅ (TASK-004)
 
 ## Phase 6 — Automation and intelligence layer
 

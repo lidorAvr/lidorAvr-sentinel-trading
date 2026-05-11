@@ -262,7 +262,7 @@ Files touched:
 
 ### TASK-20260511-007 — Phase G: Portfolio Heat Map + Earnings Risk Module + AI Context Export upgrade
 
-Status: todo
+Status: implemented
 Source requirement: REQ-20260511-008
 Assigned to: agent
 Risk: Low
@@ -296,7 +296,7 @@ Rollback:
 
 ### TASK-20260511-006 — Phase F: Actionability Layer + Mistake Classification + /health command
 
-Status: todo
+Status: implemented
 Source requirement: REQ-20260511-006 / REQ-20260511-007
 Assigned to: agent
 Risk: Low
@@ -332,7 +332,7 @@ Rollback:
 
 ### TASK-20260511-005 — Phase E: Risk Deviation Engine + Giveback Monitor
 
-Status: todo
+Status: implemented
 Source requirement: REQ-20260511-005
 Assigned to: agent
 Risk: Medium
@@ -369,7 +369,7 @@ Rollback:
 
 ### TASK-20260511-004 — Phase D: Statistical isolation (stat_bucket + ALGO Risk Oversight Score)
 
-Status: todo
+Status: implemented
 Source requirement: REQ-20260511-004
 Assigned to: agent
 Risk: Medium
@@ -405,7 +405,7 @@ Rollback:
 
 ### TASK-20260511-003 — Phase C: Risk Basis + Risk Visibility Score + management_mode display
 
-Status: todo
+Status: implemented
 Source requirement: REQ-20260511-002 / REQ-20260511-003
 Assigned to: agent
 Risk: Medium
@@ -443,7 +443,7 @@ Rollback:
 
 ### TASK-20260511-002 — Phase B: ALGO Observer Mode — formal rules and display foundation
 
-Status: todo
+Status: implemented
 Source requirement: REQ-20260511-002
 Assigned to: agent
 Risk: Low
@@ -484,7 +484,7 @@ Rollback:
 
 ### TASK-20260511-001 — IBKR error classification + smart GetStatement retry
 
-Status: todo
+Status: implemented
 Source requirement: REQ-20260511-001
 Assigned to: agent
 Risk: Medium
