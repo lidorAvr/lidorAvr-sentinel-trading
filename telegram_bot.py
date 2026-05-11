@@ -1,4 +1,4 @@
-import os, telebot, json, traceback, threading, subprocess
+import os, telebot, json, traceback, threading, subprocess, glob as _glob
 import pandas as pd
 from telebot import types
 from supabase import create_client
@@ -8,7 +8,8 @@ import xml.etree.ElementTree as ET
 import engine_core as ec
 import telegram_formatters as tf
 import adaptive_risk_engine as are
-from ibkr_sync_runner import run_ibkr_sync, MANUAL_RESULT_FILE
+from ibkr_sync_runner import (run_ibkr_sync, MANUAL_RESULT_FILE,
+                               _REPORTS_DIR, _REPORTS_TO_KEEP, _CONFIG_PATH)
 
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -128,6 +129,96 @@ def _run_manual_sync_thread(chat_id: int):
         bot.send_message(chat_id, f"\u274C \u05E9\u05D2\u05D9\u05D0\u05D4 \u05D1\u05E1\u05E0\u05DB\u05E8\u05D5\u05DF \u05D9\u05D3\u05E0\u05D9: {e}",
                          reply_markup=get_developer_menu(), parse_mode="Markdown")
         _bot_log(f"Manual IBKR sync error: {e}")
+
+
+def _process_uploaded_ibkr_xml(chat_id: int, message):
+    """Download and process a manually-uploaded IBKR Flex XML report."""
+    try:
+        doc = message.document
+        if not (doc.file_name or "").lower().endswith(".xml"):
+            bot.send_message(chat_id, f"{RTL}❌ יש לשלוח קובץ XML בלבד.",
+                             reply_markup=get_developer_menu())
+            return
+
+        bot.send_message(chat_id, f"{RTL}⏳ מעבד דוח...", reply_markup=get_developer_menu())
+        file_info = bot.get_file(doc.file_id)
+        xml_text = bot.download_file(file_info.file_path).decode("utf-8")
+
+        report_root = ET.fromstring(xml_text)
+
+        nav_updated = None
+        nav_node = report_root.find(".//ChangeInNAV")
+        if nav_node is not None:
+            v = nav_node.get("endingValue")
+            if v:
+                nav_updated = float(v)
+
+        trades = report_root.findall(".//Trade")
+
+        if nav_updated is None and not trades:
+            bot.send_message(
+                chat_id,
+                f"{RTL}⚠️ הקובץ לא נראה כדוח IBKR תקין.\n"
+                f"{RTL}לא נמצא ChangeInNAV ולא נמצאו עסקאות.",
+                reply_markup=get_developer_menu(),
+            )
+            return
+
+        # Save to reports directory (same cleanup as auto-sync)
+        os.makedirs(_REPORTS_DIR, exist_ok=True)
+        ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
+        report_path = os.path.join(_REPORTS_DIR, f"ibkr_{ts}.xml")
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write(xml_text)
+        all_reports = sorted(_glob.glob(os.path.join(_REPORTS_DIR, "ibkr_*.xml")))
+        while len(all_reports) > _REPORTS_TO_KEEP:
+            os.remove(all_reports.pop(0))
+
+        # Update sentinel_config.json NAV
+        if nav_updated is not None:
+            try:
+                cfg = {"total_deposited": 7500.0, "risk_pct_input": 0.5}
+                if os.path.exists(_CONFIG_PATH):
+                    with open(_CONFIG_PATH) as f:
+                        cfg = json.load(f)
+                cfg["nav"] = nav_updated
+                cfg["nav_updated_at"] = datetime.now().isoformat()
+                with open(_CONFIG_PATH, "w") as f:
+                    json.dump(cfg, f)
+            except Exception as e:
+                _bot_log(f"NAV update error in manual upload: {e}")
+
+        # Persist result so "📊 תוצאת Sync אחרון" picks it up
+        try:
+            result = {
+                "status": "success", "code": None,
+                "message": f"{len(trades)} עסקאות נטענו מקובץ ידני",
+                "nav": nav_updated,
+                "triggered_at": datetime.now().isoformat(),
+                "source": "manual_upload",
+            }
+            with open(MANUAL_RESULT_FILE, "w") as f:
+                json.dump(result, f)
+        except Exception:
+            pass
+
+        nav_str = f"\n{RTL}NAV מעודכן: `${nav_updated:,.2f}`" if nav_updated else ""
+        _bot_log(f"Manual XML upload OK: {len(trades)} trades, NAV={nav_updated}")
+        bot.send_message(
+            chat_id,
+            f"{RTL}✅ *דוח IBKR נטען בהצלחה*\n"
+            f"{RTL}עסקאות: `{len(trades)}`{nav_str}\n"
+            f"{RTL}קובץ: `{os.path.basename(report_path)}`",
+            reply_markup=get_developer_menu(), parse_mode="Markdown",
+        )
+
+    except ET.ParseError as e:
+        bot.send_message(chat_id, f"{RTL}❌ XML לא תקין: {e}",
+                         reply_markup=get_developer_menu())
+    except Exception as e:
+        _bot_log(f"Manual XML upload error: {e}")
+        bot.send_message(chat_id, f"{RTL}❌ שגיאה בעיבוד: {e}",
+                         reply_markup=get_developer_menu())
 
 
 def get_ibkr_nav():
@@ -314,10 +405,10 @@ def get_main_menu():
 def get_developer_menu():
     """תפריט מפתח — כלי פיתוח ודיבאג."""
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(types.KeyboardButton("📡 IBKR Sync ידני"), types.KeyboardButton("📋 לוגים"))
+    markup.add(types.KeyboardButton("📡 IBKR Sync ידני"), types.KeyboardButton("📤 העלה דוח XML"))
     markup.add(types.KeyboardButton("🔄 Git Pull + Deploy"), types.KeyboardButton("⚙️ הצג Config"))
     markup.add(types.KeyboardButton("📊 תוצאת Sync אחרון"), types.KeyboardButton("🏥 בריאות מערכת"))
-    markup.add(types.KeyboardButton("⬅️ חזרה לתפריט ראשי"))
+    markup.add(types.KeyboardButton("📋 לוגים"), types.KeyboardButton("⬅️ חזרה לתפריט ראשי"))
     return markup
 
 def get_portfolio_menu():
@@ -623,6 +714,15 @@ def handle_queries(call):
             get_next_missing(chat_id)
         except Exception as e: bot.send_message(chat_id, f"❌ *תקלה בעדכון:* {str(e)}", parse_mode="Markdown")
 
+@bot.message_handler(content_types=['document'])
+def handle_document_upload(message):
+    chat_id = message.chat.id
+    if user_state.get(chat_id, {}).get('action') != 'awaiting_ibkr_xml':
+        return
+    del user_state[chat_id]
+    _process_uploaded_ibkr_xml(chat_id, message)
+
+
 @bot.message_handler(func=lambda m: True, content_types=['text', 'photo'])
 def handle_all_messages(message):
     chat_id = message.chat.id
@@ -698,6 +798,17 @@ def handle_all_messages(message):
         )
         _bot_log(f"Manual IBKR sync triggered by {chat_id}")
         threading.Thread(target=_run_manual_sync_thread, args=(chat_id,), daemon=True).start()
+        return
+
+    if text == "📤 העלה דוח XML":
+        user_state[chat_id] = {'action': 'awaiting_ibkr_xml'}
+        bot.send_message(
+            chat_id,
+            f"{RTL}📤 *העלה דוח IBKR XML*\n"
+            f"{RTL}שלח את קובץ ה-XML שהורדת מ-IBKR (Flex Query → Activity Flex Query → XML).\n\n"
+            f"{RTL}לביטול שלח *ביטול*",
+            reply_markup=types.ReplyKeyboardRemove(), parse_mode="Markdown",
+        )
         return
 
     if text == "📊 תוצאת Sync אחרון":
