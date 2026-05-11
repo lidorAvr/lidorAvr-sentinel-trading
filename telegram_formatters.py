@@ -7,6 +7,53 @@ telegram_formatters.py
 RTL = "‏"
 SEP = "───────────────"
 
+# ── Actionability Layer ────────────────────────────────────────────────────
+# Every alert must declare what the user should do with it.
+ACTIONABILITY_LABELS = {
+    "action_required": "🔴 פעולה נדרשת",
+    "review_required": "🟡 לבדוק",
+    "observation_only": "⚪ מידע בלבד",
+    "system_health":   "🔧 בריאות מערכת",
+    "external_managed": "🟠 מנוהל חיצונית — Sentinel בפיקוח בלבד",
+}
+
+
+def fmt_actionability(level: str) -> str:
+    """Return a formatted actionability line for any Telegram message."""
+    label = ACTIONABILITY_LABELS.get(level, f"⚪ {level}")
+    return f"{RTL}▸ סוג התרעה: *{label}*"
+
+
+def fmt_data_quality_badge(primary: str, risk_badge: str, label: str) -> str:
+    """Return a compact badge string for inline display."""
+    parts = [primary]
+    if risk_badge:
+        parts.append(risk_badge)
+    parts.append(f"`{label}`")
+    return " ".join(parts)
+
+
+def fmt_algo_risk_note(symbol: str, open_r: float, exposure_pct: float,
+                       reason: str, risk_basis: str = "Target",
+                       risk_vis: int = 40) -> str:
+    """
+    Structured ALGO Observer risk note for Telegram.
+    Actionability is always Review Required — Sentinel never issues exit instructions.
+    """
+    return "\n".join([
+        f"{RTL}🧠 *Sentinel Risk Note*",
+        f"{RTL}{SEP}",
+        f"{RTL}סימול: *{symbol}* | אסטרטגיה: `ALGO` | מצב: 🟠 מנוהל חיצונית",
+        f"{RTL}Open R: `{open_r:.2f}R` ({risk_basis} Risk Base) | חשיפה: `{exposure_pct:.1f}%`",
+        f"{RTL}שקיפות סיכון: `{risk_vis}/100`",
+        f"{RTL}{SEP}",
+        f"{RTL}מה קרה: {reason}",
+        f"{RTL}{SEP}",
+        fmt_actionability("review_required"),
+        f"{RTL}▸ לוודא שהאלגו פעיל ומחובר.",
+        f"{RTL}▸ אין המלצת יציאה ידנית מ-Sentinel.",
+    ])
+
 
 def fmt_position_card(i: int, sym: str, setup: str, days_held: int,
                       curr: float, entry: float, open_pnl: float,

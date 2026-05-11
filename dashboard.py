@@ -191,6 +191,7 @@ def compute_live_portfolio_data(open_trades_dict, _acc_size, _target_risk_usd, _
             'OriginalRisk': original_campaign_risk, 'GivebackRisk': giveback_risk_usd, 'LockedProfit': locked_profit_usd,
             'CapitalRisk': current_open_loss_risk,
             'CampaignId': row.get('campaign_id'),
+            'Qty': qty, 'Stop': sl, 'InitStop': init_sl, 'TargetRisk': _target_risk_usd,
             # מינרביני — סיכון
             'InitRisk_USD': init_risk['initial_risk_usd'],
             'InitRisk_Pct': init_risk['initial_risk_pct'],
@@ -452,6 +453,11 @@ else:
             for _, pos in live_df.iterrows():
                 is_algo = str(pos['Setup']).upper() == 'ALGO'
                 with st.expander(f"{pos['EfficiencyColor']} {pos['Symbol']} | {pos['Status']} | {pos['Total_R']:.2f}R | {pos['DaysHeld']}d"):
+                    dq_primary, dq_risk, dq_label = ec.compute_data_quality_badge(
+                        pos['Setup'], pos['Entry'], pos['Qty'], pos['Stop'], pos['InitStop'], pos['TargetRisk']
+                    )
+                    badge_str = f"{dq_primary} {dq_risk} `{dq_label}`" if dq_risk else f"{dq_primary} `{dq_label}`"
+                    st.caption(f"🏷️ Data Quality: {badge_str}")
                     pa1, pa2, pa3, pa4 = st.columns(4)
 
                     # עמודה 1: סיכון

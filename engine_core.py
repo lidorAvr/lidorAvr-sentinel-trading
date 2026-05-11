@@ -893,3 +893,31 @@ def compute_giveback_from_peak(peak_open_r, current_open_r):
         "classification": cls,
         "label": label,
     }
+
+
+def compute_data_quality_badge(setup_type, entry_price, quantity, stop, init_sl, target_risk_usd=0):
+    """
+    Compute a data quality badge for a position.
+    Returns (primary_badge, risk_badge, label).
+      primary_badge: ✅ Verified | ⚠️ Partial | 🟠 External | 🔴 Broken
+      risk_badge:    🧮 True-Risk | 📊 Target-Based | ""
+      label:         short English descriptor
+    """
+    if is_algo_position(setup_type):
+        primary, label = "🟠", "External"
+    elif entry_price <= 0 or quantity <= 0:
+        primary, label = "🔴", "Broken"
+    elif stop > 0 and stop < entry_price and init_sl > 0 and init_sl < entry_price:
+        primary, label = "✅", "Verified"
+    elif (stop > 0 and stop < entry_price) or target_risk_usd > 0:
+        primary, label = "⚠️", "Partial"
+    else:
+        primary, label = "🔴", "Broken"
+
+    basis = classify_risk_basis(
+        init_sl if (init_sl > 0 and init_sl < entry_price) else stop,
+        entry_price, setup_type, target_risk_usd
+    )
+    risk_badge = {"True": "🧮", "Target": "📊"}.get(basis, "")
+
+    return primary, risk_badge, label
