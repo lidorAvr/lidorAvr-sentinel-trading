@@ -377,8 +377,18 @@ else:
                 open_r_str = "N/A"
                 risk_dev = " | ⚠️ Missing Initial Stop Data"
                 
-            init_stop_str = f"${init_sl_clean:.2f}" if init_sl_clean > 0 else "N/A"
-            ai_str += f"- {sym} [{setup}]: Avg Entry: ${entry:.2f} | Curr: ${curr_p:.2f} | Initial Stop: {init_stop_str} | Current Stop: ${sl:.2f} | Open PnL: ${open_pnl:.2f} | Open R: {open_r_str}{risk_dev}\n"
+            is_algo_pos = str(setup).upper() == 'ALGO'
+            mgmt_mode = ec.classify_management_mode(setup, sym)
+            risk_basis = ec.classify_risk_basis(sl, base_price, setup, target_risk_usd)
+            risk_vis = ec.compute_risk_visibility_score(setup, sl, base_price, target_risk_usd)
+            if is_algo_pos:
+                stop_display = "External / Unknown (ALGO managed)"
+                init_stop_str = "External / Unknown"
+            else:
+                init_stop_str = f"${init_sl_clean:.2f}" if init_sl_clean > 0 else "N/A"
+                stop_display = f"${sl:.2f}"
+            ai_str += f"- {sym} [{setup}] | Mode: {mgmt_mode} | RiskBasis: {risk_basis} | Visibility: {risk_vis}/100\n"
+            ai_str += f"  Entry: ${entry:.2f} | Curr: ${curr_p:.2f} | InitStop: {init_stop_str} | CurrStop: {stop_display} | OpenPnL: ${open_pnl:.2f} | OpenR: {open_r_str}{risk_dev}\n"
     else: ai_str += "No open positions.\n"
     
     ai_str += f"\n## 📅 3. Execution Archive (Recent Campaigns)\n"

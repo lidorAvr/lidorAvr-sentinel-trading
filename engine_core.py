@@ -9,6 +9,7 @@ import random
 from bs4 import BeautifulSoup
 
 ALGO_SYMBOL_LIMITS = {"QQQ": 10.0, "TSLA": 7.0, "JPM": 7.0, "PLTR": 6.0, "HOOD": 6.0}
+ALGO_SYMBOLS = set(ALGO_SYMBOL_LIMITS.keys())
 ALGO_CLUSTER_WARNING_PCT = 30.0
 ALGO_CLUSTER_CRITICAL_PCT = 35.0
 YF_CACHE = {}
@@ -241,6 +242,66 @@ def compute_behavior_features(symbol, df, days_held, spy_hist=None):
         "rs20_stock_sector": rs_bundle["rs20_stock_sector"]
     }
 
+def is_algo_position(setup_type, symbol=None):
+    """
+    True if this position is managed by an external ALGO system.
+    setup_type is the single source of truth. Symbol is only a fallback
+    when setup_type is missing/unknown — it never overrides an explicit EP/VCP label.
+    """
+    st = str(setup_type).upper()
+    if st == "ALGO":
+        return True
+    # Symbol fallback: only when setup_type carries no explicit intent
+    if st in ("UNKNOWN", "NONE", "NAN", "", "UNCATEGORIZED"):
+        if symbol and str(symbol).upper() in ALGO_SYMBOLS:
+            return True
+    return False
+
+
+def classify_management_mode(setup_type, symbol=None):
+    """
+    Classify how a position is managed.
+    Used to gate statistics, alerts, and display — not stored in Supabase (derived at runtime).
+    """
+    if is_algo_position(setup_type, symbol):
+        return "algo_observed"
+    return "manual_managed"
+
+
+def classify_risk_basis(stop, base_price, setup_type, target_risk_usd=0):
+    """
+    Classify the basis used for R calculation.
+    True   — real known stop, enters all quality statistics.
+    Target — ALGO or missing stop, uses target_risk_usd as denominator.
+    Unknown — no basis available, excluded from statistics.
+    """
+    if is_algo_position(setup_type):
+        return "Target" if target_risk_usd > 0 else "Unknown"
+    if stop > 0 and stop < base_price:
+        return "True"
+    if target_risk_usd > 0:
+        return "Target"
+    return "Unknown"
+
+
+def compute_risk_visibility_score(setup_type, stop, base_price, target_risk_usd=0):
+    """
+    Score 0-100 expressing how clearly we can see a position's risk.
+    100: stop known, risk known, quantity known (True Risk basis)
+     60: Target Risk basis only (no real stop)
+     40: external ALGO, target risk available
+     20: external ALGO, no target risk; or no stop and no target
+      0: broken data
+    """
+    if is_algo_position(setup_type):
+        return 40 if target_risk_usd > 0 else 20
+    if stop > 0 and stop < base_price:
+        return 100
+    if target_risk_usd > 0:
+        return 60
+    return 20
+
+
 def evaluate_hard_rules(features, setup_type, weight_pct, symbol, current_stop, total_r, stage, mgt_state):
     if str(setup_type).upper() == "ALGO":
         limit = ALGO_SYMBOL_LIMITS.get(symbol, 100.0)
@@ -379,13 +440,32 @@ def evaluate_position_engine(symbol, entry_price, entry_date_str, current_stop, 
         if hard_rule is not None:
             action = hard_rule["action"]
             if action == 'PENDING_MGT_STATE': action = "Runner חופשי - שקול מימוש בשבירת MA10" if mgt_state == "runner_mode" else "שקול מימוש חלקי"
-            return {"ok": True, "error": None, "data": {"status": hard_rule["status"], "sizing_status": sizing_status, "issues": issues, "action": action, "trigger": hard_rule["trigger"], "suggested_stop": current_stop, "score": None, "stage": stage, "features": features}}
-        
+            mgmt_mode = classify_management_mode(setup_type, symbol)
+            risk_basis = classify_risk_basis(current_stop, entry_price, setup_type, target_risk_usd)
+            risk_vis = compute_risk_visibility_score(setup_type, current_stop, entry_price, target_risk_usd)
+            return {"ok": True, "error": None, "data": {"status": hard_rule["status"], "sizing_status": sizing_status, "issues": issues, "action": action, "trigger": hard_rule["trigger"], "suggested_stop": current_stop, "score": None, "stage": stage, "features": features, "management_mode": mgmt_mode, "risk_basis": risk_basis, "risk_visibility_score": risk_vis}}
+
         score = score_position(features, stage)
         status = map_score_to_status(score, features=features)
+        mgmt_mode = classify_management_mode(setup_type, symbol)
+        risk_basis = classify_risk_basis(current_stop, entry_price, setup_type, target_risk_usd)
+        risk_vis = compute_risk_visibility_score(setup_type, current_stop, entry_price, target_risk_usd)
+
+        # ALGO: Sentinel is an observer only — do not apply discretionary management rules.
+        if mgmt_mode == "algo_observed":
+            return {"ok": True, "error": None, "data": {
+                "status": status, "sizing_status": sizing_status, "issues": [],
+                "action": "מנוהל חיצונית — בקרה בלבד",
+                "trigger": "",
+                "suggested_stop": None,
+                "score": score, "stage": stage, "features": features,
+                "management_mode": "algo_observed",
+                "risk_basis": risk_basis,
+                "risk_visibility_score": risk_vis,
+            }}
+
         action, trigger, suggested_stop = build_management_action(status, features, stage, current_stop, total_r, mgt_state)
-        
-        return {"ok": True, "error": None, "data": {"status": status, "sizing_status": sizing_status, "issues": issues, "action": action, "trigger": trigger, "suggested_stop": suggested_stop, "score": score, "stage": stage, "features": features}}
+        return {"ok": True, "error": None, "data": {"status": status, "sizing_status": sizing_status, "issues": issues, "action": action, "trigger": trigger, "suggested_stop": suggested_stop, "score": score, "stage": stage, "features": features, "management_mode": mgmt_mode, "risk_basis": risk_basis, "risk_visibility_score": risk_vis}}
     except Exception as e: return {"ok": False, "error": str(e), "data": None}
 
 def get_open_positions_campaign(df):

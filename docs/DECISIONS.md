@@ -311,3 +311,42 @@ True planned R:R = (target_price - entry) / (entry - initial_stop). No target pr
 3. Update DB Manager in dashboard for target price entry.
 4. Update Telegram backlog flow to capture target price.
 This is a HIGH risk schema change — requires a dedicated task.
+
+---
+
+## DEC-20260511-001 — ALGO Observer Mode: Sentinel does not manage external ALGO positions
+
+Date: 2026-05-11
+Status: implemented
+
+### Decision
+
+Sentinel must not issue stop-raise, exit, or management instructions to positions managed by an external ALGO system. Sentinel's role for ALGO positions is: oversight, measurement, deviation alerting, and data integrity — not trade management.
+
+### Formal rule encoded in engine_core.py
+
+`evaluate_position_engine()` now checks `classify_management_mode()` before calling `build_management_action()`. If `management_mode == "algo_observed"`, the function returns `action = "מנוהל חיצונית — בקרה בלבד"` and skips all discretionary management logic.
+
+### Three new runtime fields (derived, not stored in Supabase)
+
+- `management_mode`: `algo_observed` | `manual_managed`
+- `risk_basis`: `True` | `Target` | `Unknown`
+- `risk_visibility_score`: 0–100
+
+### Display rules
+
+- ALGO positions never show `Current Stop: $0.00` — display: `External / Unknown`.
+- Telegram ALGO block shows risk basis and visibility score.
+- AI context export shows `management_mode` and `risk_basis` per position.
+- ALGO does not receive `Action Required` alerts — maximum actionability is `Review Required`.
+
+### Alternatives considered
+
+- **Show $0.00 as-is**: misleading — looks like a data error or missing stop.
+- **Hide ALGO positions from analysis entirely**: loses oversight value.
+- **Run full discretionary engine for ALGO**: produces wrong management instructions.
+
+### Known ALGO symbols
+
+Defined in `engine_core.ALGO_SYMBOLS` (derived from `ALGO_SYMBOL_LIMITS`): QQQ, TSLA, JPM, PLTR, HOOD.
+Classification is primarily by `setup_type == "ALGO"`, with symbol as secondary fallback.

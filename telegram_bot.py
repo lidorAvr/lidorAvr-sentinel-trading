@@ -615,17 +615,20 @@ def handle_all_messages(message):
                     algo_count += 1
                     total_algo_pnl += open_pnl_usd
                     total_algo_exposure += pos_value
-                    open_r_str = f"`{open_r_val:.1f}R` *(Target Base)*"
-                    sl_text = init_text = "`🤖 אלגו`"
-                    
-                    msg += f"{RTL}*{i}. {sym}* | 🏷️ ALGO\n"
+                    open_r_str = f"`{open_r_val:.1f}R` *(Target Risk Base)*"
+                    e_data = engine_res.get("data") or {}
+                    risk_basis = e_data.get("risk_basis", "Target")
+                    risk_vis = e_data.get("risk_visibility_score", 40)
+
+                    msg += f"{RTL}*{i}. {sym}* | 🏷️ ALGO | 🟠 מנוהל חיצונית\n"
                     msg += f"{RTL}   ▸ ותק: `{days_held}` ימים | כמות: {qty_text}\n"
                     msg += f"{RTL}   ▸ כניסה: {entry_text} | נוכחי: `${curr:.2f}`\n"
+                    msg += f"{RTL}   ▸ סטופ: מנוהל חיצונית | בסיס R: `{risk_basis}` | שקיפות סיכון: `{risk_vis}/100`\n"
                     msg += f"{RTL}   ▸ רווח צף: {pnl_icon} `${open_pnl_usd:.2f}` | כולל: `${total_pos_profit:.2f}`\n"
                     msg += f"{RTL}   ▸ חשיפה: `{weight_pct:.1f}%` מקרן הבסיס\n"
                     msg += f"{RTL}   ▸ Open R (צף): {open_r_str}\n"
-                    msg += f"{RTL}   ▸ סטטוס: {status}\n"
-                    msg += f"{RTL}   ▸ פעולה: *{action_short}*\n"
+                    msg += f"{RTL}   ▸ סטטוס שוק: {status}\n"
+                    msg += f"{RTL}   ▸ פיקוח: `מידע בלבד — Sentinel אינה מנהלת יציאות אלגו`\n"
                 else:
                     total_disc_pnl += open_pnl_usd
                     total_disc_exposure += pos_value
