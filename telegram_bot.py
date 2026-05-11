@@ -103,7 +103,7 @@ def _run_manual_sync_thread(chat_id: int):
     """Background thread: runs IBKR sync and reports back to Telegram."""
     _bot_log(f"Manual IBKR sync started by chat_id={chat_id}")
     try:
-        result = run_ibkr_sync()
+        result = run_ibkr_sync(log_fn=_bot_log)
         status  = result["status"]
         message = result["message"]
         nav     = result.get("nav")
