@@ -309,6 +309,12 @@ else:
                 original_campaign_risk, r_realized, quality_val
             ) if is_algo else None
 
+            mgt_state_last = sells.iloc[-1].get('management_state', '')
+            days_held_camp = max((sells.iloc[-1]['trade_date'] - first_date).days, 1)
+            n_addons = max(len(buys) - 1, 0)
+            intent = ec.classify_intent(setup, str(mgt_state_last), r_realized, days_held_camp, n_addons)
+            mistake = ec.classify_mistake(intent, stat_bucket, total_pnl, str(mgt_notes_val or ''))
+
             closed_campaigns.append({
                 'campaign_id': cid, 'symbol': buys.iloc[0]['symbol'], 'close_date': sells.iloc[-1]['trade_date'],
                 'entry_date': first_date, 'avg_entry': avg_entry, 'avg_exit': avg_exit,
@@ -317,6 +323,7 @@ else:
                 'original_campaign_risk': original_campaign_risk, 'init_sl_clean': init_sl,
                 'image_url': images[-1] if images else None, 'events': events, 'management_notes': mgt_notes_val,
                 'stat_bucket': stat_bucket, 'algo_oversight': algo_oversight,
+                'intent': intent, 'mistake': mistake,
             })
     camp_df = pd.DataFrame(closed_campaigns)
 
@@ -452,7 +459,13 @@ else:
             s_str = f"{int(row['score'])}/10" if row['score'] > 0 else "N/A"
             algo_ov = row.get('algo_oversight')
             oversight_str = f" | ALGO Oversight: {algo_ov['score']}/100 ({algo_ov['label']})" if algo_ov else ""
+            intent_str = ec.INTENT_LABELS.get(row.get('intent', 'unknown'), '⚪ Unknown')
+            mistake_str = ec.MISTAKE_LABELS.get(row.get('mistake', ''), '') if row.get('mistake') else ''
             ai_str += f"- Strategy Quality: {q_str} | Execution Score: {s_str}{oversight_str}\n"
+            ai_str += f"- Intent: {intent_str}"
+            if mistake_str:
+                ai_str += f" | Loss Type: {mistake_str}"
+            ai_str += "\n"
             if row.get('original_campaign_risk', 0) > 0 and not row['is_algo']: ai_str += f"- Planned Risk: ${target_risk_usd:.2f} | Original Campaign Risk: ${row['original_campaign_risk']:.2f}\n"
             n_val = row.get('management_notes')
             if n_val and str(n_val) not in ["None", "Skipped", "nan"]: ai_str += f"- Management Notes: {n_val}\n"
@@ -463,6 +476,33 @@ else:
                 else: stop_str = f" | Exit Stop: ${ev['stop']:.2f}" if ev['stop'] > 0 else ""
                 ai_str += f"  * {ev['date'].strftime('%Y-%m-%d')}: {action_str}{stop_str}\n"
     else: ai_str += "No campaigns closed yet.\n"
+
+    # ── Next Required Decisions ──────────────────────────────────────────────
+    ai_str += f"\n## 🧭 4. Next Required Decisions\n"
+    if not live_df.empty:
+        for _, pos in live_df.iterrows():
+            decisions = []
+            is_algo_pos = str(pos['Setup']).upper() == 'ALGO'
+            if pos['CapitalRisk'] > 0 and not is_algo_pos:
+                decisions.append(f"סטופ מתחת לבסיס — סיכון הון פתוח ${pos['CapitalRisk']:,.0f}")
+            if pos['GivebackRisk'] > 0:
+                decisions.append(f"Giveback ${pos['GivebackRisk']:,.0f} — לבחון האם לקדם סטופ")
+            if pos['Total_R'] >= 2.0 and not is_algo_pos:
+                decisions.append(f"הגעה ל-{pos['Total_R']:.1f}R — לשקול חלוקת רווחים / הזזת סטופ")
+            earnings_info = ec.fetch_next_earnings_date(pos['Symbol'])
+            if earnings_info['ok'] and earnings_info.get('days_to_event', 99) <= 14:
+                decisions.append(f"דוח רווחים תוך {earnings_info['days_to_event']} ימים — לקבל החלטה על גודל פוזיציה")
+            if decisions:
+                ai_str += f"- **{pos['Symbol']}**: " + " | ".join(decisions) + "\n"
+        if not any(True for _ in live_df.iterrows()):
+            ai_str += "- אין פוזיציות פתוחות.\n"
+    else:
+        ai_str += "- אין פוזיציות פתוחות.\n"
+
+    # NAV freshness note at end of export
+    nav_info_export = ec.get_nav_with_freshness()
+    ai_str += f"\n---\n_NAV freshness: {nav_info_export['freshness_label']}_\n"
+
     st.sidebar.text_area("📋 העתק (Ctrl+A -> Ctrl+C):", value=ai_str, height=450)
 
     m1, m2, m3, m4, m5 = st.columns(5)

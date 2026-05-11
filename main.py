@@ -69,6 +69,7 @@ def update_nav_locally(val):
             with open(path, "r") as f:
                 data = json.load(f)
         data["nav"] = float(val)
+        data["nav_updated_at"] = datetime.now().isoformat()
         with open(path, "w") as f:
             json.dump(data, f)
         log(f"NAV Updated: ${data['nav']}")

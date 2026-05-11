@@ -37,6 +37,22 @@ def get_account_settings():
     except: return {"total_deposited": 7500.0, "risk_pct_input": 0.5}
 
 
+def get_nav_and_risk(account_settings=None):
+    """
+    Single source of truth for NAV + target risk.
+    Returns (acc_size, target_risk_usd, nav_freshness_label).
+    Uses get_nav_with_freshness() so staleness is always surfaced.
+    """
+    if account_settings is None:
+        account_settings = get_account_settings()
+    nav_info = ec.get_nav_with_freshness()
+    acc_size = nav_info["nav"] if nav_info["ok"] else float(account_settings.get("total_deposited", 7500.0))
+    risk_pct = float(account_settings.get("risk_pct_input", 0.5))
+    target_risk_usd = acc_size * (risk_pct / 100)
+    stale_label = nav_info["freshness_label"] if nav_info["is_stale"] else None
+    return acc_size, target_risk_usd, stale_label
+
+
 def _build_health_report():
     """
     Run 13 data integrity checks and return a formatted Telegram health report.
@@ -66,13 +82,16 @@ def _build_health_report():
     else:
         warn("IBKR Reports — אין קבצים ב-/app/ibkr_reports/")
 
-    # 3. NAV Config
-    try:
-        cfg = json.load(open("/app/sentinel_config.json"))
-        nav = float(cfg.get("nav") or cfg.get("total_deposited") or 0)
-        ok(f"NAV Config — ${nav:,.0f}") if nav > 0 else bad("NAV Config — ערך 0 או חסר")
-    except:
+    # 3. NAV Config + freshness
+    nav_info = ec.get_nav_with_freshness()
+    if not nav_info["ok"]:
         bad("NAV Config — sentinel_config.json לא נמצא")
+    elif nav_info["is_critical"]:
+        bad(nav_info["freshness_label"])
+    elif nav_info["is_stale"]:
+        warn(nav_info["freshness_label"])
+    else:
+        ok(nav_info["freshness_label"])
 
     # 4. Risk Config range
     try:
@@ -328,11 +347,7 @@ def handle_drilldown(chat_id, symbol):
         if curr is None: curr = entry
         
         account_settings = get_account_settings()
-        ibkr_nav = get_ibkr_nav()
-        acc_size = ibkr_nav if ibkr_nav else float(account_settings.get("total_deposited", 7500.0))
-        target_risk_pct = float(account_settings.get("risk_pct_input", 0.5))
-        target_risk_usd = acc_size * (target_risk_pct / 100)
-        
+        acc_size, target_risk_usd, nav_stale_label = get_nav_and_risk(account_settings)
         weight_pct = ((curr * qty) / acc_size) * 100 if acc_size > 0 else 0
         spy_hist = ec.get_cached_history("SPY", "1y", "1d")
         
@@ -413,7 +428,7 @@ def handle_queries(call):
         rec_pct = float(parts[2])
         curr_pct = float(parts[3])
         account_settings = get_account_settings()
-        nav = float(account_settings.get("nav", account_settings.get("total_deposited", 7500.0)))
+        nav, _, _ = get_nav_and_risk(account_settings)
 
         if action == "YES":
             success = are.update_risk_pct(rec_pct)
@@ -487,7 +502,7 @@ def handle_all_messages(message):
         rec_pct = active_state["rec_pct"]
         curr_pct = active_state["curr_pct"]
         account_settings = get_account_settings()
-        nav = float(account_settings.get("nav", account_settings.get("total_deposited", 7500.0)))
+        nav, _, _ = get_nav_and_risk(account_settings)
         are.mark_adherence(recommended_pct=rec_pct, actual_pct=curr_pct, followed=False, reason=reason)
         are.log_risk_journal({
             "direction": "up" if rec_pct > curr_pct else "down_fast",
@@ -634,8 +649,7 @@ def handle_all_messages(message):
             pos_res = ec.get_open_positions_campaign(df)
             open_pos = pos_res["data"] if pos_res["ok"] else pd.DataFrame()
             account_settings = get_account_settings()
-            ibkr_nav = get_ibkr_nav()
-            acc_size = ibkr_nav if ibkr_nav else float(account_settings.get("total_deposited", 7500.0))
+            acc_size, target_risk_usd_regime, nav_stale_label = get_nav_and_risk(account_settings)
             exp = {"ALGO": 0, "VCP": 0, "EP": 0, "OTHER": 0}
             if not open_pos.empty:
                 for _, row in open_pos.iterrows():
@@ -647,10 +661,12 @@ def handle_all_messages(message):
             total_exp = sum(exp.values())
             total_pct = (total_exp / acc_size) * 100 if acc_size > 0 else 0
             rep = tf.fmt_regime_report(regime, total_pct, exp["ALGO"], exp["VCP"], exp["EP"], acc_size)
+            if nav_stale_label:
+                rep += f"\n\n⚠️ _{nav_stale_label}_"
             # --- Adaptive Risk Block ---
             try:
                 current_risk_pct = float(account_settings.get("risk_pct_input", 0.5))
-                nav_for_risk = ibkr_nav if ibkr_nav else float(account_settings.get("nav", acc_size))
+                nav_for_risk = acc_size
                 closed_camps = are.compute_closed_campaigns(df)
                 risk_rec = are.compute_adaptive_risk(closed_camps, current_risk_pct, nav_for_risk)
                 rep += tf.fmt_adaptive_risk_block(risk_rec)
@@ -677,10 +693,7 @@ def handle_all_messages(message):
                 return bot.send_message(chat_id, "✅ אין פוזיציות פתוחות במערכת.")
 
             account_settings = get_account_settings()
-            ibkr_nav = get_ibkr_nav()
-            acc_size = ibkr_nav if ibkr_nav else float(account_settings.get("total_deposited", 7500.0))
-            target_risk_pct = float(account_settings.get("risk_pct_input", 0.5))
-            target_risk_usd = acc_size * (target_risk_pct / 100)
+            acc_size, target_risk_usd, nav_stale_label = get_nav_and_risk(account_settings)
             spy_hist = ec.get_cached_history("SPY", "1y", "1d")
             
             user_state[chat_id] = {'temp_positions': open_pos.to_dict('records')}
@@ -771,36 +784,27 @@ def handle_all_messages(message):
                     total_disc_pnl += open_pnl_usd
                     total_disc_exposure += pos_value
                     total_risk += current_open_loss_risk
-                    
-                    if original_campaign_risk > 0:
-                        open_r_str = f"`{open_r_val:.1f}R`"
-                    else:
-                        open_r_str = "`N/A` ⚠️ (חסר סטופ התחלתי)"
-                        
-                    score_text = f" (ציון: `{score}/100`)" if score is not None else ""
-                    init_sl_display = f"${init_sl_clean:.2f}" if init_sl_clean > 0 else "חסר/מעל כניסה"
-                    
-                    msg += f"{RTL}*{i}. {sym}* | 🏷️ {setup}\n"
-                    msg += f"{RTL}   ▸ ותק: `{days_held}` ימים ({stage}) | כמות: {qty_text}\n"
-                    msg += f"{RTL}   ▸ כניסה: {entry_text} | נוכחי: `${curr:.2f}`\n"
-                    msg += f"{RTL}   ▸ סטופ מקורי: `{init_sl_display}` | סטופ נוכחי: `${sl:.2f}`\n"
-                    msg += f"{RTL}   ▸ רווח צף: {pnl_icon} `${open_pnl_usd:.2f}` | כולל: `${total_pos_profit:.2f}`\n"
-                    msg += f"{RTL}   ▸ Open R (צף): {open_r_str}\n"
-                    
-                    if current_open_loss_risk > 0:
-                        msg += f"{RTL}   ▸ סיכון הון פתוח: `${current_open_loss_risk:.0f}`\n"
-                    else:
-                        msg += f"{RTL}   ▸ ניהול רווח: מובטח `${locked_profit_usd:.0f}` | ויתור פוטנציאלי `${giveback_risk_usd:.0f}`\n"
-                    
+
+                    msg += tf.fmt_position_card(
+                        i=i, sym=sym, setup=setup, days_held=days_held,
+                        curr=curr, entry=entry, open_pnl=open_pnl_usd,
+                        pos_value=pos_value, weight_pct=weight_pct,
+                        total_pos_profit=total_pos_profit,
+                        total_campaign_r=total_campaign_r,
+                        open_r_val=open_r_val, status=status,
+                        action_short=action_short,
+                        add_on_count=add_on_count, base_price=base_price,
+                        locked_profit=locked_profit_usd,
+                        giveback_risk=giveback_risk_usd,
+                        capital_risk=current_open_loss_risk,
+                    ) + "\n"
                     if original_campaign_risk > 0 and sizing_str != "✅ תקין":
                         clean_sizing = sizing_str.replace('⚠️ ', '').replace('📉 ', '')
                         msg += f"{RTL}   ▸ ⚖️ בקרת קמפיין: {clean_sizing}\n"
                     if total_campaign_r <= -1.25 and original_campaign_risk > 0:
                         msg += f"{RTL}   ▸ 🚨 בקרת ביצוע: חריגה מהסטופ! ({total_campaign_r:.1f}R)\n"
-                    
-                    msg += f"{RTL}   ▸ סטטוס: {status}{score_text}{issues_str}\n"
-                    msg += f"{RTL}   ▸ פעולה: *{action_short}*\n"
-                    if trigger: msg += f"{RTL}   ▸ טריגר ניהולי: `{trigger}`\n"
+                    if trigger:
+                        msg += f"{RTL}   ▸ טריגר ניהולי: `{trigger}`\n"
 
                 rs_str = ""
                 if feats and feats.get("rs20_market") is not None:
@@ -857,12 +861,14 @@ def handle_all_messages(message):
             # --- Adaptive Risk Recommendation ---
             try:
                 current_risk_pct = float(account_settings.get("risk_pct_input", 0.5))
-                nav_for_risk = float(account_settings.get("nav", acc_size))
                 closed_camps = are.compute_closed_campaigns(df)
-                risk_rec = are.compute_adaptive_risk(closed_camps, current_risk_pct, nav_for_risk)
+                risk_rec = are.compute_adaptive_risk(closed_camps, current_risk_pct, acc_size)
                 msg += tf.fmt_adaptive_risk_block(risk_rec)
             except Exception:
                 pass
+
+            if nav_stale_label:
+                msg += f"\n\n{RTL}⚠️ _{nav_stale_label}_"
 
             try: bot.delete_message(chat_id, loading_msg.message_id)
             except: pass

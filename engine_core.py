@@ -1,8 +1,10 @@
 import time
+import json
+import os
 import pandas as pd
 import numpy as np
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timedelta
 import threading
 import requests
 import random
@@ -1113,3 +1115,157 @@ def fetch_next_earnings_date(symbol: str) -> dict:
 
     YF_CACHE[cache_key] = {"data": result, "time": now}
     return result
+
+
+# ── NAV Freshness ──────────────────────────────────────────────────────────────
+NAV_STALE_HOURS = 24   # warn if NAV not updated within this window
+NAV_CRITICAL_HOURS = 48  # critical if older than this
+
+_CONFIG_PATHS = ["/app/sentinel_config.json", "sentinel_config.json"]
+
+
+def get_nav_with_freshness() -> dict:
+    """
+    Read NAV from sentinel_config.json and compute freshness.
+
+    Returns:
+      {
+        "nav":          float,
+        "source":       "ibkr_sync" | "manual" | "fallback",
+        "updated_at":   datetime | None,
+        "age_hours":    float | None,
+        "is_stale":     bool,
+        "is_critical":  bool,
+        "freshness_label": str   (Hebrew, for Telegram display),
+        "ok":           bool,
+      }
+    """
+    fallback = {
+        "nav": 7500.0, "source": "fallback", "updated_at": None,
+        "age_hours": None, "is_stale": True, "is_critical": True,
+        "freshness_label": "🔴 NAV: fallback — sentinel_config.json לא נמצא",
+        "ok": False,
+    }
+
+    cfg_path = next((p for p in _CONFIG_PATHS if os.path.exists(p)), None)
+    if cfg_path is None:
+        return fallback
+
+    try:
+        with open(cfg_path, "r") as f:
+            cfg = json.load(f)
+    except Exception:
+        return fallback
+
+    nav = float(cfg.get("nav") or cfg.get("total_deposited") or 7500.0)
+    updated_at_str = cfg.get("nav_updated_at")
+
+    if updated_at_str:
+        try:
+            updated_at = datetime.fromisoformat(updated_at_str)
+            age_hours = (datetime.now() - updated_at).total_seconds() / 3600
+            is_stale = age_hours > NAV_STALE_HOURS
+            is_critical = age_hours > NAV_CRITICAL_HOURS
+            source = "ibkr_sync"
+            if is_critical:
+                label = f"🔴 NAV ${nav:,.0f} — ישן {age_hours:.0f}ש׳ (לא עודכן!)"
+            elif is_stale:
+                label = f"🟡 NAV ${nav:,.0f} — עודכן לפני {age_hours:.0f}ש׳"
+            else:
+                label = f"✅ NAV ${nav:,.0f} — עודכן לפני {age_hours:.1f}ש׳"
+        except ValueError:
+            updated_at, age_hours = None, None
+            is_stale = is_critical = True
+            source = "manual"
+            label = f"⚠️ NAV ${nav:,.0f} — תאריך עדכון לא תקין"
+    else:
+        updated_at, age_hours = None, None
+        is_stale = is_critical = True
+        source = "manual"
+        label = f"🟠 NAV ${nav:,.0f} — אין timestamp (הוגדר ידנית)"
+
+    return {
+        "nav": nav, "source": source, "updated_at": updated_at,
+        "age_hours": age_hours, "is_stale": is_stale, "is_critical": is_critical,
+        "freshness_label": label, "ok": True,
+    }
+
+
+# ── Position Intent Classification ────────────────────────────────────────────
+# intent describes the ROLE of the position — affects how it's judged.
+INTENT_LABELS = {
+    "starter":       "🌱 Starter",
+    "probe":         "🧪 Probe",
+    "full_position": "🎯 Full Position",
+    "runner":        "🏃 Runner",
+    "earnings_hold": "📅 Earnings Hold",
+    "algo_signal":   "🤖 ALGO Signal",
+    "reentry":       "🔁 Re-entry",
+    "unknown":       "⚪ Unknown",
+}
+
+
+def classify_intent(setup_type: str, management_state: str, total_campaign_r: float,
+                    days_held: int, add_on_count: int = 0) -> str:
+    """
+    Derive intent from available runtime data.
+    Intent is never stored in DB — always derived.
+    """
+    st = str(setup_type).upper()
+    ms = str(management_state).lower()
+
+    if is_algo_position(setup_type):
+        return "algo_signal"
+    if "probe" in ms or "test" in ms:
+        return "probe"
+    if "runner" in ms:
+        return "runner"
+    if "reentry" in ms or "re_entry" in ms:
+        return "reentry"
+    if "earnings" in ms:
+        return "earnings_hold"
+    if total_campaign_r >= 2.0 and add_on_count == 0:
+        return "runner"
+    if add_on_count == 0 and days_held <= 3:
+        return "starter"
+    if ms in ("full_position", "full"):
+        return "full_position"
+    return "full_position"
+
+
+# ── Mistake Classification (closed campaigns with loss) ───────────────────────
+MISTAKE_LABELS = {
+    "good_loss":   "✅ Good Loss — לפי תוכנית",
+    "bad_loss":    "🔴 Bad Loss — חריגה מהכללים",
+    "system_loss": "🔧 System Loss — תקלת מערכת/פקודה",
+    "market_loss": "🌊 Market Loss — גאפ / אירוע חיצוני",
+    "data_loss":   "⚠️ Data Loss — חישוב לא אמין",
+    "probe_loss":  "🧪 Probe Loss — הפסד מתוכנן",
+    "unknown":     "⚪ Unknown",
+}
+
+
+def classify_mistake(intent: str, stat_bucket: str, pnl_usd: float,
+                     management_notes: str = "") -> str:
+    """
+    Derive mistake classification for a closed campaign with a loss.
+    For winning campaigns returns None.
+    Always derived at runtime — never stored.
+    """
+    if pnl_usd >= 0:
+        return None
+
+    notes = str(management_notes).lower()
+    if intent == "probe":
+        return "probe_loss"
+    if stat_bucket == STAT_BUCKET_DATA_INCOMPLETE:
+        return "data_loss"
+    if any(w in notes for w in ("gap", "גאפ", "halt", "news", "earnings miss")):
+        return "market_loss"
+    if any(w in notes for w in ("sync", "error", "system", "order", "execution")):
+        return "system_loss"
+    if any(w in notes for w in ("plan", "stop honored", "תוכנית", "לפי תוכנית")):
+        return "good_loss"
+    if any(w in notes for w in ("violated", "no stop", "moved stop", "averaged down", "חריגה")):
+        return "bad_loss"
+    return "unknown"

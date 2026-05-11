@@ -228,11 +228,57 @@ def send_telegram_with_keyboard(text, markup):
     try: bot.send_message(ADMIN_ID, text, parse_mode="Markdown", reply_markup=markup)
     except Exception as e: print(f"Telegram send_keyboard failed: {e}")
 
+_KNOWN_RISK_PCT_KEY = "last_known_risk_pct"
+
+
+def check_manual_risk_override(state: dict) -> None:
+    """
+    Detect when risk_pct_input in sentinel_config.json was changed outside of
+    the Telegram flow (i.e. manually edited or by a script). When detected,
+    log it via mark_adherence and send a Telegram alert.
+    """
+    try:
+        cfg = get_account_settings()
+        current_pct = float(cfg.get("risk_pct_input", 0.5))
+        last_known = state.get(_KNOWN_RISK_PCT_KEY)
+
+        if last_known is not None and abs(current_pct - float(last_known)) > 0.001:
+            delta = current_pct - float(last_known)
+            direction = "⬆️" if delta > 0 else "⬇️"
+            are.mark_adherence(
+                recommended_pct=float(last_known),
+                actual_pct=current_pct,
+                followed=False,
+                reason="Manual override detected by risk monitor",
+            )
+            are.log_risk_journal({
+                "direction": "up" if delta > 0 else "down_fast",
+                "current_risk_pct": float(last_known),
+                "recommended_risk_pct": float(last_known),
+                "action": "manual_override",
+                "actual_pct_set": current_pct,
+                "nav": ec.get_nav_with_freshness()["nav"],
+            })
+            alert = (
+                f"{RTL}⚠️ *זוהתה שינוי ידנית בסיכון*\n"
+                f"{RTL}risk\\_pct שונה מחוץ לטלגרם\n"
+                f"{RTL}{direction} `{float(last_known):.2f}%` → `{current_pct:.2f}%`\n"
+                f"{RTL}נרשם ביומן הסיכון כ-manual override."
+            )
+            send_telegram(alert)
+
+        state[_KNOWN_RISK_PCT_KEY] = current_pct
+    except Exception as e:
+        print(f"check_manual_risk_override error: {e}")
+
+
 def main():
     state = load_state()
+    check_manual_risk_override(state)
+
     account_settings = get_account_settings()
-    ibkr_nav = get_ibkr_nav()
-    acc_size = ibkr_nav if ibkr_nav else float(account_settings.get("total_deposited", 7500.0))
+    nav_info = ec.get_nav_with_freshness()
+    acc_size = nav_info["nav"] if nav_info["ok"] else float(account_settings.get("total_deposited", 7500.0))
     target_risk_pct = float(account_settings.get("risk_pct_input", 0.5))
     target_risk_usd = acc_size * (target_risk_pct / 100)
     
