@@ -1,5 +1,53 @@
 # Current System State
 
+## Changes — 2026-05-11 (session 6: IBKR pipeline fixes + manual XML upload + NAV key fix)
+
+### Production bugs fixed (all deployed ✅)
+
+**`telegram_bot.py` — Telegram Markdown crash** (PR #5)
+- `_build_health_report()` sent with `parse_mode="Markdown"` — IBKR filenames like `ibkr_2026-05-11.xml` contain underscores that Telegram v1 Markdown treats as unclosed italic, crashing the polling thread.
+- Fix: removed `parse_mode="Markdown"` from both send calls in `_build_health_report()`, removed `*...*` from title.
+
+**`dashboard.py` — matplotlib ImportError** (PR #6)
+- `.background_gradient(subset=["חשיפה %"], cmap="YlOrRd")` requires matplotlib which is not in requirements.txt.
+- Fix: removed the cosmetic call; table still renders with all formatted values.
+
+**`ibkr_sync_runner.py` — IBKR sync diagnostic logging** (PR #7)
+- Added `log_fn(f"SendRequest raw response: {res.text[:500]}")` on error to expose what IBKR actually returns.
+
+**`telegram_bot.py` — manual sync logs silent** (PR #8)
+- `_run_manual_sync_thread` called `run_ibkr_sync()` with default `print()` — unbuffered, invisible in Docker logs.
+- Fix: `run_ibkr_sync(log_fn=_bot_log)` — all sync output now in `sentinel_bot.log` and `docker compose logs`.
+
+**`ibkr_sync_runner.py` — ReferenceCode parsing (root cause of all IBKR failures)** (PR #9)
+- Code searched `root.find(".//code")` but IBKR returns `<ReferenceCode>` (PascalCase). Every successful SendRequest was treated as "no reference code". Root cause of all IBKR sync failures.
+- Fix: `root.find(".//ReferenceCode")` with explicit `is None` check (not `or` — XML Elements with no children are falsy even when they contain text).
+
+**`ibkr_sync_runner.py` — GetStatement wrong URL** (PR #10)
+- Hardcoded `www.interactivebrokers.com` for GetStatement. IBKR's SendRequest response includes `<Url>` pointing to `gdcdyn.interactivebrokers.com`.
+- Fix: extract `<Url>` from SendRequest response and pass as `fetch_url` param to `get_statement_with_retry`. Added `fetch_url` param with `gdcdyn` default.
+
+**`dashboard.py` — NAV key mismatch** (PR #12)
+- Dashboard read `settings.get("current_nav", ...)` — wrong key. `ibkr_sync_runner` writes `"nav"`. Always fell back to `total_deposited: $7,500` even after successful IBKR sync.
+- Second bug: `save_settings()` overwrote the entire config file, silently deleting `nav` on any settings change.
+- Fix: read `"nav"` key; `save_settings` merges into existing config dict instead of replacing it.
+
+### New feature: manual IBKR XML upload (PR #11)
+
+**`telegram_bot.py`**
+- `📤 העלה דוח XML` button in developer menu (fallback when IBKR API is throttled/unavailable).
+- Flow: button → bot requests file → user sends XML downloaded from IBKR Flex Query → bot processes identically to auto-sync.
+- `_process_uploaded_ibkr_xml(chat_id, message)`: downloads file, validates `.xml`, parses `ChangeInNAV endingValue` + Trades, saves to `_REPORTS_DIR`, updates `sentinel_config.json`, writes `MANUAL_RESULT_FILE`.
+- `handle_document_upload()`: telebot `content_types=['document']` handler, active only when `user_state['action'] == 'awaiting_ibkr_xml'`.
+- Confirmed working 2026-05-11 21:07: 27 trades + NAV $7,934.27 loaded successfully.
+
+### Test suite
+
+- **596 tests, 0 failures** (up from 588 after session 5 hotfixes)
+- 8 new tests in `test_developer_menu.py` covering `_process_uploaded_ibkr_xml`.
+
+---
+
 ## Changes — 2026-05-11 (session 5: PDF reports + comprehensive test suite)
 
 ### New services and modules
@@ -175,7 +223,7 @@ Moved 26 orphaned one-shot fix/debug scripts to `scripts/archive/`. Production c
 
 ## Current date context
 
-Last updated: 2026-05-11
+Last updated: 2026-05-11 (session 6)
 
 ## Production wiring
 
@@ -187,7 +235,7 @@ Docker Compose services:
 | `telegram-bot` | `python3 telegram_bot_secure_runner.py` |
 | `dashboard` | `streamlit run dashboard.py` |
 | `risk-monitor` | `python risk_monitor.py` |
-| `report-scheduler` | `python3 report_scheduler.py` (new) |
+| `report-scheduler` | `python3 report_scheduler.py` |
 
 ## Code state vs deployed state
 
@@ -197,17 +245,14 @@ Docker Compose services:
 | Session 2 (2026-05-10) | Dashboard + Telegram upgrade | ✅ Orange Pi |
 | Session 3 (2026-05-10) | Adaptive risk engine | ✅ Orange Pi |
 | Session 4 (2026-05-10) | Timezone fix + spam fix | ✅ Orange Pi |
-| Session 5 (2026-05-11) | PDF reports + test suite + dev menu | ⏳ pending deploy |
+| Session 5 (2026-05-11) | PDF reports + test suite + dev menu | ✅ Orange Pi |
+| Session 6 (2026-05-11) | 6 bug fixes + XML upload + NAV key fix | ✅ Orange Pi |
 
-## Session 5 deployment instructions
+## IBKR sync status
 
-```bash
-cd ~/sentinel_trading
-git pull
-docker compose up -d --build report-scheduler telegram-bot
-docker compose logs report-scheduler --tail=20
-docker compose logs telegram-bot --tail=20
-```
+- Auto-sync (07:00 Israel): configured, Flex Query 1446152 (Last Business Week, XML) — pending first successful morning run
+- Manual XML upload: ✅ confirmed working — 27 trades, NAV $7,934.27 loaded 2026-05-11
+- Pipeline: SendRequest → `<ReferenceCode>` → wait 15s → GetStatement on `gdcdyn.interactivebrokers.com`
 
 Smoke tests:
 - `🛠️ פיתוח` in Telegram developer menu (admin only)

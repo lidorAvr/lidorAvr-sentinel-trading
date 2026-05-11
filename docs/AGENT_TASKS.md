@@ -63,9 +63,69 @@ Rollback:
 
 ## Active tasks
 
+*(none — all session 6 tasks validated and deployed)*
+
+---
+
+## Completed tasks
+
+### TASK-20260511-012 — Manual IBKR XML upload via developer menu
+
+Status: validated
+Assigned to: agent
+Risk: Low
+Affected services: telegram-bot
+
+Goal:
+- Fallback when IBKR API is throttled: user downloads XML from IBKR website and uploads it directly in Telegram.
+
+Done:
+- `📤 העלה דוח XML` button in developer menu.
+- `_process_uploaded_ibkr_xml()`: validates extension, parses NAV + trades, saves report, updates config, writes result file.
+- `handle_document_upload()` handler for `content_types=['document']`.
+- 8 new tests in `test_developer_menu.py`.
+
+Validation:
+- [x] 8 new tests pass (596 total)
+- [x] Confirmed working on Orange Pi: 27 trades, NAV $7,934.27 loaded 2026-05-11 21:07
+- [x] PR #11 merged to main
+- [x] Deployed: `docker compose restart telegram-bot`
+
+Files touched:
+- `telegram_bot.py`
+- `tests/test_developer_menu.py`
+
+---
+
+### TASK-20260511-013 — Fix 6 production bugs (IBKR pipeline + dashboard)
+
+Status: validated
+Assigned to: agent
+Risk: Medium
+Affected services: telegram-bot, dashboard
+
+Goal:
+- Diagnose and fix all production errors after session 5 deploy.
+
+Done (PRs #5–#10, #12):
+1. Telegram health report Markdown crash on IBKR filenames (underscores) → removed `parse_mode="Markdown"` (PR #5)
+2. Dashboard `background_gradient` matplotlib ImportError → removed cosmetic call (PR #6)
+3. IBKR sync diagnostic: log raw SendRequest response (PR #7)
+4. Manual sync logs invisible: pass `log_fn=_bot_log` (PR #8)
+5. IBKR ReferenceCode PascalCase: `root.find(".//ReferenceCode")` + explicit `is None` check (PR #9)
+6. GetStatement URL: extract `<Url>` from SendRequest, default to `gdcdyn.interactivebrokers.com` (PR #10)
+7. Dashboard NAV key: `"current_nav"` → `"nav"`, fix `save_settings` to merge config (PR #12)
+
+Validation:
+- [x] 596 tests pass
+- [x] All PRs merged to main and deployed
+- [x] Dashboard confirmed: Live IBKR NAV $7,934.27, All-Time Return +5.8%
+
+---
+
 ### TASK-20260511-011 — Clean up scripts/archive and root-level clutter
 
-Status: in_progress
+Status: validated
 Assigned to: agent
 Risk: Low
 Affected services: none
@@ -80,8 +140,8 @@ Progress log:
 
 Validation:
 - [x] All orphaned scripts moved to scripts/archive/
-- [ ] scripts/archive/README.md written
-- [x] pytest -q still passes (587 passed)
+- [x] scripts/archive/README.md written
+- [x] pytest -q still passes (596 passed)
 
 ---
 

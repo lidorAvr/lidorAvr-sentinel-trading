@@ -457,3 +457,95 @@ Sentinel must not issue stop-raise, exit, or management instructions to position
 
 Defined in `engine_core.ALGO_SYMBOLS` (derived from `ALGO_SYMBOL_LIMITS`): QQQ, TSLA, JPM, PLTR, HOOD.
 Classification is primarily by `setup_type == "ALGO"`, with symbol as secondary fallback.
+
+---
+
+## DEC-20260511-006 — IBKR GetStatement URL: use `<Url>` from SendRequest response
+
+Date: 2026-05-11
+Status: implemented
+
+### Decision
+
+Extract the `<Url>` element from IBKR's SendRequest XML response and pass it as `fetch_url` to `get_statement_with_retry()`. Default to `gdcdyn.interactivebrokers.com` if absent.
+
+### Rationale
+
+Production logs showed SendRequest returning `<Url>https://gdcdyn.interactivebrokers.com/...</Url>` but the code hardcoded `www.interactivebrokers.com`. IBKR documents that GetStatement must be called on the URL provided in the SendRequest response — a different subdomain. Using the wrong host caused all GetStatement calls to fail silently or return errors.
+
+### Alternatives considered
+
+- **Hardcode `gdcdyn`**: works today but brittle — IBKR could change the subdomain.
+- **Try both hosts**: wasteful, unclear fallback semantics.
+
+### Constraint
+
+`fetch_url` param added to `get_statement_with_retry()` with a sensible default. Tests mock the URL so they are not affected by host changes.
+
+---
+
+## DEC-20260511-007 — sentinel_config.json: `"nav"` is the authoritative NAV key
+
+Date: 2026-05-11
+Status: implemented
+
+### Decision
+
+All readers and writers of `sentinel_config.json` must use the key `"nav"` for the IBKR-synced account value. `"current_nav"` is deprecated and must never be introduced.
+
+### Rationale
+
+`ibkr_sync_runner.py` and `account_state.py` always used `"nav"`. The dashboard used `"current_nav"` — a typo/inconsistency that meant the dashboard always showed the `total_deposited` fallback ($7,500) even after successful IBKR sync. Additionally, `save_settings()` in `dashboard.py` overwrote the entire config dict, silently deleting `"nav"` whenever the user changed any setting.
+
+### Fix applied
+
+- `dashboard.py` line 99: `settings.get("nav", ...)` (was `"current_nav"`).
+- `save_settings()`: merges updates into existing config dict instead of replacing it.
+
+### Contract (as of session 6)
+
+| Key | Writer | Reader |
+|-----|--------|--------|
+| `nav` | `ibkr_sync_runner.run_ibkr_sync()`, `_process_uploaded_ibkr_xml()` | all modules via `ec.get_nav_with_freshness()` or `account_state.load()` |
+| `nav_updated_at` | `ibkr_sync_runner`, `_process_uploaded_ibkr_xml()` | `engine_core.get_nav_with_freshness()` (freshness calc) |
+| `total_deposited` | `dashboard.save_settings()` | all modules (base capital / fallback) |
+| `risk_pct_input` | `dashboard.save_settings()`, `adaptive_risk_engine.update_risk_pct()` | all modules |
+
+### Constraint
+
+Any future writer of `sentinel_config.json` must read the existing file first and merge, never replace. Pattern: `cfg = json.load(f); cfg["key"] = val; json.dump(cfg, f)`.
+
+---
+
+## DEC-20260511-008 — Manual IBKR XML upload as API-throttle fallback
+
+Date: 2026-05-11
+Status: implemented
+
+### Decision
+
+Add `📤 העלה דוח XML` to the developer menu. When the IBKR API returns error 1001 (throttled/unavailable), the user can download the Flex Query XML from the IBKR website and upload it directly in Telegram.
+
+### Rationale
+
+IBKR imposes per-token throttling after many rapid API requests (as occurred during debug sessions). The cooldown period can be hours. Without a manual fallback, the NAV would remain stale and risk calculations would use $7,500. Uploading the XML achieves the same outcome as a successful auto-sync without any IBKR API call.
+
+### Processing contract
+
+`_process_uploaded_ibkr_xml()` processes the file identically to `run_ibkr_sync()`:
+- Validate `.xml` extension.
+- Parse `ChangeInNAV endingValue` for NAV.
+- Count `<Trade>` elements.
+- Save to `_REPORTS_DIR` with cleanup to `_REPORTS_TO_KEEP`.
+- Merge `nav` + `nav_updated_at` into `sentinel_config.json`.
+- Write result to `MANUAL_RESULT_FILE` (so `📊 תוצאת Sync אחרון` shows it).
+
+### Alternatives considered
+
+- **Re-run sync on demand**: blocked by throttle — same result.
+- **Store the XML somewhere and process on next boot**: too manual, too delayed.
+- **Direct input of NAV value via Telegram message**: bypasses data validation and audit trail.
+
+### Constraint
+
+The handler only activates when `user_state['action'] == 'awaiting_ibkr_xml'`, set by the button press. An unsolicited document sent to the bot is ignored.

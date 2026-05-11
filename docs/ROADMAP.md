@@ -43,6 +43,8 @@ Done:
 - `DataFreshness` labels: fresh / stale / critical / unknown, with emoji indicators ✅
 - Tests for live/cached/fallback reporting in `tests/test_data_validation.py` ✅
 - Non-dict JSON guard prevents silent crash if config file corrupted ✅
+- `sentinel_config.json` NAV key contract locked: `"nav"` everywhere, merge-on-write pattern ✅ (session 6)
+- Dashboard NAV key bug fixed: `"current_nav"` → `"nav"`, `save_settings` no longer overwrites ✅ (session 6)
 
 ## Phase 3 — Risk and campaign engine hardening
 
@@ -137,6 +139,8 @@ Completed:
 - Weekly/monthly Telegram summary with Hebrew coaching insights ✅
 - WoW/MoM comparison via snapshot store ✅
 - Plotly charts embedded in PDF (campaign R bars, setup perf, equity curve, win/loss donut) ✅
+- IBKR sync pipeline fully operational: ReferenceCode fix, gdcdyn URL, log_fn, raw response logging ✅ (session 6)
+- Manual XML upload fallback: `📤 העלה דוח XML` in developer menu — confirmed working ✅ (session 6)
 
 ## Phase 6 — Automation and intelligence layer
 
