@@ -897,6 +897,269 @@ def compute_giveback_from_peak(peak_open_r, current_open_r):
     }
 
 
+# ── Phase 1 — Risk Basis Engine ───────────────────────────────────────────────
+# Standalone, pure functions.  No side-effects, no DB/yfinance calls.
+# Every subsequent module (State Machine, Profit Protection, Runner) builds on
+# these primitives.  All monetary values in USD; R values dimensionless ratios.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Data scope constants — attach to every reported metric so consumers know
+# the coverage window of the underlying data.
+DATA_SCOPE_YTD         = "YTD"
+DATA_SCOPE_SINCE_IMPORT = "Since Import"
+DATA_SCOPE_FULL_HISTORY = "Full History"
+DATA_SCOPE_ESTIMATED   = "Estimated"
+DATA_SCOPE_UNKNOWN     = "Unknown"
+
+# ── Sample-size thresholds ────────────────────────────────────────────────────
+_SAMPLE_INITIAL  = 30   # below → stats are preliminary
+_SAMPLE_USABLE   = 30   # >= → useful for risk management
+_SAMPLE_SIGNIFICANT = 100  # >= → can rely on expectancy
+
+
+def compute_original_campaign_risk(
+    side: str,
+    entry_price: float,
+    initial_stop: float,
+    quantity: float,
+    fees: float = 0.0,
+) -> float:
+    """
+    True initial risk = (entry − initial_stop) × qty + fees.
+
+    Returns 0.0 when any value is invalid (no stop, zero quantity, etc.).
+    LONG:  entry_price > initial_stop.
+    SHORT: initial_stop > entry_price.
+    """
+    if entry_price <= 0 or initial_stop <= 0 or quantity <= 0:
+        return 0.0
+    if side.upper() in ("BUY", "LONG"):
+        risk_per_share = entry_price - initial_stop
+    else:
+        risk_per_share = initial_stop - entry_price
+    return round(max(0.0, risk_per_share * quantity + fees), 2)
+
+
+def compute_frozen_target_risk(
+    base_capital: float,
+    nav: float,
+    target_risk_pct: float,
+) -> dict:
+    """
+    Freeze both risk-USD values at the moment of entry.
+
+    Always store BOTH.  Performance stats use target_risk_current_nav;
+    risk-mode transitions use target_risk_base_capital for stability.
+    """
+    return {
+        "target_risk_base_capital": round(base_capital * target_risk_pct, 2),
+        "target_risk_current_nav":  round(nav * target_risk_pct, 2),
+    }
+
+
+def compute_r_true(net_pnl: float, original_campaign_risk: float) -> float:
+    """R using actual initial risk (risk_basis = True)."""
+    if original_campaign_risk <= 0:
+        return 0.0
+    return round(net_pnl / original_campaign_risk, 2)
+
+
+def compute_r_target(net_pnl: float, frozen_target_risk_usd: float) -> float:
+    """R using frozen target risk at entry (risk_basis = Target)."""
+    if frozen_target_risk_usd <= 0:
+        return 0.0
+    return round(net_pnl / frozen_target_risk_usd, 2)
+
+
+def compute_capital_at_risk_usd(
+    side: str,
+    avg_entry_price: float,
+    current_stop: float,
+    open_quantity: float,
+) -> float:
+    """
+    Capital still at risk given current stop.
+
+    Returns 0.0 when stop has moved above entry (long) or below (short) —
+    meaning capital risk is fully protected, only giveback of open profit remains.
+    """
+    if open_quantity <= 0 or avg_entry_price <= 0 or current_stop <= 0:
+        return 0.0
+    if side.upper() in ("BUY", "LONG"):
+        at_risk = (avg_entry_price - current_stop) * open_quantity
+    else:
+        at_risk = (current_stop - avg_entry_price) * open_quantity
+    return round(max(0.0, at_risk), 2)
+
+
+def compute_open_pnl_at_stop(
+    side: str,
+    avg_entry_price: float,
+    current_stop: float,
+    open_quantity: float,
+    estimated_exit_fees: float = 0.0,
+) -> float:
+    """P&L if the remaining open position exits at the current stop right now."""
+    if open_quantity <= 0 or avg_entry_price <= 0 or current_stop <= 0:
+        return 0.0
+    if side.upper() in ("BUY", "LONG"):
+        pnl = (current_stop - avg_entry_price) * open_quantity - estimated_exit_fees
+    else:
+        pnl = (avg_entry_price - current_stop) * open_quantity - estimated_exit_fees
+    return round(pnl, 2)
+
+
+def compute_protected_profit_usd(
+    realized_pnl: float,
+    open_pnl_at_stop: float,
+) -> float:
+    """
+    Profit locked in = realized PnL + what you'd net if you exited at stop now.
+
+    open_pnl_at_stop can be negative (stop is below entry) — that portion is not
+    'protected', so we floor it at 0 for this calculation.
+    """
+    return round(realized_pnl + max(0.0, open_pnl_at_stop), 2)
+
+
+def compute_giveback_usd(open_pnl: float, open_pnl_at_stop: float) -> float:
+    """
+    Open profit that would be surrendered between current price and current stop.
+
+    Only meaningful when open_pnl > 0.  Returns 0 when underwater.
+    """
+    if open_pnl <= 0:
+        return 0.0
+    return round(max(0.0, open_pnl - open_pnl_at_stop), 2)
+
+
+def compute_giveback_pct_of_open_profit(
+    giveback_usd: float, open_pnl: float
+) -> float:
+    """Giveback as % of current open profit.  Returns 0.0 when no open profit."""
+    if open_pnl <= 0:
+        return 0.0
+    return round((giveback_usd / open_pnl) * 100, 1)
+
+
+# Giveback severity buckets used by the anti-spam dedup system.
+GIVEBACK_BUCKET_CONSERVATIVE = 25.0   # 0–25 %
+GIVEBACK_BUCKET_NORMAL       = 40.0   # 25–40 %
+GIVEBACK_BUCKET_WIDE         = 60.0   # 40–60 %
+# > 60 % = Excessive
+
+
+def classify_giveback_severity(giveback_pct_of_open_profit: float) -> str:
+    """Returns 'conservative'|'normal'|'wide'|'excessive'."""
+    g = giveback_pct_of_open_profit
+    if g <= GIVEBACK_BUCKET_CONSERVATIVE:
+        return "conservative"
+    if g <= GIVEBACK_BUCKET_NORMAL:
+        return "normal"
+    if g <= GIVEBACK_BUCKET_WIDE:
+        return "wide"
+    return "excessive"
+
+
+# ── Position Sizing Quality ───────────────────────────────────────────────────
+
+_SIZING_TIERS = [
+    # (upper_bound_exclusive, classification, score, countable, alert_level)
+    (0.35, "Micro Probe",      30,  False, None),
+    (0.60, "Probe",            50,  False, None),
+    (0.85, "Undersized",       70,  True,  None),
+    (1.15, "Ideal",            100, True,  None),
+    (1.30, "Slight Oversize",  80,  True,  "yellow"),
+    (1.50, "Oversized",        55,  True,  "orange"),
+]
+_SIZING_CRITICAL = ("Critical Oversize", 20, True, "red")
+
+
+def compute_sizing_ratio(
+    original_campaign_risk: float,
+    frozen_target_risk_usd: float,
+) -> dict:
+    """
+    sizing_ratio = original_campaign_risk / frozen_target_risk_usd.
+
+    Returns:
+      sizing_ratio          float
+      classification        str  (e.g. "Ideal", "Oversized", "Micro Probe")
+      score                 int  0–100
+      countable_for_main_stats  bool
+      alert_level           str | None  ("yellow"/"orange"/"red")
+    """
+    if frozen_target_risk_usd <= 0 or original_campaign_risk <= 0:
+        return {
+            "sizing_ratio": 0.0,
+            "classification": "Unknown",
+            "score": 0,
+            "countable_for_main_stats": False,
+            "alert_level": None,
+        }
+    ratio = original_campaign_risk / frozen_target_risk_usd
+    for upper, label, score, countable, alert in _SIZING_TIERS:
+        if ratio < upper:
+            return {
+                "sizing_ratio": round(ratio, 2),
+                "classification": label,
+                "score": score,
+                "countable_for_main_stats": countable,
+                "alert_level": alert,
+            }
+    label, score, countable, alert = _SIZING_CRITICAL
+    return {
+        "sizing_ratio": round(ratio, 2),
+        "classification": label,
+        "score": score,
+        "countable_for_main_stats": countable,
+        "alert_level": alert,
+    }
+
+
+# ── Data Scope helpers ────────────────────────────────────────────────────────
+
+def get_sample_size_context(countable_trades: int) -> dict:
+    """
+    Returns context dict for any reported statistic.
+
+    Keys:
+      countable_trades   int
+      warning            bool   True when trades < _SAMPLE_INITIAL (30)
+      usable             bool   True when trades >= 30
+      significant        bool   True when trades >= 100
+      label              str    Hebrew description of the sample state
+    """
+    if countable_trades < _SAMPLE_INITIAL:
+        label = "סטטיסטיקה ראשונית בלבד — אין לאשר הגדלת סיכון אגרסיבית"
+    elif countable_trades < _SAMPLE_SIGNIFICANT:
+        label = "המדגם מתחיל להיות שימושי לניהול סיכון"
+    else:
+        label = "מדגם משמעותי — ניתן להסתמך יותר על מדדי תוחלת"
+    return {
+        "countable_trades": countable_trades,
+        "warning":     countable_trades < _SAMPLE_INITIAL,
+        "usable":      countable_trades >= _SAMPLE_INITIAL,
+        "significant": countable_trades >= _SAMPLE_SIGNIFICANT,
+        "label":       label,
+    }
+
+
+def add_data_scope(value, scope: str, countable_trades: int | None = None) -> dict:
+    """
+    Wrap any metric value with its data scope and optional sample context.
+
+    Usage:
+        win_rate_obj = add_data_scope(0.444, DATA_SCOPE_YTD, countable_trades=9)
+        # → {"value": 0.444, "scope": "YTD", "countable_trades": 9, "sample_warning": True}
+    """
+    result: dict = {"value": value, "scope": scope}
+    if countable_trades is not None:
+        result["countable_trades"] = countable_trades
+        result["sample_warning"] = countable_trades < _SAMPLE_INITIAL
+    return result
+
+
 def compute_data_quality_badge(setup_type, entry_price, quantity, stop, init_sl, target_risk_usd=0):
     """
     Compute a data quality badge for a position.
