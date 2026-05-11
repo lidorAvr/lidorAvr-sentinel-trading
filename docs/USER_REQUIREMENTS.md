@@ -472,6 +472,52 @@ Related files:
 
 ---
 
+### REQ-20260511-001 — IBKR Flex Query: error classification + smart retry policy
+
+Status: approved
+Owner: both
+Area: sync (main.py)
+Priority: High
+
+User request:
+- Current sync treats all failures the same. Need to distinguish temporary vs fatal vs rate-limit errors.
+- Alert messages must include the specific error code and its classification.
+- GetStatement should be retried up to 3 times (60s apart) using the same ReferenceCode before counting the attempt as failed.
+- SendRequest should not be re-sent within the same hourly attempt.
+
+Error classification (per IBKR documentation):
+- Temporary (retry next hour): 1001, 1004, 1005, 1006, 1007, 1008, 1009, 1019, 1021
+- Fatal/config (alert immediately, do not retry): 1012, 1013, 1014, 1015, 1016, 1017, 1020
+- Rate limit: 1018
+
+Accepted sync policy:
+- Primary run: 07:00 Asia/Jerusalem
+- Retry window: 08:00, 09:00, 10:00, 11:00
+- Max SendRequest attempts per business date: 5 (was: 3)
+- Max GetStatement retries per ReferenceCode: 3, 60 seconds apart
+- Final action if still failed at 11:00: alert only, include error code and classification
+
+Acceptance criteria:
+- [ ] `run_ibkr_sync()` returns structured result (success/temporary/fatal/rate_limit + code + message)
+- [ ] GetStatement retried up to 3× with 60s wait using same ReferenceCode
+- [ ] SendRequest not re-sent within same hourly attempt
+- [ ] MAX_ATTEMPTS_PER_DAY raised from 3 to 5
+- [ ] Telegram alert includes error code, classification, and human-readable explanation
+- [ ] Fatal errors trigger immediate alert and skip all further retries for that day
+- [ ] Rate limit (1018) logged but not counted as a config failure
+- [ ] Tests added for error classification logic
+
+Implementation notes:
+- Keep `run_ibkr_sync()` signature compatible — caller loop in `__main__` handles state machine.
+- Add `IBKR_ERROR_CLASSES` dict: code → ("temporary"|"fatal"|"rate_limit", Hebrew description).
+- Extract `get_statement_with_retry(ref_code, token, max_retries=3, wait_sec=60)` helper.
+- Return structured dict instead of bool: `{"status": "success"|"temporary"|"fatal"|"rate_limit", "code": int, "message": str}`
+
+Related files:
+- `main.py`
+
+---
+
 ## Completed / validated requirements
 
 Move requirements here only after validation on server.

@@ -63,6 +63,52 @@ Rollback:
 
 ## Active tasks
 
+### TASK-20260511-001 — IBKR error classification + smart GetStatement retry
+
+Status: todo
+Source requirement: REQ-20260511-001
+Assigned to: agent
+Risk: Medium
+Affected services: sentinel-bot (main.py only)
+
+Goal:
+- Classify IBKR Flex Query errors: temporary / fatal / rate_limit.
+- Retry GetStatement up to 3× with 60s wait per hourly attempt (same ReferenceCode).
+- Do not resend SendRequest within the same hourly attempt.
+- Raise MAX_ATTEMPTS_PER_DAY from 3 to 5.
+- Include error code + classification in every Telegram alert.
+- Immediate stop-and-alert on fatal errors.
+
+Plan:
+1. Add `IBKR_ERROR_CLASSES` dict mapping code → (class, Hebrew description).
+2. Extract `parse_flex_error(xml_text)` → returns (code, class, description) or None if success.
+3. Extract `get_statement_with_retry(ref_code, token, max_retries=3, wait_sec=60)`.
+4. Refactor `run_ibkr_sync()` to return structured dict {"status", "code", "message"}.
+5. Update caller loop in `__main__` to act on status: fatal → skip day, temporary → count attempt, rate_limit → log only.
+6. Update Telegram alerts to include code + class.
+7. Add unit tests for error classification.
+
+Progress log:
+- 2026-05-11: Requirement documented. Waiting for additional topics before implementation.
+
+Validation:
+- [ ] Tests added for IBKR_ERROR_CLASSES and parse_flex_error
+- [ ] pytest -q passes
+- [ ] Manual smoke test: fatal error triggers immediate alert with code
+- [ ] Manual smoke test: temporary error retries GetStatement before counting failure
+- [ ] Deployed on Orange Pi
+
+Blockers:
+- Waiting for additional topics from user before starting implementation.
+
+Files touched:
+- main.py
+
+Rollback:
+- git revert on main.py + docker compose restart sentinel-bot
+
+---
+
 ### TASK-20260510-004 — Adaptive risk engine + regime transparency + proactive alerts
 
 Status: implemented
