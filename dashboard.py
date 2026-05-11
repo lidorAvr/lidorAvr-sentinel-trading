@@ -565,7 +565,7 @@ else:
                 hm_df.style.format({
                     "חשיפה $": "${:,.0f}", "חשיפה %": "{:.1f}%",
                     "Open R": "{:+.2f}R", "סיכון הון $": "${:,.0f}", "Giveback $": "${:,.0f}",
-                }).background_gradient(subset=["חשיפה %"], cmap="YlOrRd"),
+                }),
                 use_container_width=True, hide_index=True,
             )
 
