@@ -115,6 +115,7 @@ def run_ibkr_sync(log_fn=print) -> dict:
                 f"SendRequest error: {send_error['code']} "
                 f"({send_error['class']}) — {send_error['description']}"
             )
+            log_fn(f"SendRequest raw response: {res.text[:500]}")
             return {
                 "status": send_error["class"],
                 "code": send_error["code"],
