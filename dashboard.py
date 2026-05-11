@@ -303,27 +303,61 @@ else:
             quality_val = first_day_buys.iloc[0].get('quality')
             if pd.isna(quality_val) or quality_val <= 0: quality_val = sells.iloc[-1].get('quality', -1)
 
+            stat_bucket = ec.classify_stat_bucket(setup, original_campaign_risk, target_risk_usd)
+            algo_oversight = ec.compute_algo_risk_oversight_score(
+                buys.iloc[0]['symbol'], total_pnl, target_risk_usd,
+                original_campaign_risk, r_realized, quality_val
+            ) if is_algo else None
+
             closed_campaigns.append({
                 'campaign_id': cid, 'symbol': buys.iloc[0]['symbol'], 'close_date': sells.iloc[-1]['trade_date'],
                 'entry_date': first_date, 'avg_entry': avg_entry, 'avg_exit': avg_exit,
                 'pnl_usd': total_pnl, 'setup_type': setup, 'quality': quality_val,
                 'score': sells.iloc[-1]['score'], 'Total_Campaign_R': r_realized, 'is_algo': is_algo,
                 'original_campaign_risk': original_campaign_risk, 'init_sl_clean': init_sl,
-                'image_url': images[-1] if images else None, 'events': events, 'management_notes': mgt_notes_val
+                'image_url': images[-1] if images else None, 'events': events, 'management_notes': mgt_notes_val,
+                'stat_bucket': stat_bucket, 'algo_oversight': algo_oversight,
             })
     camp_df = pd.DataFrame(closed_campaigns)
 
+    def _bucket_stats(df):
+        """Compute win rate, adj R/R, expectancy for a DataFrame of campaigns."""
+        if df.empty:
+            return {"win_rate": 0, "adj_rr": 0, "expectancy_r": 0,
+                    "total_pnl": 0, "total_r": 0, "count": 0}
+        wins = df[df['pnl_usd'] > 0]
+        losses = df[df['pnl_usd'] < 0]
+        wr = len(wins) / len(df)
+        aw = wins['Total_Campaign_R'].mean() if not wins.empty else 0
+        al = abs(losses['Total_Campaign_R'].mean()) if not losses.empty else 1
+        return {
+            "win_rate": wr,
+            "adj_rr": aw / al if al > 0 else 0,
+            "expectancy_r": (wr * aw) - ((1 - wr) * al),
+            "total_pnl": df['pnl_usd'].sum(),
+            "total_r": df['Total_Campaign_R'].sum(),
+            "count": len(df),
+        }
+
     if not camp_df.empty:
-        wins = camp_df[camp_df['pnl_usd'] > 0]
-        losses = camp_df[camp_df['pnl_usd'] < 0]
-        win_rate = len(wins) / len(camp_df)
-        avg_win_r = wins['Total_Campaign_R'].mean() if not wins.empty else 0
-        avg_loss_r = abs(losses['Total_Campaign_R'].mean()) if not losses.empty else 1
-        adj_rr = avg_win_r / avg_loss_r if avg_loss_r > 0 else 0
-        expectancy_r = (win_rate * avg_win_r) - ((1 - win_rate) * avg_loss_r)
+        # Combined stats — exclude DATA_INCOMPLETE from Win Rate / Expectancy
+        countable_df = camp_df[camp_df['stat_bucket'].apply(ec.is_stat_countable)]
+        disc_df = camp_df[camp_df['stat_bucket'].apply(ec.is_discretionary_bucket)]
+        algo_df = camp_df[camp_df['stat_bucket'] == ec.STAT_BUCKET_ALGO]
+
+        combined_stats = _bucket_stats(countable_df)
+        disc_stats = _bucket_stats(disc_df)
+        algo_stats = _bucket_stats(algo_df)
+
+        win_rate = combined_stats["win_rate"]
+        adj_rr = combined_stats["adj_rr"]
+        expectancy_r = combined_stats["expectancy_r"]
         total_pnl_net = camp_df['pnl_usd'].sum()
         total_r_net = camp_df['Total_Campaign_R'].sum()
     else:
+        combined_stats = disc_stats = algo_stats = {"win_rate": 0, "adj_rr": 0,
+            "expectancy_r": 0, "total_pnl": 0, "total_r": 0, "count": 0}
+        disc_df = algo_df = countable_df = pd.DataFrame()
         win_rate, adj_rr, expectancy_r, total_pnl_net, total_r_net = 0, 0, 0, 0, 0
 
     open_dict = actual_open_trades.to_dict('records') if not actual_open_trades.empty else []
@@ -525,6 +559,58 @@ else:
 
     with tabs[1]:
         if not camp_df.empty:
+            # ── סטטיסטיקות נפרדות: Discretionary / ALGO / Combined ─────────────
+            st.subheader("📊 ביצועים לפי דלי סטטיסטיקה")
+            bs1, bs2, bs3 = st.columns(3)
+            with bs1:
+                st.markdown("**🎯 Discretionary (Manual)**")
+                st.metric("עסקאות", disc_stats["count"])
+                st.metric("Win Rate", f"{disc_stats['win_rate']*100:.1f}%")
+                st.metric("Expectancy", f"{disc_stats['expectancy_r']:.2f}R")
+                st.metric("Adj R/R", f"{disc_stats['adj_rr']:.2f}:1")
+                st.metric("Net R", f"{disc_stats['total_r']:.1f}R")
+                if disc_stats["count"] == 0:
+                    st.caption("⚪ אין קמפיינים דיסקרשן")
+            with bs2:
+                st.markdown("**🟠 ALGO Observed**")
+                st.metric("עסקאות", algo_stats["count"])
+                st.metric("Net PnL", f"${algo_stats['total_pnl']:,.0f}")
+                st.metric("Net R (Target Base)", f"{algo_stats['total_r']:.1f}R")
+                st.caption("Win Rate / Expectancy: לא רלוונטי לאלגו — מנוהל חיצונית")
+                if not algo_df.empty:
+                    avg_oversight = algo_df['algo_oversight'].apply(
+                        lambda x: x['score'] if x else 0
+                    ).mean()
+                    st.metric("ALGO Oversight Score (avg)", f"{avg_oversight:.0f}/100")
+            with bs3:
+                st.markdown("**📈 Combined (Countable)**")
+                st.metric("עסקאות", combined_stats["count"])
+                st.metric("Win Rate", f"{combined_stats['win_rate']*100:.1f}%")
+                st.metric("Expectancy", f"{combined_stats['expectancy_r']:.2f}R")
+                st.metric("Adj R/R", f"{combined_stats['adj_rr']:.2f}:1")
+                incomplete_count = len(camp_df[camp_df['stat_bucket'] == ec.STAT_BUCKET_DATA_INCOMPLETE])
+                if incomplete_count > 0:
+                    st.caption(f"⚠️ {incomplete_count} קמפיינים ב-DATA_INCOMPLETE — לא נספרים")
+
+            # ── ALGO Risk Oversight Score per position ────────────────────────
+            if not algo_df.empty:
+                st.markdown("---")
+                st.subheader("🟠 ALGO Risk Oversight — פירוט")
+                for _, row in algo_df.iterrows():
+                    ov = row.get('algo_oversight') or {}
+                    score = ov.get('score', 0)
+                    label = ov.get('label', '—')
+                    det = ov.get('details', {})
+                    with st.expander(f"{row['symbol']} | {label} ({score}/100) | PnL: ${row['pnl_usd']:+,.0f}"):
+                        d1, d2, d3, d4, d5 = st.columns(5)
+                        chk = lambda v: "✅" if v else "❌"
+                        d1.metric("סמל מוכר", chk(det.get("symbol_known")))
+                        d2.metric("Target Risk", chk(det.get("target_risk_known")))
+                        d3.metric("R ניתן לחישוב", chk(det.get("r_computable")))
+                        d4.metric("PnL קיים", chk(det.get("pnl_present")))
+                        d5.metric("Quality נרשם", chk(det.get("quality_recorded")))
+
+            st.markdown("---")
             closed_sorted = camp_df.sort_values('close_date').copy()
             closed_sorted['cum_R'] = closed_sorted['Total_Campaign_R'].cumsum()
             closed_sorted['cum_pnl'] = closed_sorted['pnl_usd'].cumsum()
@@ -616,7 +702,8 @@ else:
                                 elif row['is_algo'] and r_realized <= -2.0:
                                     risk_disp = "🔴 Poor (Algo Leak)"
                                     
-                                st.caption(f"Strategy: {row['setup_type']} • Entry Quality: {qual_str} • Exit Score: {score_str} • Risk Discipline: {risk_disp}")
+                                bucket_tag = row.get('stat_bucket', '')
+                                st.caption(f"Strategy: {row['setup_type']} • Entry Quality: {qual_str} • Exit Score: {score_str} • Risk Discipline: {risk_disp} • Bucket: `{bucket_tag}`")
                                 
                                 if not row['is_algo']:
                                     tgt_usd = target_risk_usd

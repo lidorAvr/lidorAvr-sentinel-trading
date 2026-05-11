@@ -921,3 +921,119 @@ def compute_data_quality_badge(setup_type, entry_price, quantity, stop, init_sl,
     risk_badge = {"True": "🧮", "Target": "📊"}.get(basis, "")
 
     return primary, risk_badge, label
+
+
+# ── Statistical Bucket Classification ─────────────────────────────────────────
+# stat_bucket separates ALGO (observed) from manual discretionary campaigns
+# so that stats like Win Rate, Expectancy, and Avg-R are never contaminated.
+
+STAT_BUCKET_ALGO = "ALGO_OBSERVED"
+STAT_BUCKET_DATA_INCOMPLETE = "DATA_INCOMPLETE"
+
+_MANUAL_SETUP_PREFIXES = ("VCP", "EP", "BREAKOUT", "SWING", "TREND", "MOMENTUM")
+
+
+def classify_stat_bucket(setup_type: str, original_campaign_risk: float,
+                         target_risk_usd: float = 0) -> str:
+    """
+    Derive stat_bucket for a closed campaign. Never stored in DB — always runtime.
+
+    Buckets:
+      ALGO_OBSERVED      — ALGO-managed positions (external, oversight only)
+      VCP_MANUAL         — VCP discretionary with known initial risk
+      EP_MANUAL          — EP discretionary with known initial risk
+      <SETUP>_MANUAL     — other manual setups with known initial risk
+      DATA_INCOMPLETE    — manual setup but initial stop missing → excluded from Expectancy
+    """
+    st = str(setup_type).upper().strip()
+    if is_algo_position(setup_type):
+        return STAT_BUCKET_ALGO
+    if original_campaign_risk > 0:
+        for prefix in _MANUAL_SETUP_PREFIXES:
+            if st.startswith(prefix):
+                return f"{prefix}_MANUAL"
+        return f"{st}_MANUAL" if st and st not in ("UNKNOWN", "NONE", "NAN", "") else STAT_BUCKET_DATA_INCOMPLETE
+    return STAT_BUCKET_DATA_INCOMPLETE
+
+
+def is_stat_countable(stat_bucket: str) -> bool:
+    """True if this campaign should count in Expectancy / Win Rate stats."""
+    return stat_bucket != STAT_BUCKET_DATA_INCOMPLETE and stat_bucket != STAT_BUCKET_ALGO
+
+
+def is_discretionary_bucket(stat_bucket: str) -> bool:
+    return stat_bucket.endswith("_MANUAL")
+
+
+# ── ALGO Risk Oversight Score ──────────────────────────────────────────────────
+
+def compute_algo_risk_oversight_score(
+    symbol: str,
+    pnl_usd: float,
+    target_risk_usd: float,
+    original_campaign_risk: float,
+    r_realized: float,
+    quality_val,
+) -> dict:
+    """
+    Weighted 5-factor score (0–100) measuring how well Sentinel could *observe*
+    an ALGO campaign. Higher score = better data transparency.
+
+    Factors:
+      1. Symbol known and in ALGO_SYMBOL_LIMITS          — 20 pts
+      2. target_risk_usd available                       — 20 pts
+      3. R multiple computable (target_risk_usd > 0)     — 20 pts
+      4. PnL data present (not zero / suspicious)        — 20 pts
+      5. Entry quality recorded                          — 20 pts
+    """
+    score = 0
+    details = {}
+
+    sym = str(symbol).upper()
+    if sym in ALGO_SYMBOLS:
+        score += 20
+        details["symbol_known"] = True
+    else:
+        details["symbol_known"] = False
+
+    if target_risk_usd > 0:
+        score += 20
+        details["target_risk_known"] = True
+    else:
+        details["target_risk_known"] = False
+
+    if target_risk_usd > 0 and r_realized != 0:
+        score += 20
+        details["r_computable"] = True
+    else:
+        details["r_computable"] = False
+
+    if pnl_usd != 0:
+        score += 20
+        details["pnl_present"] = True
+    else:
+        details["pnl_present"] = False
+
+    try:
+        q = float(quality_val)
+        if q > 0:
+            score += 20
+            details["quality_recorded"] = True
+        else:
+            details["quality_recorded"] = False
+    except (TypeError, ValueError):
+        details["quality_recorded"] = False
+
+    label_map = {
+        range(80, 101): "🟢 שקיפות גבוהה",
+        range(60, 80):  "🟡 שקיפות חלקית",
+        range(40, 60):  "🟠 שקיפות נמוכה",
+        range(0, 40):   "🔴 מידע חסר",
+    }
+    label = "🔴 מידע חסר"
+    for r, lbl in label_map.items():
+        if score in r:
+            label = lbl
+            break
+
+    return {"score": score, "label": label, "details": details}
