@@ -1037,3 +1037,79 @@ def compute_algo_risk_oversight_score(
             break
 
     return {"score": score, "label": label, "details": details}
+
+
+# ── Earnings Risk Module ───────────────────────────────────────────────────────
+_EARNINGS_CACHE_TTL = 6 * 3600  # 6 hours — earnings dates change rarely
+
+
+def fetch_next_earnings_date(symbol: str) -> dict:
+    """
+    Fetch next earnings date for a symbol via yfinance calendar.
+    Cached 6 hours to avoid hammering Yahoo on every dashboard load.
+
+    Returns:
+      {
+        "date":           datetime | None,
+        "days_to_event":  int | None,
+        "cushion_verdict": str  (Hebrew + emoji),
+        "ok":             bool,
+      }
+    """
+    cache_key = f"{symbol}_earnings"
+    now = time.time()
+    if cache_key in YF_CACHE and (now - YF_CACHE[cache_key]["time"]) < _EARNINGS_CACHE_TTL:
+        return YF_CACHE[cache_key]["data"]
+
+    result = {"date": None, "days_to_event": None, "cushion_verdict": "⚪ אין מידע", "ok": False}
+    try:
+        smart_delay()
+        tk = yf.Ticker(symbol)
+        cal = tk.calendar
+        if cal is None:
+            YF_CACHE[cache_key] = {"data": result, "time": now}
+            return result
+
+        # yfinance returns dict or DataFrame depending on version
+        if hasattr(cal, 'to_dict'):
+            cal = cal.to_dict()
+
+        earnings_date = None
+        for key in ("Earnings Date", "earningsDate", "earnings_date"):
+            val = cal.get(key)
+            if val is not None:
+                if isinstance(val, (list, tuple)) and len(val) > 0:
+                    val = val[0]
+                try:
+                    from datetime import datetime as _dt
+                    if hasattr(val, 'date'):
+                        earnings_date = val
+                    else:
+                        earnings_date = _dt.fromisoformat(str(val))
+                    break
+                except Exception:
+                    pass
+
+        if earnings_date is None:
+            YF_CACHE[cache_key] = {"data": result, "time": now}
+            return result
+
+        from datetime import datetime as _dt, timezone
+        now_dt = _dt.now(tz=earnings_date.tzinfo) if earnings_date.tzinfo else _dt.now()
+        days = (earnings_date.replace(tzinfo=None) - now_dt.replace(tzinfo=None)).days
+
+        if days < 0:
+            verdict = "⚪ עבר (אין תאריך הבא)"
+        elif days <= 7:
+            verdict = f"🔴 תוך {days} ימים — לבחון חשיפה"
+        elif days <= 21:
+            verdict = f"🟡 תוך {days} ימים"
+        else:
+            verdict = f"🟢 {days} ימים"
+
+        result = {"date": earnings_date, "days_to_event": days, "cushion_verdict": verdict, "ok": True}
+    except Exception:
+        pass
+
+    YF_CACHE[cache_key] = {"data": result, "time": now}
+    return result
