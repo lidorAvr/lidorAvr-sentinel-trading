@@ -1,53 +1,43 @@
 import os
 import json
 import time
-import glob as file_glob
 import requests
-import xml.etree.ElementTree as ET
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from ibkr_sync_runner import run_ibkr_sync, IBKR_ERROR_CLASSES, MANUAL_RESULT_FILE
+
 ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 
-REPORTS_DIR = "/app/ibkr_reports"
-SYNC_STATE_FILE = "/app/ibkr_sync_state.json"
+SYNC_STATE_FILE   = "/app/ibkr_sync_state.json"
+MANUAL_TRIGGER_FILE = "/app/ibkr_manual_trigger"   # written by telegram_bot developer menu
+LOG_FILE           = "/app/logs/sentinel_main.log"
+LOG_MAX_LINES      = 2000
 
-SYNC_START_HOUR = 7
-SYNC_END_HOUR = 11
-MAX_ATTEMPTS_PER_DAY = 5     # raised from 3 — one attempt per hour 07-11
-REPORTS_TO_KEEP = 3
-LOOP_INTERVAL_SEC = 900
-
-# IBKR Flex Query error classification.
-# Keys are integer error codes. Values: (class, Hebrew description).
-# class:
-#   "temporary"  — report not ready yet, retry next hour
-#   "fatal"      — config/auth problem, do not retry today, alert immediately
-#   "rate_limit" — too many requests, log only, do not count as attempt
-IBKR_ERROR_CLASSES = {
-    1001: ("temporary",  "הדוח לא נוצר כרגע — ניסיון מאוחר יותר"),
-    1004: ("temporary",  "הדוח לא שלם עדיין"),
-    1005: ("temporary",  "נתוני Settlement עדיין לא מוכנים"),
-    1006: ("temporary",  "נתוני FIFO P/L עדיין לא מוכנים"),
-    1007: ("temporary",  "נתוני MTM P/L עדיין לא מוכנים"),
-    1008: ("temporary",  "נתוני MTM ו-FIFO עדיין לא מוכנים"),
-    1009: ("temporary",  "עומס בשרתי IBKR"),
-    1018: ("rate_limit", "יותר מדי בקשות — Rate Limit"),
-    1019: ("temporary",  "הדוח עדיין בתהליך יצירה"),
-    1021: ("temporary",  "לא ניתן למשוך את הדוח כרגע"),
-    1012: ("fatal",      "Token פג תוקף"),
-    1013: ("fatal",      "הגבלת IP — Token לא מורשה מכתובת זו"),
-    1014: ("fatal",      "Query ID לא תקין"),
-    1015: ("fatal",      "Token לא תקין"),
-    1016: ("fatal",      "Account לא תקין"),
-    1017: ("fatal",      "Reference Code לא תקין"),
-    1020: ("fatal",      "בקשה לא תקינה או לא ניתנת לאימות"),
-}
+SYNC_START_HOUR       = 7
+SYNC_END_HOUR         = 11
+MAX_ATTEMPTS_PER_DAY  = 5     # raised from 3 — one attempt per hour 07-11
+LOOP_INTERVAL_SEC     = 900
+_TRIGGER_CHECK_SEC    = 30    # check for manual trigger this often during the sleep
 
 
 def log(msg):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] {msg}", flush=True)
+    line = f"[{timestamp}] {msg}"
+    print(line, flush=True)
+    try:
+        os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+        # Rotate: keep only the last LOG_MAX_LINES lines (check ~5% of the time)
+        import random
+        if random.random() < 0.05:
+            lines = open(LOG_FILE, encoding="utf-8").readlines()
+            if len(lines) > LOG_MAX_LINES:
+                with open(LOG_FILE, "w", encoding="utf-8") as f:
+                    f.writelines(lines[-LOG_MAX_LINES:])
+    except Exception:
+        pass
 
 
 def send_telegram(token, chat_id, text):
@@ -59,38 +49,6 @@ def send_telegram(token, chat_id, text):
         )
     except Exception as e:
         log(f"Telegram send error: {e}")
-
-
-def update_nav_locally(val):
-    try:
-        path = "/app/sentinel_config.json"
-        data = {"total_deposited": 7500.0, "risk_pct_input": 0.5}
-        if os.path.exists(path):
-            with open(path, "r") as f:
-                data = json.load(f)
-        data["nav"] = float(val)
-        data["nav_updated_at"] = datetime.now().isoformat()
-        with open(path, "w") as f:
-            json.dump(data, f)
-        log(f"NAV Updated: ${data['nav']}")
-    except Exception as e:
-        log(f"NAV Error: {e}")
-
-
-def save_report_xml(xml_text):
-    """Save raw XML report. Keeps only the last REPORTS_TO_KEEP files."""
-    os.makedirs(REPORTS_DIR, exist_ok=True)
-    ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
-    filepath = os.path.join(REPORTS_DIR, f"ibkr_{ts}.xml")
-    with open(filepath, "w", encoding="utf-8") as f:
-        f.write(xml_text)
-    log(f"Report saved: {filepath}")
-
-    all_reports = sorted(file_glob.glob(os.path.join(REPORTS_DIR, "ibkr_*.xml")))
-    while len(all_reports) > REPORTS_TO_KEEP:
-        old = all_reports.pop(0)
-        os.remove(old)
-        log(f"Old report removed: {os.path.basename(old)}")
 
 
 def load_sync_state():
@@ -111,135 +69,47 @@ def save_sync_state(state):
         log(f"State save error: {e}")
 
 
-def parse_flex_error(xml_text):
+def _sleep_with_trigger_check(total_sec: int, check_sec: int = _TRIGGER_CHECK_SEC) -> bool:
     """
-    Parse IBKR Flex API XML for error codes.
-    Returns {"code": int, "class": str, "description": str} if error found,
-    or None if the response looks like a success.
+    Sleep for total_sec, waking every check_sec to check for a manual trigger file.
+    Returns True if a manual trigger was detected (and should be processed immediately).
     """
+    elapsed = 0
+    while elapsed < total_sec:
+        time.sleep(min(check_sec, total_sec - elapsed))
+        elapsed += check_sec
+        if os.path.exists(MANUAL_TRIGGER_FILE):
+            return True
+    return False
+
+
+def _handle_manual_trigger(t_token, c_id):
+    """Process a manual sync trigger written by the developer menu."""
     try:
-        root = ET.fromstring(xml_text)
-        error_elem = root.find(".//ErrorCode")
-        if error_elem is not None:
-            try:
-                code = int(error_elem.text.strip())
-            except (ValueError, AttributeError):
-                code = -1
-            error_class, description = IBKR_ERROR_CLASSES.get(
-                code, ("temporary", f"קוד שגיאה לא מוכר: {code}")
-            )
-            return {"code": code, "class": error_class, "description": description}
-        # No error code found — treat as success
-        return None
-    except ET.ParseError as e:
-        return {"code": -1, "class": "temporary", "description": f"XML parse error: {e}"}
-    except Exception as e:
-        return {"code": -1, "class": "temporary", "description": str(e)}
-
-
-def get_statement_with_retry(ref_code, token, max_retries=3, wait_sec=60):
-    """
-    Fetch GetStatement using the same ReferenceCode, retrying up to max_retries times.
-    Only one SendRequest was issued — we reuse the same ref_code here.
-    Returns (xml_text, None) on success, or (None, error_info) on failure.
-    error_info = {"code": int, "class": str, "description": str}
-    """
-    fetch_url = (
-        "https://www.interactivebrokers.com/Universal/servlet/FlexStatementService.GetStatement"
-    )
-    last_error = None
-    for attempt in range(1, max_retries + 1):
-        try:
-            res = requests.get(f"{fetch_url}?q={ref_code}&t={token}&v=3", timeout=60)
-            error = parse_flex_error(res.text)
-            if error is None:
-                return res.text, None
-            last_error = error
-            log(f"GetStatement attempt {attempt}/{max_retries}: code={error['code']} ({error['class']}) — {error['description']}")
-            # Fatal errors: no point retrying
-            if error["class"] == "fatal":
-                return None, error
-            if attempt < max_retries:
-                log(f"Waiting {wait_sec}s before retry...")
-                time.sleep(wait_sec)
-        except Exception as e:
-            last_error = {"code": -1, "class": "temporary", "description": str(e)}
-            log(f"GetStatement network error (attempt {attempt}): {e}")
-            if attempt < max_retries:
-                log(f"Waiting {wait_sec}s before retry...")
-                time.sleep(wait_sec)
-    return None, last_error
-
-
-def run_ibkr_sync():
-    """
-    Run one IBKR Flex Query sync attempt.
-    Returns {"status": "success"|"temporary"|"fatal"|"rate_limit", "code": int|None, "message": str}
-    """
-    log("Sync Cycle Started")
-    token = os.getenv("IBKR_TOKEN")
-    query_id = os.getenv("IBKR_QUERY_ID", "1501352")
-    base_url = (
-        "https://www.interactivebrokers.com/Universal/servlet/FlexStatementService.SendRequest"
-    )
-
+        os.remove(MANUAL_TRIGGER_FILE)
+    except Exception:
+        pass
+    log("Manual IBKR sync triggered via developer menu")
+    result = run_ibkr_sync(log_fn=log)
+    result["triggered_at"] = datetime.now().isoformat()
     try:
-        # Step 1: SendRequest (one per hourly attempt — never resend within same attempt)
-        res = requests.get(f"{base_url}?t={token}&q={query_id}&v=3", timeout=30)
-
-        send_error = parse_flex_error(res.text)
-        if send_error:
-            log(f"SendRequest error: code={send_error['code']} ({send_error['class']}) — {send_error['description']}")
-            return {
-                "status": send_error["class"],
-                "code": send_error["code"],
-                "message": send_error["description"],
-            }
-
-        root = ET.fromstring(res.text)
-        code_elem = root.find(".//code")
-        if code_elem is None:
-            log(f"SendRequest: no reference code in response: {res.text[:300]}")
-            return {"status": "temporary", "code": 0, "message": "חסר Reference Code בתגובה מ-IBKR"}
-
-        ref_code = code_elem.text
-        log(f"SendRequest OK. ReferenceCode: {ref_code}. Waiting 15s before GetStatement...")
-        time.sleep(15)
-
-        # Step 2: GetStatement with retry (up to 3x, 60s apart, same ref_code)
-        xml_text, error = get_statement_with_retry(ref_code, token)
-        if error:
-            log(f"GetStatement failed after retries: code={error['code']} ({error['class']}) — {error['description']}")
-            return {
-                "status": error["class"],
-                "code": error["code"],
-                "message": error["description"],
-            }
-
-        # Step 3: Parse and persist the report
-        save_report_xml(xml_text)
-        report_root = ET.fromstring(xml_text)
-
-        nav_node = report_root.find(".//ChangeInNAV")
-        if nav_node is not None:
-            v = nav_node.get("endingValue")
-            if v:
-                update_nav_locally(v)
-
-        trades = report_root.findall(".//Trade")
-        log(f"Sync successful. Found {len(trades)} trades.")
-        return {"status": "success", "code": None, "message": f"{len(trades)} trades synced"}
-
+        with open(MANUAL_RESULT_FILE, "w") as f:
+            json.dump(result, f)
     except Exception as e:
-        log(f"Sync Error: {e}")
-        return {"status": "temporary", "code": -1, "message": str(e)}
+        log(f"Could not write manual result: {e}")
+    if t_token and c_id:
+        emoji = "✅" if result["status"] == "success" else (
+            "🚨" if result["status"] == "fatal" else "⚠️"
+        )
+        send_telegram(t_token, c_id,
+                      f"{emoji} IBKR Manual Sync: {result['message']}")
 
 
 if __name__ == "__main__":
-    log("Sentinel v17.0 Active")
+    log("Sentinel v18.0 Active")
 
     t_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    c_id = os.getenv("TELEGRAM_ADMIN_ID")
+    c_id    = os.getenv("TELEGRAM_ADMIN_ID")
 
     if t_token and c_id:
         send_telegram(t_token, c_id, "✅ Sentinel Bot מחובר\nסנכרון IBKR מתוזמן לחלון 07:00–11:00")
@@ -248,23 +118,29 @@ if __name__ == "__main__":
         log("Telegram credentials not found in environment!")
 
     while True:
-        now = datetime.now(ISRAEL_TZ)
+        # ── Manual trigger (developer menu) ────────────────────────────────────
+        if os.path.exists(MANUAL_TRIGGER_FILE):
+            _handle_manual_trigger(t_token, c_id)
+
+        # ── Scheduled sync window ──────────────────────────────────────────────
+        now   = datetime.now(ISRAEL_TZ)
         today = now.strftime("%Y-%m-%d")
         state = load_sync_state()
 
-        already_synced = state.get("sync_date") == today
-        fail_date_match = state.get("fail_date") == today
-        fail_count_today = state.get("fail_count", 0) if fail_date_match else 0
-        notified_today = state.get("notified_date") == today
-        last_attempt_hour = state.get("last_attempt_hour", -1) if fail_date_match else -1
-        in_sync_window = SYNC_START_HOUR <= now.hour < SYNC_END_HOUR
-        tried_this_hour = now.hour == last_attempt_hour
+        already_synced     = state.get("sync_date") == today
+        fail_date_match    = state.get("fail_date") == today
+        fail_count_today   = state.get("fail_count", 0) if fail_date_match else 0
+        notified_today     = state.get("notified_date") == today
+        last_attempt_hour  = state.get("last_attempt_hour", -1) if fail_date_match else -1
+        in_sync_window     = SYNC_START_HOUR <= now.hour < SYNC_END_HOUR
+        tried_this_hour    = now.hour == last_attempt_hour
 
         if already_synced:
             log(f"Already synced today ({today}). Sleeping until next cycle.")
 
         elif not in_sync_window:
-            log(f"Outside sync window ({SYNC_START_HOUR}:00–{SYNC_END_HOUR}:00). Current hour: {now.hour}:xx. Waiting.")
+            log(f"Outside sync window ({SYNC_START_HOUR}:00–{SYNC_END_HOUR}:00). "
+                f"Current hour: {now.hour}:xx. Waiting.")
 
         elif fail_count_today >= MAX_ATTEMPTS_PER_DAY:
             if not notified_today:
@@ -286,28 +162,28 @@ if __name__ == "__main__":
 
         else:
             attempt_num = fail_count_today + 1
-            log(f"Attempting IBKR sync (attempt {attempt_num}/{MAX_ATTEMPTS_PER_DAY})...")
-            result = run_ibkr_sync()
+            log(f"Attempting IBKR sync (attempt {attempt_num}/{MAX_ATTEMPTS_PER_DAY})…")
+            result = run_ibkr_sync(log_fn=log)
             state["last_attempt_hour"] = now.hour
 
-            status = result["status"]
-            code = result["code"]
+            status  = result["status"]
+            code    = result["code"]
             message = result["message"]
             code_str = f" (קוד שגיאה: {code})" if code and code > 0 else ""
 
             if status == "success":
-                state["sync_date"] = today
+                state["sync_date"]  = today
                 state["fail_count"] = 0
                 save_sync_state(state)
                 log("Sync successful!")
                 if t_token and c_id:
-                    send_telegram(t_token, c_id, f"✅ דוח IBKR התקבל בהצלחה ({today})\n{message}")
+                    send_telegram(t_token, c_id,
+                                  f"✅ דוח IBKR התקבל בהצלחה ({today})\n{message}")
 
             elif status == "fatal":
-                # Fatal config/auth error — no point retrying today, alert immediately
-                state["fail_date"] = today
-                state["fail_count"] = MAX_ATTEMPTS_PER_DAY  # skip all remaining attempts
-                state["notified_date"] = today
+                state["fail_date"]      = today
+                state["fail_count"]     = MAX_ATTEMPTS_PER_DAY
+                state["notified_date"]  = today
                 save_sync_state(state)
                 log(f"Fatal sync error — no further retries today. {message}")
                 if t_token and c_id:
@@ -320,24 +196,25 @@ if __name__ == "__main__":
                     )
 
             elif status == "rate_limit":
-                # Rate limit — do not count as attempt, just log
                 log(f"Rate limit hit{code_str}. Not counting as failed attempt.")
-                # Do NOT update fail_count or last_attempt_hour — allows retry in same hour
-                # (save state without changes to maintain other fields)
                 save_sync_state(state)
 
             else:  # temporary
-                state["fail_date"] = today
+                state["fail_date"]  = today
                 state["fail_count"] = fail_count_today + 1
                 save_sync_state(state)
                 log(f"Sync failed (temporary). Attempt {state['fail_count']}/{MAX_ATTEMPTS_PER_DAY}. {message}")
                 if t_token and c_id:
                     send_telegram(
                         t_token, c_id,
-                        f"⚠️ ניסיון סנכרון {state['fail_count']}/{MAX_ATTEMPTS_PER_DAY} נכשל ({today} {now.hour:02d}:xx)\n"
+                        f"⚠️ ניסיון סנכרון {state['fail_count']}/{MAX_ATTEMPTS_PER_DAY} נכשל "
+                        f"({today} {now.hour:02d}:xx)\n"
                         f"סוג: זמני{code_str}\n"
                         f"סיבה: {message}\n"
                         "אנסה שוב בשעה הבאה.",
                     )
 
-        time.sleep(LOOP_INTERVAL_SEC)
+        # ── Sleep — wake early if developer menu writes a trigger ──────────────
+        triggered = _sleep_with_trigger_check(LOOP_INTERVAL_SEC)
+        if triggered:
+            _handle_manual_trigger(t_token, c_id)

@@ -1,4 +1,4 @@
-import os, telebot, json, traceback
+import os, telebot, json, traceback, threading, subprocess
 import pandas as pd
 from telebot import types
 from supabase import create_client
@@ -8,6 +8,7 @@ import xml.etree.ElementTree as ET
 import engine_core as ec
 import telegram_formatters as tf
 import adaptive_risk_engine as are
+from ibkr_sync_runner import run_ibkr_sync, MANUAL_RESULT_FILE
 
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -17,6 +18,117 @@ supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 
 user_state = {}
 RTL = "\u200F"
+
+# \u2500\u2500 Developer-menu constants \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+_DEV_STATE_FILE      = "/app/ibkr_dev_state.json"
+_MANUAL_TRIGGER_FILE = "/app/ibkr_manual_trigger"
+_DEPLOY_TRIGGER_FILE = "/app/deploy_trigger"
+_BOT_LOG_FILE        = "/app/logs/sentinel_bot.log"
+_BOT_LOG_MAX_LINES   = 2000
+
+_DEV_LOG_FILES = {
+    "sentinel-main":    "/app/logs/sentinel_main.log",
+    "sentinel-bot":     "/app/logs/sentinel_bot.log",
+    "risk-monitor":     "/app/logs/sentinel_risk.log",
+}
+
+_DEV_SYNC_MAX_PER_DAY     = 2
+_DEV_SYNC_COOLDOWN_HOURS  = 3
+
+
+def _bot_log(msg: str):
+    """Append a line to the bot log file (developer menu log viewer reads this)."""
+    try:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        line = f"[{ts}] {msg}\n"
+        os.makedirs(os.path.dirname(_BOT_LOG_FILE), exist_ok=True)
+        with open(_BOT_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line)
+        import random
+        if random.random() < 0.05:
+            lines = open(_BOT_LOG_FILE, encoding="utf-8").readlines()
+            if len(lines) > _BOT_LOG_MAX_LINES:
+                with open(_BOT_LOG_FILE, "w", encoding="utf-8") as f:
+                    f.writelines(lines[-_BOT_LOG_MAX_LINES:])
+    except Exception:
+        pass
+
+
+def _dev_sync_check() -> tuple:
+    """Returns (allowed: bool, reason: str, state_dict: dict)."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        state = json.load(open(_DEV_STATE_FILE)) if os.path.exists(_DEV_STATE_FILE) else {}
+    except Exception:
+        state = {}
+    count_today = state.get("count_today", 0) if state.get("date") == today else 0
+    if count_today >= _DEV_SYNC_MAX_PER_DAY:
+        return False, f"\u05D4\u05D2\u05E2\u05EA \u05DC\u05DE\u05D2\u05D1\u05DC\u05D4 \u05D4\u05D9\u05D5\u05DE\u05D9\u05EA ({_DEV_SYNC_MAX_PER_DAY} \u05E1\u05E0\u05DB\u05E8\u05D5\u05E0\u05D9\u05DD \u05D1\u05D9\u05D5\u05DD). \u05E0\u05E1\u05D4 \u05DE\u05D7\u05E8.", state
+    last_ts_str = state.get("last_ts")
+    if last_ts_str:
+        try:
+            hours_since = (datetime.now() - datetime.fromisoformat(last_ts_str)).total_seconds() / 3600
+            if hours_since < _DEV_SYNC_COOLDOWN_HOURS:
+                remaining = _DEV_SYNC_COOLDOWN_HOURS - hours_since
+                return False, f"Cooldown \u05E4\u05E2\u05D9\u05DC \u2014 \u05D4\u05DE\u05EA\u05DF \u05E2\u05D5\u05D3 `{remaining:.1f}h` (cooldown: {_DEV_SYNC_COOLDOWN_HOURS}h).", state
+        except Exception:
+            pass
+    return True, "", state
+
+
+def _dev_sync_record(state: dict):
+    today = datetime.now().strftime("%Y-%m-%d")
+    count_today = state.get("count_today", 0) if state.get("date") == today else 0
+    state.update({"date": today, "count_today": count_today + 1, "last_ts": datetime.now().isoformat()})
+    try:
+        with open(_DEV_STATE_FILE, "w") as f:
+            json.dump(state, f)
+    except Exception:
+        pass
+
+
+def _read_last_log_lines(path: str, n: int = 50) -> str:
+    try:
+        if not os.path.exists(path):
+            return f"_(\u05E7\u05D5\u05D1\u05E5 \u05DC\u05D0 \u05E7\u05D9\u05D9\u05DD: {path})_"
+        with open(path, encoding="utf-8") as f:
+            lines = f.readlines()
+        tail = "".join(lines[-n:]) if lines else "(\u05E8\u05D9\u05E7)"
+        return tail.strip()
+    except Exception as e:
+        return f"_(\u05E9\u05D2\u05D9\u05D0\u05D4 \u05D1\u05E7\u05E8\u05D9\u05D0\u05EA \u05DC\u05D5\u05D2: {e})_"
+
+
+def _run_manual_sync_thread(chat_id: int):
+    """Background thread: runs IBKR sync and reports back to Telegram."""
+    _bot_log(f"Manual IBKR sync started by chat_id={chat_id}")
+    try:
+        result = run_ibkr_sync()
+        status  = result["status"]
+        message = result["message"]
+        nav     = result.get("nav")
+        # Persist last result for \uD83D\uDCCA \u05EA\u05D5\u05E6\u05D0\u05D4 button
+        try:
+            result["triggered_at"] = datetime.now().isoformat()
+            with open(MANUAL_RESULT_FILE, "w") as f:
+                json.dump(result, f)
+        except Exception:
+            pass
+        emoji = "\u2705" if status == "success" else ("\uD83D\uDEA8" if status == "fatal" else "\u26A0\uFE0F")
+        status_heb = {"success": "\u05D4\u05E6\u05DC\u05D9\u05D7", "fatal": "\u05E9\u05D2\u05D9\u05D0\u05D4 \u05D7\u05DE\u05D5\u05E8\u05D4",
+                      "rate_limit": "Rate Limit", "temporary": "\u05D6\u05DE\u05E0\u05D9"}.get(status, status)
+        nav_line = f"\n{RTL}NAV \u05DE\u05E2\u05D5\u05D3\u05DB\u05DF: `${nav:,.0f}`" if nav else ""
+        bot.send_message(
+            chat_id,
+            f"{RTL}{emoji} *IBKR Manual Sync \u2014 {status_heb}*\n{RTL}{message}{nav_line}",
+            reply_markup=get_developer_menu(), parse_mode="Markdown",
+        )
+        _bot_log(f"Manual IBKR sync result: {status} \u2014 {message}")
+    except Exception as e:
+        bot.send_message(chat_id, f"\u274C \u05E9\u05D2\u05D9\u05D0\u05D4 \u05D1\u05E1\u05E0\u05DB\u05E8\u05D5\u05DF \u05D9\u05D3\u05E0\u05D9: {e}",
+                         reply_markup=get_developer_menu(), parse_mode="Markdown")
+        _bot_log(f"Manual IBKR sync error: {e}")
+
 
 def get_ibkr_nav():
     try:
@@ -191,10 +303,21 @@ def _build_health_report():
 
 
 def get_main_menu():
-    """תפריט ראשי — 4 קטגוריות בלבד, ממנו צוללים לתפריטי תת."""
+    """תפריט ראשי — 5 קטגוריות."""
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(types.KeyboardButton("📊 מצב תיק"), types.KeyboardButton("🔬 ניתוח"))
     markup.add(types.KeyboardButton("📚 יומן"), types.KeyboardButton("❓ עזרה"))
+    markup.add(types.KeyboardButton("🛠️ מפתח"))
+    return markup
+
+
+def get_developer_menu():
+    """תפריט מפתח — כלי פיתוח ודיבאג."""
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add(types.KeyboardButton("📡 IBKR Sync ידני"), types.KeyboardButton("📋 לוגים"))
+    markup.add(types.KeyboardButton("🔄 Git Pull + Deploy"), types.KeyboardButton("⚙️ הצג Config"))
+    markup.add(types.KeyboardButton("📊 תוצאת Sync אחרון"), types.KeyboardButton("🏥 בריאות מערכת"))
+    markup.add(types.KeyboardButton("⬅️ חזרה לתפריט ראשי"))
     return markup
 
 def get_portfolio_menu():
@@ -405,6 +528,21 @@ def handle_drilldown(chat_id, symbol):
 def handle_queries(call):
     chat_id = call.message.chat.id
     data = call.data
+    if data.startswith("devlog|"):
+        bot.answer_callback_query(call.id)
+        service_name = data.split("|", 1)[1]
+        log_path = _DEV_LOG_FILES.get(service_name, "")
+        lines = _read_last_log_lines(log_path, 50)
+        # Telegram message limit: split if needed
+        header = f"{RTL}📋 *לוגים — {service_name} (50 שורות אחרונות):*\n"
+        body   = f"```\n{lines[-3600:]}\n```"
+        try:
+            bot.send_message(chat_id, header + body,
+                             reply_markup=get_developer_menu(), parse_mode="Markdown")
+        except Exception:
+            bot.send_message(chat_id, header + lines[-3000:],
+                             reply_markup=get_developer_menu())
+        return
     if data.startswith("drill|"):
         symbol = data.split("|")[1]
         bot.answer_callback_query(call.id)
@@ -538,6 +676,135 @@ def handle_all_messages(message):
     if text == "📚 יומן":
         bot.send_message(chat_id, f"{RTL}📚 *יומן — בחר פעולה:*", reply_markup=get_journal_menu(), parse_mode="Markdown")
         return
+
+    if text == "🛠️ מפתח":
+        bot.send_message(chat_id, f"{RTL}🛠️ *תפריט מפתח — כלי פיתוח ודיבאג*", reply_markup=get_developer_menu(), parse_mode="Markdown")
+        return
+
+    # ── Developer menu handlers ────────────────────────────────────────────────
+
+    if text == "📡 IBKR Sync ידני":
+        allowed, reason, state_dict = _dev_sync_check()
+        if not allowed:
+            bot.send_message(chat_id, f"{RTL}⛔ *Sync נחסם:*\n{RTL}{reason}",
+                             reply_markup=get_developer_menu(), parse_mode="Markdown")
+            return
+        _dev_sync_record(state_dict)
+        bot.send_message(
+            chat_id,
+            f"{RTL}📡 *IBKR Manual Sync — מתחיל...*\n"
+            f"{RTL}תקבל עדכון ב-Telegram כשהסנכרון יסתיים (עד ~3 דקות).",
+            reply_markup=get_developer_menu(), parse_mode="Markdown",
+        )
+        _bot_log(f"Manual IBKR sync triggered by {chat_id}")
+        threading.Thread(target=_run_manual_sync_thread, args=(chat_id,), daemon=True).start()
+        return
+
+    if text == "📊 תוצאת Sync אחרון":
+        try:
+            if not os.path.exists(MANUAL_RESULT_FILE):
+                bot.send_message(chat_id, f"{RTL}⚪ אין תוצאת סנכרון ידני שמורה.",
+                                 reply_markup=get_developer_menu(), parse_mode="Markdown")
+                return
+            r = json.load(open(MANUAL_RESULT_FILE))
+            status   = r.get("status", "?")
+            message  = r.get("message", "—")
+            nav      = r.get("nav")
+            ts       = r.get("triggered_at", "—")[:19]
+            emoji    = "✅" if status == "success" else ("🚨" if status == "fatal" else "⚠️")
+            nav_line = f"\n{RTL}NAV: `${nav:,.0f}`" if nav else ""
+            bot.send_message(
+                chat_id,
+                f"{RTL}{emoji} *תוצאת Sync אחרון*\n"
+                f"{RTL}סטטוס: `{status}`\n"
+                f"{RTL}הודעה: {message}{nav_line}\n"
+                f"{RTL}בוצע: `{ts}`",
+                reply_markup=get_developer_menu(), parse_mode="Markdown",
+            )
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ שגיאה בקריאת תוצאה: {e}",
+                             reply_markup=get_developer_menu(), parse_mode="Markdown")
+        return
+
+    if text == "📋 לוגים":
+        # Inline keyboard to choose service
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        for name in _DEV_LOG_FILES:
+            kb.add(types.InlineKeyboardButton(f"📋 {name}", callback_data=f"devlog|{name}"))
+        bot.send_message(chat_id, f"{RTL}📋 *לוגים — בחר שירות:*",
+                         reply_markup=kb, parse_mode="Markdown")
+        return
+
+    if text == "🔄 Git Pull + Deploy":
+        bot.send_message(chat_id, f"{RTL}🔄 *Git Pull — מריץ...*",
+                         reply_markup=get_developer_menu(), parse_mode="Markdown")
+        _bot_log(f"Git pull triggered by {chat_id}")
+        try:
+            result = subprocess.run(
+                ["git", "-C", "/app", "pull"],
+                capture_output=True, text=True, timeout=60,
+            )
+            stdout = result.stdout.strip()[-800:] or "(ריק)"
+            stderr = result.stderr.strip()[-400:] or ""
+            rc     = result.returncode
+            status_icon = "✅" if rc == 0 else "❌"
+            msg = (
+                f"{RTL}{status_icon} *Git Pull — {'הצליח' if rc == 0 else 'נכשל'} (rc={rc})*\n"
+                f"{RTL}```\n{stdout}\n```"
+            )
+            if stderr:
+                msg += f"\n{RTL}⚠️ stderr:\n```\n{stderr}\n```"
+            msg += (
+                f"\n\n{RTL}🔄 *להפעיל מחדש את הקונטיינרים* הרץ על השרת:\n"
+                f"`docker compose up -d --build`"
+            )
+            _bot_log(f"Git pull rc={rc}: {stdout[:200]}")
+        except FileNotFoundError:
+            msg = (
+                f"{RTL}⚠️ *git לא מותקן בקונטיינר זה.*\n"
+                f"{RTL}כדי לפרוס עדכון, הרץ על Orange Pi:\n"
+                f"`cd ~/sentinel && git pull && docker compose up -d --build`"
+            )
+        except subprocess.TimeoutExpired:
+            msg = f"{RTL}⏳ *Git pull פג timeout (60s).*"
+        except Exception as e:
+            msg = f"❌ שגיאה: {e}"
+        bot.send_message(chat_id, msg, reply_markup=get_developer_menu(), parse_mode="Markdown")
+        return
+
+    if text == "⚙️ הצג Config":
+        try:
+            cfg_paths = ["/app/sentinel_config.json", "sentinel_config.json"]
+            cfg = None
+            for p in cfg_paths:
+                if os.path.exists(p):
+                    cfg = json.load(open(p))
+                    break
+            if cfg is None:
+                bot.send_message(chat_id, f"{RTL}⚠️ sentinel_config.json לא נמצא.",
+                                 reply_markup=get_developer_menu(), parse_mode="Markdown")
+                return
+            # Mask any token-like values for safety
+            safe_cfg = {}
+            for k, v in cfg.items():
+                if any(s in k.lower() for s in ("token", "key", "secret", "password")):
+                    safe_cfg[k] = "***"
+                else:
+                    safe_cfg[k] = v
+            cfg_text = json.dumps(safe_cfg, indent=2, ensure_ascii=False)
+            bot.send_message(
+                chat_id,
+                f"{RTL}⚙️ *sentinel_config.json:*\n```\n{cfg_text[:3000]}\n```",
+                reply_markup=get_developer_menu(), parse_mode="Markdown",
+            )
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ שגיאה: {e}",
+                             reply_markup=get_developer_menu(), parse_mode="Markdown")
+        return
+
+    if text == "🏥 בריאות מערכת":
+        return bot.send_message(chat_id, _build_health_report(),
+                                reply_markup=get_developer_menu(), parse_mode="Markdown")
 
     if text in ["❓ עזרה", "❓ פקודות מערכת", "/help"]:
         help_txt = (
@@ -976,7 +1243,15 @@ def handle_all_messages(message):
     bot.send_message(chat_id, "🎯 *Sentinel Standby*\nמערכת מוכנה לפעולה. בחר מהתפריט למטה:", reply_markup=get_main_menu(), parse_mode="Markdown")
 
 if __name__ == "__main__":
+    _bot_log("Sentinel Telegram Bot — started")
     if ADMIN_ID:
-        try: bot.send_message(ADMIN_ID, "🛡️ *Sentinel Monitoring: ONLINE*\nשדרוג נתוני כניסה (v3.6 - Master Final Polish).", reply_markup=get_main_menu(), parse_mode="Markdown")
-        except: pass
+        try:
+            bot.send_message(
+                ADMIN_ID,
+                "🛡️ *Sentinel Monitoring: ONLINE*\n"
+                "v3.7 — תפריט מפתח פעיל (🛠️ מפתח).",
+                reply_markup=get_main_menu(), parse_mode="Markdown",
+            )
+        except:
+            pass
     bot.infinity_polling()

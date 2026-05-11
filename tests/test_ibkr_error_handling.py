@@ -6,7 +6,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import main as m
+import ibkr_sync_runner as m
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -66,7 +66,8 @@ class TestIbkrErrorClasses:
             assert len(desc) > 5, f"Code {code} has too short a description: {desc!r}"
 
     def test_max_attempts_raised_to_five(self):
-        assert m.MAX_ATTEMPTS_PER_DAY == 5
+        import main as _main
+        assert _main.MAX_ATTEMPTS_PER_DAY == 5
 
 
 # ── parse_flex_error ────────────────────────────────────────────────────────
