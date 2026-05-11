@@ -191,6 +191,7 @@ def compute_live_portfolio_data(open_trades_dict, _acc_size, _target_risk_usd, _
             'OriginalRisk': original_campaign_risk, 'GivebackRisk': giveback_risk_usd, 'LockedProfit': locked_profit_usd,
             'CapitalRisk': current_open_loss_risk,
             'CampaignId': row.get('campaign_id'),
+            'Qty': qty, 'Stop': sl, 'InitStop': init_sl, 'TargetRisk': _target_risk_usd,
             # מינרביני — סיכון
             'InitRisk_USD': init_risk['initial_risk_usd'],
             'InitRisk_Pct': init_risk['initial_risk_pct'],
@@ -302,27 +303,68 @@ else:
             quality_val = first_day_buys.iloc[0].get('quality')
             if pd.isna(quality_val) or quality_val <= 0: quality_val = sells.iloc[-1].get('quality', -1)
 
+            stat_bucket = ec.classify_stat_bucket(setup, original_campaign_risk, target_risk_usd)
+            algo_oversight = ec.compute_algo_risk_oversight_score(
+                buys.iloc[0]['symbol'], total_pnl, target_risk_usd,
+                original_campaign_risk, r_realized, quality_val
+            ) if is_algo else None
+
+            mgt_state_last = sells.iloc[-1].get('management_state', '')
+            days_held_camp = max((sells.iloc[-1]['trade_date'] - first_date).days, 1)
+            n_addons = max(len(buys) - 1, 0)
+            intent = ec.classify_intent(setup, str(mgt_state_last), r_realized, days_held_camp, n_addons)
+            mistake = ec.classify_mistake(intent, stat_bucket, total_pnl, str(mgt_notes_val or ''))
+
             closed_campaigns.append({
                 'campaign_id': cid, 'symbol': buys.iloc[0]['symbol'], 'close_date': sells.iloc[-1]['trade_date'],
                 'entry_date': first_date, 'avg_entry': avg_entry, 'avg_exit': avg_exit,
                 'pnl_usd': total_pnl, 'setup_type': setup, 'quality': quality_val,
                 'score': sells.iloc[-1]['score'], 'Total_Campaign_R': r_realized, 'is_algo': is_algo,
                 'original_campaign_risk': original_campaign_risk, 'init_sl_clean': init_sl,
-                'image_url': images[-1] if images else None, 'events': events, 'management_notes': mgt_notes_val
+                'image_url': images[-1] if images else None, 'events': events, 'management_notes': mgt_notes_val,
+                'stat_bucket': stat_bucket, 'algo_oversight': algo_oversight,
+                'intent': intent, 'mistake': mistake,
             })
     camp_df = pd.DataFrame(closed_campaigns)
 
+    def _bucket_stats(df):
+        """Compute win rate, adj R/R, expectancy for a DataFrame of campaigns."""
+        if df.empty:
+            return {"win_rate": 0, "adj_rr": 0, "expectancy_r": 0,
+                    "total_pnl": 0, "total_r": 0, "count": 0}
+        wins = df[df['pnl_usd'] > 0]
+        losses = df[df['pnl_usd'] < 0]
+        wr = len(wins) / len(df)
+        aw = wins['Total_Campaign_R'].mean() if not wins.empty else 0
+        al = abs(losses['Total_Campaign_R'].mean()) if not losses.empty else 1
+        return {
+            "win_rate": wr,
+            "adj_rr": aw / al if al > 0 else 0,
+            "expectancy_r": (wr * aw) - ((1 - wr) * al),
+            "total_pnl": df['pnl_usd'].sum(),
+            "total_r": df['Total_Campaign_R'].sum(),
+            "count": len(df),
+        }
+
     if not camp_df.empty:
-        wins = camp_df[camp_df['pnl_usd'] > 0]
-        losses = camp_df[camp_df['pnl_usd'] < 0]
-        win_rate = len(wins) / len(camp_df)
-        avg_win_r = wins['Total_Campaign_R'].mean() if not wins.empty else 0
-        avg_loss_r = abs(losses['Total_Campaign_R'].mean()) if not losses.empty else 1
-        adj_rr = avg_win_r / avg_loss_r if avg_loss_r > 0 else 0
-        expectancy_r = (win_rate * avg_win_r) - ((1 - win_rate) * avg_loss_r)
+        # Combined stats — exclude DATA_INCOMPLETE from Win Rate / Expectancy
+        countable_df = camp_df[camp_df['stat_bucket'].apply(ec.is_stat_countable)]
+        disc_df = camp_df[camp_df['stat_bucket'].apply(ec.is_discretionary_bucket)]
+        algo_df = camp_df[camp_df['stat_bucket'] == ec.STAT_BUCKET_ALGO]
+
+        combined_stats = _bucket_stats(countable_df)
+        disc_stats = _bucket_stats(disc_df)
+        algo_stats = _bucket_stats(algo_df)
+
+        win_rate = combined_stats["win_rate"]
+        adj_rr = combined_stats["adj_rr"]
+        expectancy_r = combined_stats["expectancy_r"]
         total_pnl_net = camp_df['pnl_usd'].sum()
         total_r_net = camp_df['Total_Campaign_R'].sum()
     else:
+        combined_stats = disc_stats = algo_stats = {"win_rate": 0, "adj_rr": 0,
+            "expectancy_r": 0, "total_pnl": 0, "total_r": 0, "count": 0}
+        disc_df = algo_df = countable_df = pd.DataFrame()
         win_rate, adj_rr, expectancy_r, total_pnl_net, total_r_net = 0, 0, 0, 0, 0
 
     open_dict = actual_open_trades.to_dict('records') if not actual_open_trades.empty else []
@@ -347,11 +389,18 @@ else:
     st.sidebar.markdown("---")
     st.sidebar.subheader("🤖 AI Master Context Export")
     ai_str = f"# 🛡️ Sentinel AI - Master Context Report\n\n"
+    ai_str += f"## ⚠️ Sentinel Observer Note\n"
+    ai_str += f"- ALGO positions (management_mode=algo_observed) are managed externally. "
+    ai_str += f"Sentinel provides oversight only. Never issue exit or stop instructions for ALGO positions.\n"
+    ai_str += f"- DATA_INCOMPLETE campaigns are excluded from Win Rate and Expectancy calculations.\n\n"
     ai_str += f"## 📊 1. Performance Matrix & Risk Profile\n"
     ai_str += f"- Broker NAV: ${current_acc_size:,.2f} | Base Capital: ${total_deposited:,.2f}\n"
     ai_str += f"- Target Risk Per Trade: {risk_pct_input:.2f}% (${target_risk_usd:,.2f})\n"
     ai_str += f"- All-Time Return (NAV): {all_time_return_pct:.2f}%\n"
-    ai_str += f"- Database Win Rate (YTD): {win_rate*100:.1f}% | DB Net PnL: ${total_pnl_net:.2f}\n"
+    ai_str += f"- Win Rate (Discretionary only, excl. DATA_INCOMPLETE): {disc_stats['win_rate']*100:.1f}% ({disc_stats['count']} trades)\n"
+    ai_str += f"- Win Rate (Combined countable): {combined_stats['win_rate']*100:.1f}% ({combined_stats['count']} trades)\n"
+    ai_str += f"- ALGO campaigns: {algo_stats['count']} | ALGO Net PnL: ${algo_stats['total_pnl']:,.2f}\n"
+    ai_str += f"- DB Net PnL (all): ${total_pnl_net:.2f}\n"
     ai_str += f"- Expectancy: {expectancy_r:.2f}R per trade | Adjusted R/R: {adj_rr:.2f}:1\n\n"
     ai_str += f"## 🔭 2. Live Battlefield (Open Positions)\n"
     # שימוש במחירים שכבר חושבו ב-live_df — ללא קריאת רשת כפולה
@@ -377,8 +426,23 @@ else:
                 open_r_str = "N/A"
                 risk_dev = " | ⚠️ Missing Initial Stop Data"
                 
-            init_stop_str = f"${init_sl_clean:.2f}" if init_sl_clean > 0 else "N/A"
-            ai_str += f"- {sym} [{setup}]: Avg Entry: ${entry:.2f} | Curr: ${curr_p:.2f} | Initial Stop: {init_stop_str} | Current Stop: ${sl:.2f} | Open PnL: ${open_pnl:.2f} | Open R: {open_r_str}{risk_dev}\n"
+            is_algo_pos = str(setup).upper() == 'ALGO'
+            mgmt_mode = ec.classify_management_mode(setup, sym)
+            risk_basis = ec.classify_risk_basis(sl, base_price, setup, target_risk_usd)
+            risk_vis = ec.compute_risk_visibility_score(setup, sl, base_price, target_risk_usd)
+            if is_algo_pos:
+                stop_display = "External / Unknown (ALGO managed)"
+                init_stop_str = "External / Unknown"
+            else:
+                init_stop_str = f"${init_sl_clean:.2f}" if init_sl_clean > 0 else "N/A"
+                stop_display = f"${sl:.2f}"
+            earnings_info = ec.fetch_next_earnings_date(sym)
+            earnings_str = earnings_info['cushion_verdict']
+            if earnings_info.get('date'):
+                earnings_str += f" ({earnings_info['date'].strftime('%d/%m/%Y')})"
+            ai_str += f"- {sym} [{setup}] | Mode: {mgmt_mode} | RiskBasis: {risk_basis} | Visibility: {risk_vis}/100\n"
+            ai_str += f"  Entry: ${entry:.2f} | Curr: ${curr_p:.2f} | InitStop: {init_stop_str} | CurrStop: {stop_display} | OpenPnL: ${open_pnl:.2f} | OpenR: {open_r_str}{risk_dev}\n"
+            ai_str += f"  Earnings: {earnings_str}\n"
     else: ai_str += "No open positions.\n"
     
     ai_str += f"\n## 📅 3. Execution Archive (Recent Campaigns)\n"
@@ -389,10 +453,19 @@ else:
             elif row['original_campaign_risk'] == 0: t_r_str = "N/A (Missing Initial Stop Data)"
             else: t_r_str = f"{r_val:.2f}R (True Risk Base)"
                 
-            ai_str += f"\n### {row['symbol']} [{row['setup_type']}] | Net PnL: ${row['pnl_usd']:.2f} | Total Campaign R: {t_r_str}\n"
+            bucket = row.get('stat_bucket', 'UNKNOWN')
+            ai_str += f"\n### {row['symbol']} [{row['setup_type']}] | Net PnL: ${row['pnl_usd']:.2f} | Total Campaign R: {t_r_str} | Bucket: {bucket}\n"
             q_str = f"{int(row['quality'])}/10" if row['quality'] > 0 else "N/A"
             s_str = f"{int(row['score'])}/10" if row['score'] > 0 else "N/A"
-            ai_str += f"- Strategy Quality: {q_str} | Execution Score: {s_str}\n"
+            algo_ov = row.get('algo_oversight')
+            oversight_str = f" | ALGO Oversight: {algo_ov['score']}/100 ({algo_ov['label']})" if algo_ov else ""
+            intent_str = ec.INTENT_LABELS.get(row.get('intent', 'unknown'), '⚪ Unknown')
+            mistake_str = ec.MISTAKE_LABELS.get(row.get('mistake', ''), '') if row.get('mistake') else ''
+            ai_str += f"- Strategy Quality: {q_str} | Execution Score: {s_str}{oversight_str}\n"
+            ai_str += f"- Intent: {intent_str}"
+            if mistake_str:
+                ai_str += f" | Loss Type: {mistake_str}"
+            ai_str += "\n"
             if row.get('original_campaign_risk', 0) > 0 and not row['is_algo']: ai_str += f"- Planned Risk: ${target_risk_usd:.2f} | Original Campaign Risk: ${row['original_campaign_risk']:.2f}\n"
             n_val = row.get('management_notes')
             if n_val and str(n_val) not in ["None", "Skipped", "nan"]: ai_str += f"- Management Notes: {n_val}\n"
@@ -403,6 +476,33 @@ else:
                 else: stop_str = f" | Exit Stop: ${ev['stop']:.2f}" if ev['stop'] > 0 else ""
                 ai_str += f"  * {ev['date'].strftime('%Y-%m-%d')}: {action_str}{stop_str}\n"
     else: ai_str += "No campaigns closed yet.\n"
+
+    # ── Next Required Decisions ──────────────────────────────────────────────
+    ai_str += f"\n## 🧭 4. Next Required Decisions\n"
+    if not live_df.empty:
+        for _, pos in live_df.iterrows():
+            decisions = []
+            is_algo_pos = str(pos['Setup']).upper() == 'ALGO'
+            if pos['CapitalRisk'] > 0 and not is_algo_pos:
+                decisions.append(f"סטופ מתחת לבסיס — סיכון הון פתוח ${pos['CapitalRisk']:,.0f}")
+            if pos['GivebackRisk'] > 0:
+                decisions.append(f"Giveback ${pos['GivebackRisk']:,.0f} — לבחון האם לקדם סטופ")
+            if pos['Total_R'] >= 2.0 and not is_algo_pos:
+                decisions.append(f"הגעה ל-{pos['Total_R']:.1f}R — לשקול חלוקת רווחים / הזזת סטופ")
+            earnings_info = ec.fetch_next_earnings_date(pos['Symbol'])
+            if earnings_info['ok'] and earnings_info.get('days_to_event', 99) <= 14:
+                decisions.append(f"דוח רווחים תוך {earnings_info['days_to_event']} ימים — לקבל החלטה על גודל פוזיציה")
+            if decisions:
+                ai_str += f"- **{pos['Symbol']}**: " + " | ".join(decisions) + "\n"
+        if not any(True for _ in live_df.iterrows()):
+            ai_str += "- אין פוזיציות פתוחות.\n"
+    else:
+        ai_str += "- אין פוזיציות פתוחות.\n"
+
+    # NAV freshness note at end of export
+    nav_info_export = ec.get_nav_with_freshness()
+    ai_str += f"\n---\n_NAV freshness: {nav_info_export['freshness_label']}_\n"
+
     st.sidebar.text_area("📋 העתק (Ctrl+A -> Ctrl+C):", value=ai_str, height=450)
 
     m1, m2, m3, m4, m5 = st.columns(5)
@@ -436,12 +536,54 @@ else:
                 
             st.dataframe(live_df[['Symbol', 'Setup', 'Status', 'Sizing', 'Open_R', 'GivebackRisk', 'LockedProfit', 'CapitalRisk']].style.format({'Open_R': '{:.2f}R', 'GivebackRisk': '${:.0f}', 'LockedProfit': '${:.0f}', 'CapitalRisk': '${:.0f}'}), use_container_width=True, hide_index=True)
 
+            # ── Portfolio Heat Map — חשיפה לפי אשכול ────────────────────────
+            st.markdown("---")
+            st.subheader("🔥 Portfolio Heat Map — חשיפה לפי אשכול")
+            hm_rows = []
+            for cluster, grp in live_df.groupby('Setup'):
+                hm_rows.append({
+                    "אשכול": cluster,
+                    "פוזיציות": len(grp),
+                    "חשיפה $": grp['Exposure_USD'].sum(),
+                    "חשיפה %": grp['Exposure_Pct'].sum(),
+                    "Open R": grp['Open_R'].sum(),
+                    "סיכון הון $": grp['CapitalRisk'].sum(),
+                    "Giveback $": grp['GivebackRisk'].sum(),
+                })
+            cash_exposure = max(current_acc_size - live_df['Exposure_USD'].sum(), 0)
+            hm_rows.append({
+                "אשכול": "💵 מזומן",
+                "פוזיציות": 0,
+                "חשיפה $": cash_exposure,
+                "חשיפה %": cash_exposure / current_acc_size * 100 if current_acc_size > 0 else 0,
+                "Open R": 0,
+                "סיכון הון $": 0,
+                "Giveback $": 0,
+            })
+            hm_df = pd.DataFrame(hm_rows)
+            st.dataframe(
+                hm_df.style.format({
+                    "חשיפה $": "${:,.0f}", "חשיפה %": "{:.1f}%",
+                    "Open R": "{:+.2f}R", "סיכון הון $": "${:,.0f}", "Giveback $": "${:,.0f}",
+                }).background_gradient(subset=["חשיפה %"], cmap="YlOrRd"),
+                use_container_width=True, hide_index=True,
+            )
+
             # ── תכנון vs בפועל — מינרביני ─────────────────────────────────
             st.markdown("---")
             st.subheader("📐 ניתוח סיכונים — תכנון vs בפועל (Minervini)")
             for _, pos in live_df.iterrows():
                 is_algo = str(pos['Setup']).upper() == 'ALGO'
                 with st.expander(f"{pos['EfficiencyColor']} {pos['Symbol']} | {pos['Status']} | {pos['Total_R']:.2f}R | {pos['DaysHeld']}d"):
+                    dq_primary, dq_risk, dq_label = ec.compute_data_quality_badge(
+                        pos['Setup'], pos['Entry'], pos['Qty'], pos['Stop'], pos['InitStop'], pos['TargetRisk']
+                    )
+                    badge_str = f"{dq_primary} {dq_risk} `{dq_label}`" if dq_risk else f"{dq_primary} `{dq_label}`"
+                    earnings_info = ec.fetch_next_earnings_date(pos['Symbol'])
+                    earnings_str = earnings_info['cushion_verdict']
+                    if earnings_info.get('date'):
+                        earnings_str += f" ({earnings_info['date'].strftime('%d/%m/%Y')})"
+                    st.caption(f"🏷️ Data Quality: {badge_str}   |   📅 דו\"ח רווחים: {earnings_str}")
                     pa1, pa2, pa3, pa4 = st.columns(4)
 
                     # עמודה 1: סיכון
@@ -509,6 +651,58 @@ else:
 
     with tabs[1]:
         if not camp_df.empty:
+            # ── סטטיסטיקות נפרדות: Discretionary / ALGO / Combined ─────────────
+            st.subheader("📊 ביצועים לפי דלי סטטיסטיקה")
+            bs1, bs2, bs3 = st.columns(3)
+            with bs1:
+                st.markdown("**🎯 Discretionary (Manual)**")
+                st.metric("עסקאות", disc_stats["count"])
+                st.metric("Win Rate", f"{disc_stats['win_rate']*100:.1f}%")
+                st.metric("Expectancy", f"{disc_stats['expectancy_r']:.2f}R")
+                st.metric("Adj R/R", f"{disc_stats['adj_rr']:.2f}:1")
+                st.metric("Net R", f"{disc_stats['total_r']:.1f}R")
+                if disc_stats["count"] == 0:
+                    st.caption("⚪ אין קמפיינים דיסקרשן")
+            with bs2:
+                st.markdown("**🟠 ALGO Observed**")
+                st.metric("עסקאות", algo_stats["count"])
+                st.metric("Net PnL", f"${algo_stats['total_pnl']:,.0f}")
+                st.metric("Net R (Target Base)", f"{algo_stats['total_r']:.1f}R")
+                st.caption("Win Rate / Expectancy: לא רלוונטי לאלגו — מנוהל חיצונית")
+                if not algo_df.empty:
+                    avg_oversight = algo_df['algo_oversight'].apply(
+                        lambda x: x['score'] if x else 0
+                    ).mean()
+                    st.metric("ALGO Oversight Score (avg)", f"{avg_oversight:.0f}/100")
+            with bs3:
+                st.markdown("**📈 Combined (Countable)**")
+                st.metric("עסקאות", combined_stats["count"])
+                st.metric("Win Rate", f"{combined_stats['win_rate']*100:.1f}%")
+                st.metric("Expectancy", f"{combined_stats['expectancy_r']:.2f}R")
+                st.metric("Adj R/R", f"{combined_stats['adj_rr']:.2f}:1")
+                incomplete_count = len(camp_df[camp_df['stat_bucket'] == ec.STAT_BUCKET_DATA_INCOMPLETE])
+                if incomplete_count > 0:
+                    st.caption(f"⚠️ {incomplete_count} קמפיינים ב-DATA_INCOMPLETE — לא נספרים")
+
+            # ── ALGO Risk Oversight Score per position ────────────────────────
+            if not algo_df.empty:
+                st.markdown("---")
+                st.subheader("🟠 ALGO Risk Oversight — פירוט")
+                for _, row in algo_df.iterrows():
+                    ov = row.get('algo_oversight') or {}
+                    score = ov.get('score', 0)
+                    label = ov.get('label', '—')
+                    det = ov.get('details', {})
+                    with st.expander(f"{row['symbol']} | {label} ({score}/100) | PnL: ${row['pnl_usd']:+,.0f}"):
+                        d1, d2, d3, d4, d5 = st.columns(5)
+                        chk = lambda v: "✅" if v else "❌"
+                        d1.metric("סמל מוכר", chk(det.get("symbol_known")))
+                        d2.metric("Target Risk", chk(det.get("target_risk_known")))
+                        d3.metric("R ניתן לחישוב", chk(det.get("r_computable")))
+                        d4.metric("PnL קיים", chk(det.get("pnl_present")))
+                        d5.metric("Quality נרשם", chk(det.get("quality_recorded")))
+
+            st.markdown("---")
             closed_sorted = camp_df.sort_values('close_date').copy()
             closed_sorted['cum_R'] = closed_sorted['Total_Campaign_R'].cumsum()
             closed_sorted['cum_pnl'] = closed_sorted['pnl_usd'].cumsum()
@@ -600,7 +794,8 @@ else:
                                 elif row['is_algo'] and r_realized <= -2.0:
                                     risk_disp = "🔴 Poor (Algo Leak)"
                                     
-                                st.caption(f"Strategy: {row['setup_type']} • Entry Quality: {qual_str} • Exit Score: {score_str} • Risk Discipline: {risk_disp}")
+                                bucket_tag = row.get('stat_bucket', '')
+                                st.caption(f"Strategy: {row['setup_type']} • Entry Quality: {qual_str} • Exit Score: {score_str} • Risk Discipline: {risk_disp} • Bucket: `{bucket_tag}`")
                                 
                                 if not row['is_algo']:
                                     tgt_usd = target_risk_usd

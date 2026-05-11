@@ -8,7 +8,7 @@ Build a system that is accurate, safe, fast to extend, and aligned with the user
 
 ## Phase 1 — Safety and agent-readiness
 
-Status: in progress
+Status: **complete**
 
 Goals:
 
@@ -20,20 +20,15 @@ Goals:
 
 Done:
 
-- `AGENTS.md`
-- `CLAUDE.md`
-- docs under `docs/`
+- `AGENTS.md`, `CLAUDE.md`, docs under `docs/`
 - `telegram_bot_secure_runner.py`
 - Docker Compose command updated for Telegram service
-
-Remaining:
-
-- Verify deployment on Orange Pi.
-- Strengthen tests on `main`.
+- Deployment verified on Orange Pi ✅
+- Comprehensive test suite: 587 tests, 0 failures ✅
 
 ## Phase 2 — Data truth and NAV reliability
 
-Status: planned
+Status: **complete**
 
 Goals:
 
@@ -42,16 +37,16 @@ Goals:
 - Add visible freshness/fallback labels.
 - Add tests for fallback behavior.
 
-Suggested tasks:
+Done:
 
-- Create `config.py` or `account_state.py`.
-- Add `DataFreshness` enum or simple source labels.
-- Add tests for live/cached/fallback reporting.
-- Add server validation checklist.
+- `account_state.py` — single source of truth for NAV (broker/deposited/fallback) ✅
+- `DataFreshness` labels: fresh / stale / critical / unknown, with emoji indicators ✅
+- Tests for live/cached/fallback reporting in `tests/test_data_validation.py` ✅
+- Non-dict JSON guard prevents silent crash if config file corrupted ✅
 
 ## Phase 3 — Risk and campaign engine hardening
 
-Status: planned
+Status: in progress (partially complete)
 
 Goals:
 
@@ -59,21 +54,47 @@ Goals:
 - Validate R calculations with sample rows.
 - Protect partial sell / runner mode math.
 - Document ALGO vs discretionary differences.
+- Add ALGO Observer Mode: management_mode, risk_basis, risk_visibility_score.
+- Add Risk Deviation Engine and Giveback Monitor.
 
-Suggested tasks:
+Completed:
+- Minervini metrics (initial risk, R/day, MAE/MFE, Trend Template full, add-on quality) ✅
+- Adaptive risk engine (weighted win rate, risk ladder, proactive alerts, /stats) ✅
+- `analytics_engine.py`: period analytics, profit factor, expectancy, dev score ✅
+- Comprehensive math tests: R-multiples, PF edge cases, dev score bounds, oversized boundary ✅
 
-- Add trade-row fixtures.
-- Add campaign scenarios:
-  - single buy open
-  - partial sell runner
-  - add-on buy
-  - final close
-  - missing stop
-  - ALGO position
+Remaining tasks (→ TASK-20260511-002 through -005):
+- ALGO Observer Mode foundation (TASK-20260511-002)
+- management_mode + risk_basis + risk_visibility_score (TASK-20260511-003)
+- Statistical isolation: stat_bucket + ALGO Risk Oversight Score (TASK-20260511-004)
+- Risk Deviation Engine + Giveback Monitor (TASK-20260511-005)
+
+## Phase 3B — ALGO Observer Mode and Risk Isolation
+
+Status: planned (tasks defined 2026-05-11)
+
+Guiding principle:
+Sentinel is an oversight and measurement layer for ALGO positions, not a manager.
+Sentinel must never issue stop-raise or exit instructions for externally managed ALGO positions.
+
+Key deliverables (in priority order):
+1. Replace `Current Stop: $0.00` with `External / Unknown` for ALGO positions.
+2. Separate statistics: Discretionary (EP+VCP) / ALGO / Combined.
+3. Add `risk_basis` field: True / Target / Estimated / Unknown.
+4. Add ALGO Risk Deviation Alerts via risk_monitor.
+5. Add Giveback Monitor.
+6. Add System Health `/health` command + Data Quality Badges.
+7. Add Actionability Layer (Action Required / Review Required / Observation / External Managed).
+8. Add AI Master Context Export with ALGO state documentation.
+9. Add Mistake Classification for closed campaigns.
+
+Formal ALGO rule (must be enforced in code):
+> Sentinel must not grade ALGO trades using EP/VCP management rules
+> unless the ALGO rule-set is explicitly imported and mapped.
 
 ## Phase 4 — Telegram refactor
 
-Status: planned
+Status: planned (partially complete — telegram_formatters.py created, hierarchical menus done)
 
 Goals:
 
@@ -81,11 +102,10 @@ Goals:
 - Preserve existing flows.
 - Make messages shorter and more consistent.
 - Move secure runner protections into explicit code once safe.
+- Apply Actionability Layer to all messages (→ TASK-20260511-006).
 
-Suggested module split:
-
+Remaining module split:
 - `telegram_handlers.py`
-- `telegram_formatters.py`
 - `telegram_backlog.py`
 - `telegram_portfolio.py`
 - `telegram_callbacks.py`
@@ -99,14 +119,24 @@ Rules:
 
 ## Phase 5 — Dashboard and reporting upgrades
 
-Status: planned
+Status: in progress (partially complete)
 
 Goals:
 
 - Align dashboard calculations with `engine_core.py`.
-- Show data freshness.
-- Add portfolio/risk summaries.
+- Show data freshness and Risk Visibility Score per position.
+- Add Portfolio Heat Map (cluster-level exposure + open R) (→ TASK-20260511-007).
+- Add Earnings Risk Module per open position (→ TASK-20260511-007).
+- Add System Health tab (→ TASK-20260511-006).
+- Separate statistics view: Discretionary / ALGO / Combined (→ TASK-20260511-004).
 - Improve Hebrew display where relevant.
+
+Completed:
+
+- PDF weekly/monthly report service (WeasyPrint + Jinja2 + Plotly charts) ✅
+- Weekly/monthly Telegram summary with Hebrew coaching insights ✅
+- WoW/MoM comparison via snapshot store ✅
+- Plotly charts embedded in PDF (campaign R bars, setup perf, equity curve, win/loss donut) ✅
 
 ## Phase 6 — Automation and intelligence layer
 
@@ -115,15 +145,16 @@ Status: future
 Goals:
 
 - Smarter risk monitor.
-- Better alerts.
-- More accurate management suggestions.
+- Better ALGO-aware alerts (guardrail thresholds, giveback, profit protection checkpoints).
+- More accurate management suggestions with actionability classification.
 - More automated journal/backlog workflows.
 
 Rules:
 
 - No automatic trade state mutation without explicit user-approved rules.
+- ALGO positions must never receive automated exit instructions.
 - Alerts must be bounded to avoid noise.
-- Every automated suggestion must explain evidence and trigger.
+- Every automated suggestion must explain evidence, trigger, and actionability level.
 
 ## Parking lot
 
@@ -132,6 +163,5 @@ Ideas to consider later:
 - GitHub Issues integration for tasks.
 - Release notes automation.
 - Structured JSON report outputs.
-- Dedicated test fixtures folder.
-- Local command scripts for deploy and smoke tests.
 - Portfolio scenario simulator.
+- Local command scripts for deploy and smoke tests.

@@ -63,6 +63,411 @@ Rollback:
 
 ## Active tasks
 
+### TASK-20260511-011 — Clean up scripts/archive and root-level clutter
+
+Status: in_progress
+Assigned to: agent
+Risk: Low
+Affected services: none
+
+Goal:
+- Archived 26 orphaned one-shot fix scripts to `scripts/archive/`.
+- Verify `test_infra.py` and `test_xml_ibkr.py` (archived) are no longer needed.
+- Add `scripts/archive/README.md` with inventory.
+
+Progress log:
+- 2026-05-11: 26 files moved to scripts/archive/.
+
+Validation:
+- [x] All orphaned scripts moved to scripts/archive/
+- [ ] scripts/archive/README.md written
+- [x] pytest -q still passes (587 passed)
+
+---
+
+### TASK-20260511-010 — Comprehensive test suite: security, calculations, data validation, UX
+
+Status: validated
+Assigned to: agent
+Risk: Low
+Affected services: tests only
+
+Goal:
+- 587 tests covering functionality, security, UX, data validation, and math at highest precision.
+
+Done:
+- `tests/test_security.py` (30 tests): token masking, rate limiting, secrets not in logs, retry boundary.
+- `tests/test_calculations_comprehensive.py` (45 tests): R-multiples, profit factor, expectancy, dev score, adaptive risk math, NAV freshness.
+- `tests/test_data_validation.py` (50 tests): malformed input, edge cases, corrupt files, account state.
+- `tests/test_ux_formatting_comprehensive.py` (40 tests): Hebrew months, Markdown validity, verdict, coaching.
+- `tests/test_adaptive_risk_engine.py` (55 tests): RISK_LADDER, all directions, heat score, streaks, adherence.
+- `tests/test_ibkr_sync_full.py` (35 tests): all 17 error codes, retry logic, full pipeline.
+- 3 production bugs fixed: `adaptive_risk_engine.py` (3× `c["is_win"]` → `.get()`), `account_state.py` (non-dict JSON guard).
+
+Validation:
+- [x] 587 tests pass, 0 failures
+- [x] Committed and pushed to claude/review-dev-roadmap-6K19V
+
+---
+
+### TASK-20260511-009 — PDF weekly/monthly report service (Phase 1 + Phase 2)
+
+Status: validated
+Assigned to: agent
+Risk: Low
+Affected services: report-scheduler (new Docker service)
+
+Goal:
+- PDF reports via WeasyPrint + Jinja2 delivered to Telegram on schedule.
+- Charts embedded (Plotly + Kaleido): R bars, setup performance, equity curve, win/loss donut.
+
+Done:
+- `report_scheduler.py` — Israel-TZ scheduling, weekly (Sat 08:30) + monthly (1st 08:40), dedup.
+- `report_renderer.py` — HTML→PDF, `build_weekly_report`, `build_monthly_report`, `build_summary_text`.
+- `report_delivery.py` — `send_pdf`, `send_message`, 1024-char caption guard.
+- `report_snapshot_store.py` — WoW/MoM comparison snapshots.
+- `chart_generator.py` — 4 chart types, graceful None fallback.
+- `analytics_engine.py` — `compute_period_analytics`, `compute_trader_development_score`, `compute_verdict`.
+- Templates: `templates/weekly_report.html.j2`, `templates/monthly_report.html.j2`, `templates/report_base.css`.
+- docker-compose: `report-scheduler` service added.
+
+Validation:
+- [x] pytest -q passes (test_report_scheduler.py, test_chart_generator.py, test_calculations_comprehensive.py)
+- [x] Committed and pushed
+- [ ] Deploy on Orange Pi: `docker compose up -d --build report-scheduler`
+- [ ] Verify first weekly report arrives on Saturday 08:30 Israel time
+
+---
+
+### TASK-20260511-008 — Developer menu (🛠️) in Telegram
+
+Status: validated
+Assigned to: agent
+Risk: Low
+Affected services: telegram-bot
+
+Goal:
+- Admin-only developer actions accessible from Telegram without SSH.
+
+Done:
+- `🛠️ פיתוח` button in help sub-menu (admin-only).
+- Manual IBKR sync, last sync result, system health, config display (tokens masked), log view, git pull.
+- Rate-limited: 2 syncs/day, 3h cooldown between syncs.
+- `_dev_sync_check()` / `_dev_sync_record()` with state file.
+- `ibkr_sync_runner.py` extracted from `main.py` and reused.
+
+Validation:
+- [x] test_developer_menu.py passes
+- [x] test_ibkr_sync_full.py: 35 tests pass
+- [x] Committed and pushed
+- [ ] Verify on Orange Pi
+
+---
+
+### TASK-20260511-001 — IBKR error classification + smart GetStatement retry
+
+Status: validated
+Source requirement: REQ-20260511-001
+Assigned to: agent
+Risk: Medium
+Affected services: sentinel-bot (ibkr_sync_runner.py)
+
+Goal:
+- Classify IBKR Flex Query errors: temporary / fatal / rate_limit.
+- Retry GetStatement up to 3× with wait per attempt.
+- Immediate stop on fatal errors (prevents account lockout).
+
+Done (implemented in `ibkr_sync_runner.py`):
+- `IBKR_ERROR_CLASSES` dict: 17 codes mapped to (class, Hebrew description).
+- `parse_flex_error(xml_text)` → classified error dict or None.
+- `get_statement_with_retry(ref, token, max_retries, wait_sec)` → (xml, err).
+- Fatal errors stop after 1 attempt; temporary errors retry up to max_retries.
+- `run_ibkr_sync()` → structured `{"status", "code", "message", "nav"}`.
+- 35 unit tests covering all 17 error codes and full pipeline.
+
+Validation:
+- [x] 35 tests pass (test_ibkr_sync_full.py)
+- [x] All 17 known error codes tested and classified correctly
+- [x] Fatal error stops after 1 attempt (no retry)
+- [x] Temporary error retries exactly max_retries times
+- [x] NAV extracted and written to config on success
+- [x] Committed and pushed
+- [ ] Deploy on Orange Pi and verify morning sync behavior
+
+Files touched:
+- ibkr_sync_runner.py (NEW — extracted from main.py)
+- tests/test_ibkr_sync_full.py (NEW)
+
+---
+
+### TASK-20260511-007 — Phase G: Portfolio Heat Map + Earnings Risk Module + AI Context Export upgrade
+
+Status: todo
+Source requirement: REQ-20260511-008
+Assigned to: agent
+Risk: Low
+Affected services: dashboard, telegram-bot
+
+Goal:
+- Add Portfolio Heat Map (cluster-level exposure + open R + risk contribution).
+- Add Earnings Risk Module: next earnings date, days-to-event, cushion verdict per open position.
+- Upgrade AI Master Context Export: include management_mode, risk_basis, stat_bucket, ALGO note, next decisions section.
+
+Plan:
+1. `engine_core.py`: add `fetch_next_earnings_date(symbol)` using yfinance calendar.
+2. `dashboard.py`: add Portfolio Heat Map section (EP / VCP / ALGO / concentration / cash row).
+3. `dashboard.py`: add earnings risk warning per open position in Command Center expander.
+4. `telegram_bot.py`: update AI context export command to include new fields.
+
+Validation:
+- [ ] Portfolio Heat Map renders with correct cluster groupings
+- [ ] Earnings dates fetched without breaking dashboard load time
+- [ ] AI export includes management_mode, risk_basis, ALGO disclaimer
+- [ ] pytest -q passes
+- [ ] Deployed and verified
+
+Files touched:
+- engine_core.py, dashboard.py, telegram_bot.py
+
+Rollback:
+- git revert — no Supabase schema changes, safe
+
+---
+
+### TASK-20260511-006 — Phase F: Actionability Layer + Mistake Classification + /health command
+
+Status: todo
+Source requirement: REQ-20260511-006 / REQ-20260511-007
+Assigned to: agent
+Risk: Low
+Affected services: telegram-bot, dashboard
+
+Goal:
+- Add `actionability` classification to all Telegram messages and alerts.
+- Add `fmt_algo_risk_note()` to `telegram_formatters.py` using structured ALGO message template.
+- Add `/health` Telegram command with 13 data integrity checks.
+- Add `intent` and `mistake_classification` fields to campaign data.
+- Add Data Quality Badges per position.
+
+Plan:
+1. `telegram_formatters.py`: add `fmt_algo_risk_note(symbol, open_r, exposure, reason)` with actionability field.
+2. `telegram_bot.py`: add `/health` command — runs checklist and returns structured report.
+3. `engine_core.py`: add `compute_data_quality_badge(position)` → returns badge emoji + label.
+4. `dashboard.py`: display badges and intent labels per position in Command Center.
+5. Update all existing alert generators to include actionability level.
+
+Validation:
+- [ ] /health returns all 13 checks
+- [ ] ALGO positions never receive Action Required with exit instruction
+- [ ] Data quality badge computed correctly for verified / external / broken cases
+- [ ] pytest -q passes
+
+Files touched:
+- telegram_formatters.py, telegram_bot.py, engine_core.py, dashboard.py
+
+Rollback:
+- git revert — additive changes only, no schema changes
+
+---
+
+### TASK-20260511-005 — Phase E: Risk Deviation Engine + Giveback Monitor
+
+Status: todo
+Source requirement: REQ-20260511-005
+Assigned to: agent
+Risk: Medium
+Affected services: engine-core, risk-monitor, telegram-bot
+
+Goal:
+- Add `compute_risk_deviation(position)` to engine_core: deviation R = open loss / target risk USD, classified.
+- Add `compute_giveback_from_peak(position)` to engine_core: tracks peak open R, measures giveback %.
+- Wire ALGO guardrail thresholds into risk_monitor: alert at 1.5R / 2.0R / 3.0R open loss.
+- Fire Profit Protection Checkpoints at 2R and 3R milestones (different text for manual vs ALGO).
+- Add tests for deviation classification.
+
+Plan:
+1. `engine_core.py`: `compute_risk_deviation()` — five-tier classification (normal/minor/moderate/severe/system_event).
+2. `engine_core.py`: `compute_giveback_from_peak()` — four-tier classification (natural/watch/tighten/protection_failure).
+3. `risk_monitor.py`: per-position ALGO guardrail check using `compute_risk_deviation()`.
+4. `risk_monitor.py`: Profit Protection Checkpoint alerts at 2R / 3R, separate text for manual vs ALGO.
+5. `tests/test_risk_deviation.py`: unit tests for both functions.
+
+Validation:
+- [ ] Tests added and passing
+- [ ] ALGO alerts use "Review Required" language, not exit instructions
+- [ ] Manual positions receive management suggestion at checkpoints
+- [ ] pytest -q passes
+- [ ] Deployed on Orange Pi
+
+Files touched:
+- engine_core.py, risk_monitor.py, telegram_formatters.py, tests/test_risk_deviation.py
+
+Rollback:
+- git revert engine_core.py + risk_monitor.py — no schema changes
+
+---
+
+### TASK-20260511-004 — Phase D: Statistical isolation (stat_bucket + ALGO Risk Oversight Score)
+
+Status: todo
+Source requirement: REQ-20260511-004
+Assigned to: agent
+Risk: Medium
+Affected services: dashboard, engine-core, analytics_engine
+
+Goal:
+- Add `stat_bucket` field to campaign data: EP_MANUAL / VCP_MANUAL / ALGO_OBSERVED / TEST_PROBE / DATA_INCOMPLETE / BROKER_SYNC_ONLY.
+- `analytics_engine.py`: separate stats into Discretionary / ALGO / Combined buckets.
+- Dashboard shows three separate performance sections.
+- ALGO positions get `ALGO Risk Oversight Score` instead of `Execution Score`.
+- DATA_INCOMPLETE campaigns excluded from Expectancy and Win Rate.
+
+Plan:
+1. `engine_core.py`: add `classify_stat_bucket(campaign)` — derives bucket from setup_type + management_mode + data quality.
+2. `analytics_engine.py` (extend from REQ-20260510 planned work): bucket-aware stats computation.
+3. `dashboard.py`: Performance Matrix tab — add separate Discretionary / ALGO / Combined sections.
+4. `engine_core.py`: add `compute_algo_risk_oversight_score(campaign)` — weighted 5-factor score.
+
+Validation:
+- [ ] stat_bucket correctly assigned for EP, VCP, ALGO campaigns
+- [ ] Expectancy calculation excludes DATA_INCOMPLETE bucket
+- [ ] ALGO Risk Oversight Score returns 0–100 value
+- [ ] Dashboard shows three separate performance views
+- [ ] pytest -q passes
+
+Files touched:
+- engine_core.py, analytics_engine.py, dashboard.py
+
+Rollback:
+- git revert — no Supabase schema changes (stat_bucket derived at runtime)
+
+---
+
+### TASK-20260511-003 — Phase C: Risk Basis + Risk Visibility Score + management_mode display
+
+Status: todo
+Source requirement: REQ-20260511-002 / REQ-20260511-003
+Assigned to: agent
+Risk: Medium
+Affected services: engine-core, dashboard, telegram-bot
+
+Goal:
+- Add `management_mode` to position data: manual_managed / system_assisted / algo_observed / unknown.
+- Add `risk_basis` to position data: True / Target / Estimated / Unknown.
+- Add `risk_visibility_score` (0–100) per position.
+- Fix ALGO stop display: replace `$0.00` with `External / Unknown`.
+- `unknown` mode positions excluded from quality statistics.
+
+Plan:
+1. `engine_core.py`: add `classify_management_mode(campaign)` — derives from setup_type + existing stop data.
+2. `engine_core.py`: add `classify_risk_basis(campaign)` — True if stop known, Target if using target_risk_usd, else Estimated/Unknown.
+3. `engine_core.py`: add `compute_risk_visibility_score(campaign)` → int 0–100.
+4. `dashboard.py`: use management_mode to gate stop display — ALGO shows "External / Unknown" not "$0.00".
+5. `telegram_formatters.py`: `fmt_position_card()` shows risk_basis badge.
+6. All quality stats: filter out `unknown` management_mode positions.
+
+Validation:
+- [ ] ALGO positions show "External / Unknown" stop, not $0.00
+- [ ] risk_basis correctly classified for positions with and without stops
+- [ ] risk_visibility_score in range 0–100
+- [ ] unknown mode excluded from quality stats
+- [ ] pytest -q passes
+
+Files touched:
+- engine_core.py, dashboard.py, telegram_formatters.py
+
+Rollback:
+- git revert — additive, no schema changes
+
+---
+
+### TASK-20260511-002 — Phase B: ALGO Observer Mode — formal rules and display foundation
+
+Status: todo
+Source requirement: REQ-20260511-002
+Assigned to: agent
+Risk: Low
+Affected services: dashboard, telegram-bot
+
+Goal:
+- Establish ALGO Observer Mode as a formal, enforceable concept in the codebase.
+- Add constant / config that lists known ALGO symbols (already partially in engine_core.py).
+- Ensure no code path issues EP/VCP management instructions to ALGO positions.
+- Document the formal rule in code comments and DATA_CONTRACTS.md.
+
+Plan:
+1. `engine_core.py`: add `ALGO_SYMBOLS` set and `is_algo_position(campaign)` helper.
+2. Audit `telegram_bot.py` and `engine_core.py` for any code that sends stop-raise or exit instructions to ALGO positions — gate them with `is_algo_position()`.
+3. `docs/DATA_CONTRACTS.md`: add management_mode and stat_bucket to contracts.
+4. Add management_mode and risk_basis to `docs/DECISIONS.md` as architectural decisions.
+
+Plan:
+1. Add `is_algo_position()` to engine_core.
+2. Audit existing management suggestion code paths.
+3. Update DATA_CONTRACTS.md.
+4. Update DECISIONS.md.
+
+Validation:
+- [ ] is_algo_position() returns True for known ALGO symbols
+- [ ] No management suggestion code sends stop/exit instruction to ALGO positions
+- [ ] DATA_CONTRACTS.md updated
+- [ ] DECISIONS.md updated
+- [ ] pytest -q passes
+
+Files touched:
+- engine_core.py, telegram_bot.py, docs/DATA_CONTRACTS.md, docs/DECISIONS.md
+
+Rollback:
+- git revert — code audit + doc changes only
+
+---
+
+### TASK-20260511-001 — IBKR error classification + smart GetStatement retry
+
+Status: todo
+Source requirement: REQ-20260511-001
+Assigned to: agent
+Risk: Medium
+Affected services: sentinel-bot (main.py only)
+
+Goal:
+- Classify IBKR Flex Query errors: temporary / fatal / rate_limit.
+- Retry GetStatement up to 3× with 60s wait per hourly attempt (same ReferenceCode).
+- Do not resend SendRequest within the same hourly attempt.
+- Raise MAX_ATTEMPTS_PER_DAY from 3 to 5.
+- Include error code + classification in every Telegram alert.
+- Immediate stop-and-alert on fatal errors.
+
+Plan:
+1. Add `IBKR_ERROR_CLASSES` dict mapping code → (class, Hebrew description).
+2. Extract `parse_flex_error(xml_text)` → returns (code, class, description) or None if success.
+3. Extract `get_statement_with_retry(ref_code, token, max_retries=3, wait_sec=60)`.
+4. Refactor `run_ibkr_sync()` to return structured dict {"status", "code", "message"}.
+5. Update caller loop in `__main__` to act on status: fatal → skip day, temporary → count attempt, rate_limit → log only.
+6. Update Telegram alerts to include code + class.
+7. Add unit tests for error classification.
+
+Progress log:
+- 2026-05-11: Requirement documented. Waiting for additional topics before implementation.
+
+Validation:
+- [ ] Tests added for IBKR_ERROR_CLASSES and parse_flex_error
+- [ ] pytest -q passes
+- [ ] Manual smoke test: fatal error triggers immediate alert with code
+- [ ] Manual smoke test: temporary error retries GetStatement before counting failure
+- [ ] Deployed on Orange Pi
+
+Blockers:
+- Waiting for additional topics from user before starting implementation.
+
+Files touched:
+- main.py
+
+Rollback:
+- git revert on main.py + docker compose restart sentinel-bot
+
+---
+
 ### TASK-20260510-004 — Adaptive risk engine + regime transparency + proactive alerts
 
 Status: implemented

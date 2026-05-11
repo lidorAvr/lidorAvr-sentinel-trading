@@ -144,18 +144,18 @@ def compute_adaptive_risk(
     weighted_total = 0
     for i, c in enumerate(recent_50):
         w = 2 if i < 10 else 1
-        weighted_wins += w * (1 if c["is_win"] else 0)
+        weighted_wins += w * (1 if c.get("is_win") else 0)
         weighted_total += w
 
     weighted_wr = weighted_wins / weighted_total if weighted_total > 0 else 0.0
-    recent_10_wr = (sum(1 for c in recent_10 if c["is_win"]) / len(recent_10)) if recent_10 else 0.0
-    all_50_wr = (sum(1 for c in recent_50 if c["is_win"]) / len(recent_50)) if recent_50 else 0.0
+    recent_10_wr = (sum(1 for c in recent_10 if c.get("is_win")) / len(recent_10)) if recent_10 else 0.0
+    all_50_wr = (sum(1 for c in recent_50 if c.get("is_win")) / len(recent_50)) if recent_50 else 0.0
 
     # Streak Detection (newest first)
     win_streak = 0
     loss_streak = 0
     for c in recent_50:
-        if c["is_win"]:
+        if c.get("is_win"):
             if loss_streak > 0:
                 break
             win_streak += 1

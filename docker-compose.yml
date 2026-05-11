@@ -46,3 +46,17 @@ services:
       - .:/app
     depends_on:
       - telegram-bot
+
+  reporting-service:
+    build: .
+    container_name: reporting-service
+    restart: unless-stopped
+    command: python report_scheduler.py
+    env_file:
+      - .env
+    environment:
+      - TZ=Asia/Jerusalem
+    volumes:
+      - .:/app
+    depends_on:
+      - telegram-bot

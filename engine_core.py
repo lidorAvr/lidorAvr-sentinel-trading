@@ -1,14 +1,17 @@
 import time
+import json
+import os
 import pandas as pd
 import numpy as np
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timedelta
 import threading
 import requests
 import random
 from bs4 import BeautifulSoup
 
 ALGO_SYMBOL_LIMITS = {"QQQ": 10.0, "TSLA": 7.0, "JPM": 7.0, "PLTR": 6.0, "HOOD": 6.0}
+ALGO_SYMBOLS = set(ALGO_SYMBOL_LIMITS.keys())
 ALGO_CLUSTER_WARNING_PCT = 30.0
 ALGO_CLUSTER_CRITICAL_PCT = 35.0
 YF_CACHE = {}
@@ -241,6 +244,66 @@ def compute_behavior_features(symbol, df, days_held, spy_hist=None):
         "rs20_stock_sector": rs_bundle["rs20_stock_sector"]
     }
 
+def is_algo_position(setup_type, symbol=None):
+    """
+    True if this position is managed by an external ALGO system.
+    setup_type is the single source of truth. Symbol is only a fallback
+    when setup_type is missing/unknown — it never overrides an explicit EP/VCP label.
+    """
+    st = str(setup_type).upper()
+    if st == "ALGO":
+        return True
+    # Symbol fallback: only when setup_type carries no explicit intent
+    if st in ("UNKNOWN", "NONE", "NAN", "", "UNCATEGORIZED"):
+        if symbol and str(symbol).upper() in ALGO_SYMBOLS:
+            return True
+    return False
+
+
+def classify_management_mode(setup_type, symbol=None):
+    """
+    Classify how a position is managed.
+    Used to gate statistics, alerts, and display — not stored in Supabase (derived at runtime).
+    """
+    if is_algo_position(setup_type, symbol):
+        return "algo_observed"
+    return "manual_managed"
+
+
+def classify_risk_basis(stop, base_price, setup_type, target_risk_usd=0):
+    """
+    Classify the basis used for R calculation.
+    True   — real known stop, enters all quality statistics.
+    Target — ALGO or missing stop, uses target_risk_usd as denominator.
+    Unknown — no basis available, excluded from statistics.
+    """
+    if is_algo_position(setup_type):
+        return "Target" if target_risk_usd > 0 else "Unknown"
+    if stop > 0 and stop < base_price:
+        return "True"
+    if target_risk_usd > 0:
+        return "Target"
+    return "Unknown"
+
+
+def compute_risk_visibility_score(setup_type, stop, base_price, target_risk_usd=0):
+    """
+    Score 0-100 expressing how clearly we can see a position's risk.
+    100: stop known, risk known, quantity known (True Risk basis)
+     60: Target Risk basis only (no real stop)
+     40: external ALGO, target risk available
+     20: external ALGO, no target risk; or no stop and no target
+      0: broken data
+    """
+    if is_algo_position(setup_type):
+        return 40 if target_risk_usd > 0 else 20
+    if stop > 0 and stop < base_price:
+        return 100
+    if target_risk_usd > 0:
+        return 60
+    return 20
+
+
 def evaluate_hard_rules(features, setup_type, weight_pct, symbol, current_stop, total_r, stage, mgt_state):
     if str(setup_type).upper() == "ALGO":
         limit = ALGO_SYMBOL_LIMITS.get(symbol, 100.0)
@@ -379,13 +442,32 @@ def evaluate_position_engine(symbol, entry_price, entry_date_str, current_stop, 
         if hard_rule is not None:
             action = hard_rule["action"]
             if action == 'PENDING_MGT_STATE': action = "Runner חופשי - שקול מימוש בשבירת MA10" if mgt_state == "runner_mode" else "שקול מימוש חלקי"
-            return {"ok": True, "error": None, "data": {"status": hard_rule["status"], "sizing_status": sizing_status, "issues": issues, "action": action, "trigger": hard_rule["trigger"], "suggested_stop": current_stop, "score": None, "stage": stage, "features": features}}
-        
+            mgmt_mode = classify_management_mode(setup_type, symbol)
+            risk_basis = classify_risk_basis(current_stop, entry_price, setup_type, target_risk_usd)
+            risk_vis = compute_risk_visibility_score(setup_type, current_stop, entry_price, target_risk_usd)
+            return {"ok": True, "error": None, "data": {"status": hard_rule["status"], "sizing_status": sizing_status, "issues": issues, "action": action, "trigger": hard_rule["trigger"], "suggested_stop": current_stop, "score": None, "stage": stage, "features": features, "management_mode": mgmt_mode, "risk_basis": risk_basis, "risk_visibility_score": risk_vis}}
+
         score = score_position(features, stage)
         status = map_score_to_status(score, features=features)
+        mgmt_mode = classify_management_mode(setup_type, symbol)
+        risk_basis = classify_risk_basis(current_stop, entry_price, setup_type, target_risk_usd)
+        risk_vis = compute_risk_visibility_score(setup_type, current_stop, entry_price, target_risk_usd)
+
+        # ALGO: Sentinel is an observer only — do not apply discretionary management rules.
+        if mgmt_mode == "algo_observed":
+            return {"ok": True, "error": None, "data": {
+                "status": status, "sizing_status": sizing_status, "issues": [],
+                "action": "מנוהל חיצונית — בקרה בלבד",
+                "trigger": "",
+                "suggested_stop": None,
+                "score": score, "stage": stage, "features": features,
+                "management_mode": "algo_observed",
+                "risk_basis": risk_basis,
+                "risk_visibility_score": risk_vis,
+            }}
+
         action, trigger, suggested_stop = build_management_action(status, features, stage, current_stop, total_r, mgt_state)
-        
-        return {"ok": True, "error": None, "data": {"status": status, "sizing_status": sizing_status, "issues": issues, "action": action, "trigger": trigger, "suggested_stop": suggested_stop, "score": score, "stage": stage, "features": features}}
+        return {"ok": True, "error": None, "data": {"status": status, "sizing_status": sizing_status, "issues": issues, "action": action, "trigger": trigger, "suggested_stop": suggested_stop, "score": score, "stage": stage, "features": features, "management_mode": mgmt_mode, "risk_basis": risk_basis, "risk_visibility_score": risk_vis}}
     except Exception as e: return {"ok": False, "error": str(e), "data": None}
 
 def get_open_positions_campaign(df):
@@ -742,3 +824,448 @@ def generate_minervini_coaching(win_rate, expectancy_r, adj_rr, oversized_count=
         insights.append(f"💡 <b>+{total_r_net:.1f}R מצטבר</b> — מינרביני: 'תיק מצליח. שמור על הדיסציפלינה ואל תגדיל סיכון מתוך ביטחון יתר.'")
 
     return insights
+
+
+def compute_risk_deviation(open_pnl_usd, target_risk_usd):
+    """
+    Measure how far a losing position has deviated from its target risk.
+
+    open_pnl_usd    current open PnL (negative = loss)
+    target_risk_usd planned risk per trade in USD
+
+    Returns a dict with deviation_r (in R units), classification, Hebrew label,
+    and alert_level. Meaningful only when open_pnl_usd < 0.
+    """
+    if target_risk_usd <= 0:
+        return {
+            "deviation_r": 0.0, "classification": "unknown",
+            "label": "אין בסיס סיכון", "alert_level": "none",
+        }
+
+    deviation_r = abs(open_pnl_usd) / target_risk_usd
+
+    if deviation_r <= 1.0:
+        cls, label, alert = "normal",       "תקין",            "info"
+    elif deviation_r <= 1.5:
+        cls, label, alert = "minor",        "חריגה קלה",       "watch"
+    elif deviation_r <= 2.0:
+        cls, label, alert = "moderate",     "חריגה בינונית",   "alert"
+    elif deviation_r <= 3.0:
+        cls, label, alert = "severe",       "חריגה חמורה",     "severe"
+    else:
+        cls, label, alert = "system_event", "אירוע מערכת",     "system"
+
+    return {
+        "deviation_r": round(deviation_r, 2),
+        "classification": cls,
+        "label": label,
+        "alert_level": alert,
+    }
+
+
+def compute_giveback_from_peak(peak_open_r, current_open_r):
+    """
+    Measure profit giveback from the peak open R.
+
+    Returns giveback_r (absolute R lost from peak), giveback_pct_of_peak
+    (percentage of peak profit surrendered), classification, and Hebrew label.
+    Only meaningful when peak_open_r > 0.
+    """
+    if peak_open_r <= 0:
+        return {
+            "giveback_r": 0.0, "giveback_pct_of_peak": 0.0,
+            "classification": "na", "label": "אין שיא רווח",
+        }
+
+    giveback_r = peak_open_r - current_open_r
+    giveback_pct = (giveback_r / peak_open_r) * 100
+
+    if giveback_pct <= 20:
+        cls, label = "natural",           "ויתור טבעי"
+    elif giveback_pct <= 35:
+        cls, label = "watch",             "מעקב — ויתור מעל 20%"
+    elif giveback_pct <= 50:
+        cls, label = "tighten",           "להדק — ויתור מעל 35%"
+    else:
+        cls, label = "protection_failure", "כשל הגנת רווח — ויתור מעל 50%"
+
+    return {
+        "giveback_r": round(giveback_r, 2),
+        "giveback_pct_of_peak": round(giveback_pct, 1),
+        "classification": cls,
+        "label": label,
+    }
+
+
+def compute_data_quality_badge(setup_type, entry_price, quantity, stop, init_sl, target_risk_usd=0):
+    """
+    Compute a data quality badge for a position.
+    Returns (primary_badge, risk_badge, label).
+      primary_badge: ✅ Verified | ⚠️ Partial | 🟠 External | 🔴 Broken
+      risk_badge:    🧮 True-Risk | 📊 Target-Based | ""
+      label:         short English descriptor
+    """
+    if is_algo_position(setup_type):
+        primary, label = "🟠", "External"
+    elif entry_price <= 0 or quantity <= 0:
+        primary, label = "🔴", "Broken"
+    elif stop > 0 and stop < entry_price and init_sl > 0 and init_sl < entry_price:
+        primary, label = "✅", "Verified"
+    elif (stop > 0 and stop < entry_price) or target_risk_usd > 0:
+        primary, label = "⚠️", "Partial"
+    else:
+        primary, label = "🔴", "Broken"
+
+    basis = classify_risk_basis(
+        init_sl if (init_sl > 0 and init_sl < entry_price) else stop,
+        entry_price, setup_type, target_risk_usd
+    )
+    risk_badge = {"True": "🧮", "Target": "📊"}.get(basis, "")
+
+    return primary, risk_badge, label
+
+
+# ── Statistical Bucket Classification ─────────────────────────────────────────
+# stat_bucket separates ALGO (observed) from manual discretionary campaigns
+# so that stats like Win Rate, Expectancy, and Avg-R are never contaminated.
+
+STAT_BUCKET_ALGO = "ALGO_OBSERVED"
+STAT_BUCKET_DATA_INCOMPLETE = "DATA_INCOMPLETE"
+
+_MANUAL_SETUP_PREFIXES = ("VCP", "EP", "BREAKOUT", "SWING", "TREND", "MOMENTUM")
+
+
+def classify_stat_bucket(setup_type: str, original_campaign_risk: float,
+                         target_risk_usd: float = 0) -> str:
+    """
+    Derive stat_bucket for a closed campaign. Never stored in DB — always runtime.
+
+    Buckets:
+      ALGO_OBSERVED      — ALGO-managed positions (external, oversight only)
+      VCP_MANUAL         — VCP discretionary with known initial risk
+      EP_MANUAL          — EP discretionary with known initial risk
+      <SETUP>_MANUAL     — other manual setups with known initial risk
+      DATA_INCOMPLETE    — manual setup but initial stop missing → excluded from Expectancy
+    """
+    st = str(setup_type).upper().strip()
+    if is_algo_position(setup_type):
+        return STAT_BUCKET_ALGO
+    if original_campaign_risk > 0:
+        for prefix in _MANUAL_SETUP_PREFIXES:
+            if st.startswith(prefix):
+                return f"{prefix}_MANUAL"
+        return f"{st}_MANUAL" if st and st not in ("UNKNOWN", "NONE", "NAN", "") else STAT_BUCKET_DATA_INCOMPLETE
+    return STAT_BUCKET_DATA_INCOMPLETE
+
+
+def is_stat_countable(stat_bucket: str) -> bool:
+    """True if this campaign should count in Expectancy / Win Rate stats."""
+    return stat_bucket != STAT_BUCKET_DATA_INCOMPLETE and stat_bucket != STAT_BUCKET_ALGO
+
+
+def is_discretionary_bucket(stat_bucket: str) -> bool:
+    return stat_bucket.endswith("_MANUAL")
+
+
+# ── ALGO Risk Oversight Score ──────────────────────────────────────────────────
+
+def compute_algo_risk_oversight_score(
+    symbol: str,
+    pnl_usd: float,
+    target_risk_usd: float,
+    original_campaign_risk: float,
+    r_realized: float,
+    quality_val,
+) -> dict:
+    """
+    Weighted 5-factor score (0–100) measuring how well Sentinel could *observe*
+    an ALGO campaign. Higher score = better data transparency.
+
+    Factors:
+      1. Symbol known and in ALGO_SYMBOL_LIMITS          — 20 pts
+      2. target_risk_usd available                       — 20 pts
+      3. R multiple computable (target_risk_usd > 0)     — 20 pts
+      4. PnL data present (not zero / suspicious)        — 20 pts
+      5. Entry quality recorded                          — 20 pts
+    """
+    score = 0
+    details = {}
+
+    sym = str(symbol).upper()
+    if sym in ALGO_SYMBOLS:
+        score += 20
+        details["symbol_known"] = True
+    else:
+        details["symbol_known"] = False
+
+    if target_risk_usd > 0:
+        score += 20
+        details["target_risk_known"] = True
+    else:
+        details["target_risk_known"] = False
+
+    if target_risk_usd > 0 and r_realized != 0:
+        score += 20
+        details["r_computable"] = True
+    else:
+        details["r_computable"] = False
+
+    if pnl_usd != 0:
+        score += 20
+        details["pnl_present"] = True
+    else:
+        details["pnl_present"] = False
+
+    try:
+        q = float(quality_val)
+        if q > 0:
+            score += 20
+            details["quality_recorded"] = True
+        else:
+            details["quality_recorded"] = False
+    except (TypeError, ValueError):
+        details["quality_recorded"] = False
+
+    label_map = {
+        range(80, 101): "🟢 שקיפות גבוהה",
+        range(60, 80):  "🟡 שקיפות חלקית",
+        range(40, 60):  "🟠 שקיפות נמוכה",
+        range(0, 40):   "🔴 מידע חסר",
+    }
+    label = "🔴 מידע חסר"
+    for r, lbl in label_map.items():
+        if score in r:
+            label = lbl
+            break
+
+    return {"score": score, "label": label, "details": details}
+
+
+# ── Earnings Risk Module ───────────────────────────────────────────────────────
+_EARNINGS_CACHE_TTL = 6 * 3600  # 6 hours — earnings dates change rarely
+
+
+def fetch_next_earnings_date(symbol: str) -> dict:
+    """
+    Fetch next earnings date for a symbol via yfinance calendar.
+    Cached 6 hours to avoid hammering Yahoo on every dashboard load.
+
+    Returns:
+      {
+        "date":           datetime | None,
+        "days_to_event":  int | None,
+        "cushion_verdict": str  (Hebrew + emoji),
+        "ok":             bool,
+      }
+    """
+    cache_key = f"{symbol}_earnings"
+    now = time.time()
+    if cache_key in YF_CACHE and (now - YF_CACHE[cache_key]["time"]) < _EARNINGS_CACHE_TTL:
+        return YF_CACHE[cache_key]["data"]
+
+    result = {"date": None, "days_to_event": None, "cushion_verdict": "⚪ אין מידע", "ok": False}
+    try:
+        smart_delay()
+        tk = yf.Ticker(symbol)
+        cal = tk.calendar
+        if cal is None:
+            YF_CACHE[cache_key] = {"data": result, "time": now}
+            return result
+
+        # yfinance returns dict or DataFrame depending on version
+        if hasattr(cal, 'to_dict'):
+            cal = cal.to_dict()
+
+        earnings_date = None
+        for key in ("Earnings Date", "earningsDate", "earnings_date"):
+            val = cal.get(key)
+            if val is not None:
+                if isinstance(val, (list, tuple)) and len(val) > 0:
+                    val = val[0]
+                try:
+                    from datetime import datetime as _dt
+                    if hasattr(val, 'date'):
+                        earnings_date = val
+                    else:
+                        earnings_date = _dt.fromisoformat(str(val))
+                    break
+                except Exception:
+                    pass
+
+        if earnings_date is None:
+            YF_CACHE[cache_key] = {"data": result, "time": now}
+            return result
+
+        from datetime import datetime as _dt, timezone
+        now_dt = _dt.now(tz=earnings_date.tzinfo) if earnings_date.tzinfo else _dt.now()
+        days = (earnings_date.replace(tzinfo=None) - now_dt.replace(tzinfo=None)).days
+
+        if days < 0:
+            verdict = "⚪ עבר (אין תאריך הבא)"
+        elif days <= 7:
+            verdict = f"🔴 תוך {days} ימים — לבחון חשיפה"
+        elif days <= 21:
+            verdict = f"🟡 תוך {days} ימים"
+        else:
+            verdict = f"🟢 {days} ימים"
+
+        result = {"date": earnings_date, "days_to_event": days, "cushion_verdict": verdict, "ok": True}
+    except Exception:
+        pass
+
+    YF_CACHE[cache_key] = {"data": result, "time": now}
+    return result
+
+
+# ── NAV Freshness ──────────────────────────────────────────────────────────────
+NAV_STALE_HOURS = 24   # warn if NAV not updated within this window
+NAV_CRITICAL_HOURS = 48  # critical if older than this
+
+_CONFIG_PATHS = ["/app/sentinel_config.json", "sentinel_config.json"]
+
+
+def get_nav_with_freshness() -> dict:
+    """
+    Read NAV from sentinel_config.json and compute freshness.
+
+    Returns:
+      {
+        "nav":          float,
+        "source":       "ibkr_sync" | "manual" | "fallback",
+        "updated_at":   datetime | None,
+        "age_hours":    float | None,
+        "is_stale":     bool,
+        "is_critical":  bool,
+        "freshness_label": str   (Hebrew, for Telegram display),
+        "ok":           bool,
+      }
+    """
+    fallback = {
+        "nav": 7500.0, "source": "fallback", "updated_at": None,
+        "age_hours": None, "is_stale": True, "is_critical": True,
+        "freshness_label": "🔴 NAV: fallback — sentinel_config.json לא נמצא",
+        "ok": False,
+    }
+
+    cfg_path = next((p for p in _CONFIG_PATHS if os.path.exists(p)), None)
+    if cfg_path is None:
+        return fallback
+
+    try:
+        with open(cfg_path, "r") as f:
+            cfg = json.load(f)
+    except Exception:
+        return fallback
+
+    nav = float(cfg.get("nav") or cfg.get("total_deposited") or 7500.0)
+    updated_at_str = cfg.get("nav_updated_at")
+
+    if updated_at_str:
+        try:
+            updated_at = datetime.fromisoformat(updated_at_str)
+            age_hours = (datetime.now() - updated_at).total_seconds() / 3600
+            is_stale = age_hours > NAV_STALE_HOURS
+            is_critical = age_hours > NAV_CRITICAL_HOURS
+            source = "ibkr_sync"
+            if is_critical:
+                label = f"🔴 NAV ${nav:,.0f} — ישן {age_hours:.0f}ש׳ (לא עודכן!)"
+            elif is_stale:
+                label = f"🟡 NAV ${nav:,.0f} — עודכן לפני {age_hours:.0f}ש׳"
+            else:
+                label = f"✅ NAV ${nav:,.0f} — עודכן לפני {age_hours:.1f}ש׳"
+        except ValueError:
+            updated_at, age_hours = None, None
+            is_stale = is_critical = True
+            source = "manual"
+            label = f"⚠️ NAV ${nav:,.0f} — תאריך עדכון לא תקין"
+    else:
+        updated_at, age_hours = None, None
+        is_stale = is_critical = True
+        source = "manual"
+        label = f"🟠 NAV ${nav:,.0f} — אין timestamp (הוגדר ידנית)"
+
+    return {
+        "nav": nav, "source": source, "updated_at": updated_at,
+        "age_hours": age_hours, "is_stale": is_stale, "is_critical": is_critical,
+        "freshness_label": label, "ok": True,
+    }
+
+
+# ── Position Intent Classification ────────────────────────────────────────────
+# intent describes the ROLE of the position — affects how it's judged.
+INTENT_LABELS = {
+    "starter":       "🌱 Starter",
+    "probe":         "🧪 Probe",
+    "full_position": "🎯 Full Position",
+    "runner":        "🏃 Runner",
+    "earnings_hold": "📅 Earnings Hold",
+    "algo_signal":   "🤖 ALGO Signal",
+    "reentry":       "🔁 Re-entry",
+    "unknown":       "⚪ Unknown",
+}
+
+
+def classify_intent(setup_type: str, management_state: str, total_campaign_r: float,
+                    days_held: int, add_on_count: int = 0) -> str:
+    """
+    Derive intent from available runtime data.
+    Intent is never stored in DB — always derived.
+    """
+    st = str(setup_type).upper()
+    ms = str(management_state).lower()
+
+    if is_algo_position(setup_type):
+        return "algo_signal"
+    if "probe" in ms or "test" in ms:
+        return "probe"
+    if "runner" in ms:
+        return "runner"
+    if "reentry" in ms or "re_entry" in ms:
+        return "reentry"
+    if "earnings" in ms:
+        return "earnings_hold"
+    if total_campaign_r >= 2.0 and add_on_count == 0:
+        return "runner"
+    if add_on_count == 0 and days_held <= 3:
+        return "starter"
+    if ms in ("full_position", "full"):
+        return "full_position"
+    return "full_position"
+
+
+# ── Mistake Classification (closed campaigns with loss) ───────────────────────
+MISTAKE_LABELS = {
+    "good_loss":   "✅ Good Loss — לפי תוכנית",
+    "bad_loss":    "🔴 Bad Loss — חריגה מהכללים",
+    "system_loss": "🔧 System Loss — תקלת מערכת/פקודה",
+    "market_loss": "🌊 Market Loss — גאפ / אירוע חיצוני",
+    "data_loss":   "⚠️ Data Loss — חישוב לא אמין",
+    "probe_loss":  "🧪 Probe Loss — הפסד מתוכנן",
+    "unknown":     "⚪ Unknown",
+}
+
+
+def classify_mistake(intent: str, stat_bucket: str, pnl_usd: float,
+                     management_notes: str = "") -> str:
+    """
+    Derive mistake classification for a closed campaign with a loss.
+    For winning campaigns returns None.
+    Always derived at runtime — never stored.
+    """
+    if pnl_usd >= 0:
+        return None
+
+    notes = str(management_notes).lower()
+    if intent == "probe":
+        return "probe_loss"
+    if stat_bucket == STAT_BUCKET_DATA_INCOMPLETE:
+        return "data_loss"
+    if any(w in notes for w in ("gap", "גאפ", "halt", "news", "earnings miss")):
+        return "market_loss"
+    if any(w in notes for w in ("sync", "error", "system", "order", "execution")):
+        return "system_loss"
+    if any(w in notes for w in ("plan", "stop honored", "תוכנית", "לפי תוכנית")):
+        return "good_loss"
+    if any(w in notes for w in ("violated", "no stop", "moved stop", "averaged down", "חריגה")):
+        return "bad_loss"
+    return "unknown"

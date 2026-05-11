@@ -286,6 +286,113 @@ The `risk_confirm` callback handler must be added before the generic `v|` handle
 
 ---
 
+## DEC-20260511-002 — ibkr_sync_runner.py extracted from main.py
+
+Date: 2026-05-11
+Status: implemented
+
+### Decision
+
+Extract all IBKR sync logic from `main.py` into `ibkr_sync_runner.py` as a standalone, testable module.
+
+### Rationale
+
+`main.py` had no unit tests because its sync logic was embedded in a `while True` loop with `os.environ` reads and file writes interspersed throughout. Extracting to `ibkr_sync_runner.py` allows:
+- Full unit test coverage of all 17 IBKR error codes.
+- Reuse by the developer menu in `telegram_bot.py` without importing `main.py`.
+- Isolation of the fatal-error security boundary (no retry on auth failures).
+
+### Consequence
+
+`main.py` now delegates to `ibkr_sync_runner.run_ibkr_sync()`. The module boundary allows patching in tests without running the full loop.
+
+### Alternatives considered
+
+- **Test main.py directly**: circular — main loop runs indefinitely and is tightly coupled to env vars.
+- **Inline the sync code in telegram_bot.py**: duplication; two places to maintain.
+
+---
+
+## DEC-20260511-003 — account_state.py as single NAV source of truth
+
+Date: 2026-05-11
+Status: implemented
+
+### Decision
+
+Create `account_state.py` as the authoritative module for reading NAV and account settings from `sentinel_config.json`. All services must use `account_state.load()`.
+
+### Rationale
+
+Multiple services (telegram_bot.py, risk_monitor.py, adaptive_risk_engine.py, report_scheduler.py) were reading `sentinel_config.json` independently with slightly different fallback logic and key names. This led to inconsistent behavior when the file was missing, corrupted, or had wrong types.
+
+`account_state.load()` guarantees:
+- Never raises — always returns a safe dict with known keys.
+- Consistent fallback value ($7,500) and `nav_source="fallback"` when file is missing.
+- Explicit freshness classification with labeled status.
+- Non-dict JSON guard: if file contains `[...]` instead of `{...}`, returns fallback.
+
+### Constraint
+
+`sentinel_config.json` remains the storage format. `account_state.py` is a read layer only — it does not write. Writes go through `adaptive_risk_engine.update_risk_pct()` (for risk_pct) and `ibkr_sync_runner.run_ibkr_sync()` (for nav).
+
+---
+
+## DEC-20260511-004 — PDF reports via WeasyPrint + Jinja2 (not a Streamlit export)
+
+Date: 2026-05-11
+Status: implemented
+
+### Decision
+
+Generate PDF reports using WeasyPrint (HTML→PDF) + Jinja2 (template rendering), delivered as Telegram file attachments. Not exported from the Streamlit dashboard.
+
+### Rationale
+
+Streamlit does not offer a reliable headless PDF export path. WeasyPrint renders pixel-accurate Hebrew RTL PDFs from HTML+CSS, including page headers/footers via CSS `position: running()`. Jinja2 templates allow clean separation of content from formatting logic.
+
+### PDF structure
+
+- `templates/report_base.css`: shared styles, RTL base (`lang="he" dir="rtl"`), LTR number spans.
+- `templates/weekly_report.html.j2` / `templates/monthly_report.html.j2`: Jinja2 report templates.
+- `chart_generator.py`: Plotly → Kaleido → PNG files, embedded as `<img>` in HTML.
+- `report_renderer.py`: Jinja2 render → WeasyPrint → PDF bytes.
+
+### Alternatives considered
+
+- **Streamlit PDF export (pdfkit/wkhtmltopdf)**: poor Hebrew RTL support, no running headers.
+- **ReportLab**: programmatic PDF without HTML — verbose, no CSS RTL.
+- **LaTeX**: correct RTL with babel/Hebrew package, but requires TeX environment, overkill.
+
+### Constraint
+
+Kaleido (for Plotly PNG export) is an optional dependency. All chart functions return `None` gracefully when unavailable. Report renderer handles `None` charts without error — the PDF is generated without charts in that case.
+
+---
+
+## DEC-20260511-005 — report-scheduler as a standalone Docker service
+
+Date: 2026-05-11
+Status: implemented
+
+### Decision
+
+Run `report_scheduler.py` as a separate Docker service (`report-scheduler`) with its own container, rather than embedding scheduling in an existing service.
+
+### Rationale
+
+- Scheduling logic (60s tick, Saturday/1st-of-month checks) runs indefinitely and should not block or complicate `telegram-bot` or `risk-monitor`.
+- Separate container allows independent restart without affecting live Telegram responses.
+- `TZ=Asia/Jerusalem` env is set on the container so `datetime.now()` returns Israel time, same pattern as `sentinel-bot`.
+
+### Alternatives considered
+
+- **APScheduler inside telegram-bot**: couples delivery to bot lifecycle; if bot restarts, scheduled report is missed.
+- **Cron job on host**: requires host-level configuration, not portable across environments.
+- **main.py combined service**: main.py is already responsible for IBKR sync; mixing reporting would blur responsibilities.
+
+---
+
 ## DEC-20260509-004 — Planned R:R deferred: requires Supabase schema change
 
 Date: 2026-05-09
@@ -311,3 +418,42 @@ True planned R:R = (target_price - entry) / (entry - initial_stop). No target pr
 3. Update DB Manager in dashboard for target price entry.
 4. Update Telegram backlog flow to capture target price.
 This is a HIGH risk schema change — requires a dedicated task.
+
+---
+
+## DEC-20260511-001 — ALGO Observer Mode: Sentinel does not manage external ALGO positions
+
+Date: 2026-05-11
+Status: implemented
+
+### Decision
+
+Sentinel must not issue stop-raise, exit, or management instructions to positions managed by an external ALGO system. Sentinel's role for ALGO positions is: oversight, measurement, deviation alerting, and data integrity — not trade management.
+
+### Formal rule encoded in engine_core.py
+
+`evaluate_position_engine()` now checks `classify_management_mode()` before calling `build_management_action()`. If `management_mode == "algo_observed"`, the function returns `action = "מנוהל חיצונית — בקרה בלבד"` and skips all discretionary management logic.
+
+### Three new runtime fields (derived, not stored in Supabase)
+
+- `management_mode`: `algo_observed` | `manual_managed`
+- `risk_basis`: `True` | `Target` | `Unknown`
+- `risk_visibility_score`: 0–100
+
+### Display rules
+
+- ALGO positions never show `Current Stop: $0.00` — display: `External / Unknown`.
+- Telegram ALGO block shows risk basis and visibility score.
+- AI context export shows `management_mode` and `risk_basis` per position.
+- ALGO does not receive `Action Required` alerts — maximum actionability is `Review Required`.
+
+### Alternatives considered
+
+- **Show $0.00 as-is**: misleading — looks like a data error or missing stop.
+- **Hide ALGO positions from analysis entirely**: loses oversight value.
+- **Run full discretionary engine for ALGO**: produces wrong management instructions.
+
+### Known ALGO symbols
+
+Defined in `engine_core.ALGO_SYMBOLS` (derived from `ALGO_SYMBOL_LIMITS`): QQQ, TSLA, JPM, PLTR, HOOD.
+Classification is primarily by `setup_type == "ALGO"`, with symbol as secondary fallback.

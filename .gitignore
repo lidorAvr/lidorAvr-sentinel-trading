@@ -1,5 +1,7 @@
 .env
 last_sync_date.txt
 sentinel_config.json
+risk_recommendations.json
+risk_journal.json
 __pycache__/
 *.pyc

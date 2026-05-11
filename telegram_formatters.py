@@ -7,6 +7,53 @@ telegram_formatters.py
 RTL = "‏"
 SEP = "───────────────"
 
+# ── Actionability Layer ────────────────────────────────────────────────────
+# Every alert must declare what the user should do with it.
+ACTIONABILITY_LABELS = {
+    "action_required": "🔴 פעולה נדרשת",
+    "review_required": "🟡 לבדוק",
+    "observation_only": "⚪ מידע בלבד",
+    "system_health":   "🔧 בריאות מערכת",
+    "external_managed": "🟠 מנוהל חיצונית — Sentinel בפיקוח בלבד",
+}
+
+
+def fmt_actionability(level: str) -> str:
+    """Return a formatted actionability line for any Telegram message."""
+    label = ACTIONABILITY_LABELS.get(level, f"⚪ {level}")
+    return f"{RTL}▸ סוג התרעה: *{label}*"
+
+
+def fmt_data_quality_badge(primary: str, risk_badge: str, label: str) -> str:
+    """Return a compact badge string for inline display."""
+    parts = [primary]
+    if risk_badge:
+        parts.append(risk_badge)
+    parts.append(f"`{label}`")
+    return " ".join(parts)
+
+
+def fmt_algo_risk_note(symbol: str, open_r: float, exposure_pct: float,
+                       reason: str, risk_basis: str = "Target",
+                       risk_vis: int = 40) -> str:
+    """
+    Structured ALGO Observer risk note for Telegram.
+    Actionability is always Review Required — Sentinel never issues exit instructions.
+    """
+    return "\n".join([
+        f"{RTL}🧠 *Sentinel Risk Note*",
+        f"{RTL}{SEP}",
+        f"{RTL}סימול: *{symbol}* | אסטרטגיה: `ALGO` | מצב: 🟠 מנוהל חיצונית",
+        f"{RTL}Open R: `{open_r:.2f}R` ({risk_basis} Risk Base) | חשיפה: `{exposure_pct:.1f}%`",
+        f"{RTL}שקיפות סיכון: `{risk_vis}/100`",
+        f"{RTL}{SEP}",
+        f"{RTL}מה קרה: {reason}",
+        f"{RTL}{SEP}",
+        fmt_actionability("review_required"),
+        f"{RTL}▸ לוודא שהאלגו פעיל ומחובר.",
+        f"{RTL}▸ אין המלצת יציאה ידנית מ-Sentinel.",
+    ])
+
 
 def fmt_position_card(i: int, sym: str, setup: str, days_held: int,
                       curr: float, entry: float, open_pnl: float,
@@ -21,11 +68,15 @@ def fmt_position_card(i: int, sym: str, setup: str, days_held: int,
     addon_tag = f" +(+{add_on_count})" if add_on_count > 0 else ""
     base_tag = f" _(בסיס ${base_price:.2f})_" if add_on_count > 0 and base_price > 0 else ""
 
+    r_str = f"`{total_campaign_r:+.2f}R` (צף `{open_r_val:+.2f}R`)"
+    if total_campaign_r == 0 and open_r_val == 0 and capital_risk == 0 and locked_profit == 0:
+        r_str = "`N/A` ⚠️ חסר סטופ התחלתי"
+
     lines = [
         f"{RTL}*{i}. {sym}*{addon_tag} | 🏷️ {setup} | {days_held}d",
         f"{RTL}  ▸ כניסה: `${entry:.2f}`{base_tag} → נוכחי: `${curr:.2f}`",
         f"{RTL}  ▸ רווח צף: {pnl_icon} `${open_pnl:+.2f}` | סה״כ: `${total_pos_profit:+.2f}`",
-        f"{RTL}  ▸ R: `{total_campaign_r:+.2f}R` (צף `{open_r_val:+.2f}R`)",
+        f"{RTL}  ▸ R: {r_str}",
         f"{RTL}  ▸ חשיפה: `{weight_pct:.1f}%` (${pos_value:,.0f})",
         f"{RTL}  ▸ סטטוס: {status} | פעולה: *{action_short}*",
     ]
@@ -56,6 +107,8 @@ def fmt_summary_footer(total_open_pnl: float, total_disc_pnl: float,
         lines.append(f"{RTL}  ▸ דיסקרשן ({disc_count}): `${total_disc_pnl:+,.2f}`")
     if algo_count > 0:
         lines.append(f"{RTL}  ▸ אלגו ({algo_count}): `${total_algo_pnl:+,.2f}`")
+    if disc_count == 0 and algo_count == 0:
+        lines.append(f"{RTL}  ▸ ⚠️ אין פוזיציות מזוהות (בדוק setup_type)")
     if total_realized_camp != 0:
         lines.append(f"{RTL}  ▸ ממומש בקמפיין: `${total_realized_camp:+,.2f}`")
     if total_locked_profit > 0:
@@ -98,6 +151,7 @@ def fmt_regime_report(regime: dict, exposure_pct: float,
             lines.append(f"{RTL}  ▸ VCP: `{exp_vcp/acc_size*100:.1f}%`")
         if exp_ep > 0:
             lines.append(f"{RTL}  ▸ EP: `{exp_ep/acc_size*100:.1f}%`")
+    lines.append(f"\n{fmt_actionability('observation_only')}")
     return "\n".join(lines)
 
 
@@ -106,7 +160,8 @@ def fmt_adaptive_risk_block(risk_rec: dict) -> str:
     if not risk_rec.get('ok'):
         msg = risk_rec.get('message', 'אין מספיק נתונים')
         return f"\n{RTL}{SEP}\n{RTL}🎯 *סיכון אדפטיבי:* ⚪ {msg}"
-    lines = [f"\n{RTL}{SEP}", f"{RTL}🎯 *המלצת סיכון אדפטיבי*"]
+    lines = [f"\n{RTL}{SEP}", f"{RTL}🎯 *המלצת סיכון אדפטיבי*",
+             fmt_actionability("review_required")]
     lines.append(f"{RTL}חום מסחר: {risk_rec['heat_color']} *{risk_rec['heat_label']}* (ציון: `{risk_rec['heat_score']:.0f}%`)")
     if risk_rec['win_streak'] > 0:
         lines.append(f"{RTL}  ▸ רצף רווחים: `{risk_rec['win_streak']}` עסקאות")

@@ -1,5 +1,118 @@
 # Current System State
 
+## Changes — 2026-05-11 (session 5: PDF reports + comprehensive test suite)
+
+### New services and modules
+
+**`ibkr_sync_runner.py`** (NEW — extracted from main.py)
+- `IBKR_ERROR_CLASSES`: 17 known error codes mapped to `(class, description)`.
+  - Classes: `temporary` (retry), `fatal` (stop immediately), `rate_limit` (log and stop).
+- `parse_flex_error(xml_text)` → `dict | None`: classifies IBKR Flex error responses.
+- `get_statement_with_retry(ref, token, max_retries, wait_sec)` → `(xml, err)`: retries only on `temporary` errors; aborts on `fatal` to prevent account lockout.
+- `run_ibkr_sync(log_fn=print)` → `{"status", "code", "message", "nav"}`: full sync pipeline with NAV extraction and config write.
+- Auto-cleans old XML reports, keeps only `_REPORTS_TO_KEEP=3`.
+
+**`account_state.py`** (NEW — single NAV source of truth)
+- `load()` → always returns a safe dict, never raises.
+- Keys: `nav`, `total_deposited`, `risk_pct_input`, `nav_source` (`broker`/`deposited`/`fallback`), `nav_updated_at`, `age_hours`, `freshness` (`fresh`/`stale`/`critical`/`unknown`), `freshness_label`, `is_stale`, `is_critical`, `ok`.
+- Freshness thresholds: `fresh` < 24h, `stale` 24–48h, `critical` > 48h.
+- `target_risk_usd(account)` convenience helper.
+
+**`analytics_engine.py`** (NEW — period analytics)
+- `compute_period_analytics(df, start, end, account)` → full analytics dict (win_rate, expectancy_r, profit_factor, avg_win_r, avg_loss_r, total_r_net, realized_pnl, missing_stop_rate, oversized_rate, avg_r_per_day, risk_adherence_rate, campaigns_closed).
+- `compute_trader_development_score(analytics)` → score 0–100 with breakdown (process/edge/risk/execution), label.
+- `compute_verdict(analytics)` → `(text, class)` in Hebrew (strong/mixed/defensive/neutral).
+- `compute_period_comparison(current, previous)` → per-metric delta/direction/improving.
+- Profit Factor: 99.0 sentinel when no losses; 0.0 when no wins.
+- Oversized threshold: actual risk > 125% of target risk USD.
+
+**`report_snapshot_store.py`** (NEW — WoW/MoM comparison)
+- `save_snapshot(analytics, label)`: stores analytics dict to `/app/report_state/snapshots/`.
+- `load_snapshots()` → list sorted newest-first.
+- `load_previous_snapshot(current_label)` → snapshot before given label, or None.
+
+**`chart_generator.py`** (NEW — Plotly static charts for PDF)
+- `campaign_r_bars(closed_campaigns, out_dir)` → PNG path or None.
+- `setup_performance_bars(analytics, out_dir)` → PNG path or None.
+- `weekly_equity_curve(snapshots, out_dir)` → PNG path or None.
+- `win_loss_donut(analytics, out_dir)` → PNG path or None.
+- All return None gracefully when Plotly/Kaleido unavailable.
+- Export standard: 520×260px, brand palette (#2563eb / #059669 / #dc2626).
+
+**`report_renderer.py`** (NEW — HTML+CSS → PDF via WeasyPrint)
+- `build_weekly_report(analytics, period_label, coaching, charts, comparison)` → PDF bytes.
+- `build_monthly_report(analytics, period_label, coaching, charts, comparison, breakdown_table)` → PDF bytes.
+- `build_summary_text(analytics, period_label, report_type)` → Telegram Markdown summary.
+- `_period_label(start, end)` → Hebrew month names label.
+- Uses Jinja2 templates: `templates/weekly_report.html.j2`, `templates/monthly_report.html.j2`, `templates/report_base.css`.
+- RTL Hebrew (`lang="he" dir="rtl"`), LTR spans for numbers/tickers.
+
+**`report_scheduler.py`** (NEW — scheduled PDF delivery service)
+- `main()` loop: 60s tick, checks weekday+hour+minute (Israel TZ), dedup via `scheduler_state.json`.
+- Weekly: Saturday 08:30, covers Sunday 00:00 → Saturday 23:59:59.
+- Monthly: 1st of month 08:40, covers previous full month.
+- `_weekly_coaching_insights(analytics)` / `_monthly_coaching_insights(analytics)` → non-empty list always.
+- `_weekly_period(ref)` / `_monthly_period(ref)` → (start, end) datetimes.
+- `_build_weekly_breakdown(snaps, period_start, period_end)` → filtered snapshot list.
+
+**`report_delivery.py`** (NEW — Telegram PDF sender)
+- `send_pdf(path, caption, chat_id, token)` → bool.
+- `send_message(text, chat_id, token)` → bool.
+- Caption auto-truncated to Telegram's 1024-char limit.
+- `_log(msg)`: prints to stdout and appends to `/app/logs/sentinel_report.log`.
+
+### Telegram bot additions (developer menu)
+
+**`telegram_bot.py`** (additive)
+- `🛠️ פיתוח` button added to help sub-menu.
+- Developer menu (admin-only, rate-limited 2/day + 3h cooldown):
+  - Manual IBKR sync → calls `ibkr_sync_runner.run_ibkr_sync()`
+  - View last sync result → reads result JSON
+  - System health check → NAV freshness + file checks
+  - Show config (tokens masked) → `sentinel_config.json` display
+  - View last 10 log lines → tail of app log
+  - Git pull → runs `git pull origin main`
+- `_dev_sync_check()` / `_dev_sync_record()` → rate-limit enforcement via `_DEV_STATE_FILE`.
+
+### docker-compose.yml
+
+- `report-scheduler` service added:
+  ```yaml
+  report-scheduler:
+    command: python3 report_scheduler.py
+    environment:
+      TZ: Asia/Jerusalem
+  ```
+
+### Production bug fixes
+
+**`adaptive_risk_engine.py`** — Defensive `is_win` access:
+- 3 occurrences of `c["is_win"]` changed to `c.get("is_win")` (in weighted WR loop, recent_10_wr, all_50_wr, and streak detection).
+- Prevents `KeyError` when campaign dict has no `is_win` key (malformed input from Supabase).
+
+**`account_state.py`** — Non-dict JSON guard:
+- Added `if not isinstance(data, dict): return _fallback(...)` immediately after `json.load()`.
+- Prevents `AttributeError` when `sentinel_config.json` contains a JSON array instead of an object.
+
+### Test suite
+
+**6 new test files, 587 total tests (0 failures):**
+
+| File | Count | Coverage |
+|------|-------|---------|
+| `tests/test_security.py` | 30 | Token masking, rate limiting, input sanitization, secrets in logs, retry security boundary |
+| `tests/test_calculations_comprehensive.py` | 45 | R-multiples, profit factor, expectancy, dev score bounds, oversized boundary, adaptive risk math, NAV freshness precision, period deltas |
+| `tests/test_data_validation.py` | 50 | Malformed analytics input, account state edge cases, snapshot store, adaptive risk malformed input, IBKR XML parsing, delivery boundary |
+| `tests/test_ux_formatting_comprehensive.py` | 40 | Hebrew month labels, Telegram Markdown validity, verdict system, dev score labels, freshness labels, coaching insights |
+| `tests/test_adaptive_risk_engine.py` | 55 | RISK_LADDER invariants, all direction scenarios, heat score math, streak detection, adherence, journal, ladder bounds |
+| `tests/test_ibkr_sync_full.py` | 35 | All 17 IBKR error codes, retry logic, full sync pipeline, NAV extraction, report cleanup, required keys |
+
+### Script cleanup
+
+Moved 26 orphaned one-shot fix/debug scripts to `scripts/archive/`. Production code files at root are now only active production modules.
+
+---
+
 ## Changes — 2026-05-10 (session 3: adaptive risk engine + proactive alerts)
 
 ### adaptive_risk_engine.py (NEW FILE)
@@ -13,147 +126,93 @@
 - `_log_recommendation(rec)`: auto-called by `compute_adaptive_risk`, logs to `risk_recommendations.json` (200 entries).
 
 ### engine_core.py
-- `compute_market_regime`: now returns raw `signals` dict inside `data` key: spy_close, spy_ma20, spy_ma50, qqq_close, qqq_ma20, four boolean flags, score, max_score. Backward compatible.
+- `compute_market_regime`: now returns raw `signals` dict inside `data` key.
 
 ### telegram_formatters.py
-- `fmt_regime_report`: now renders raw SPY/QQQ signals with ✅/❌ and actual $ values under "📐 בסיס ציון N/4".
-- `fmt_adaptive_risk_block` (new): renders adaptive risk recommendation block (heat score, streaks, win rates, directional recommendation with % and $).
+- `fmt_regime_report`: renders raw SPY/QQQ signals with ✅/❌.
+- `fmt_adaptive_risk_block` (new): adaptive risk recommendation block.
 
 ### risk_monitor.py
-- `import adaptive_risk_engine as are` added.
-- `send_telegram_with_keyboard(text, markup)` helper added.
-- Proactive adaptive risk alert at end of `main()`: computes recommendation, skips if direction=="hold", throttles to once per 24h per direction, sends InlineKeyboard with `risk_confirm|YES|{rec_pct}|{curr_pct}` and `risk_confirm|NO|{rec_pct}|{curr_pct}` callbacks. State saved in `risk_monitor_state.json["risk_alert"]`.
+- Proactive adaptive risk alert at end of `main()`: throttled to once per 24h per direction.
+- `send_telegram_with_keyboard` helper.
 
 ### telegram_bot.py
-- `import adaptive_risk_engine as are` added.
-- `risk_confirm|YES` callback: calls `are.update_risk_pct`, `are.mark_adherence(followed=True)`, `are.log_risk_journal`, edits original message to show confirmation.
-- `risk_confirm|NO` callback: sets `user_state[chat_id]["action"] = "risk_reject_reason"`, edits message to prompt for reason.
-- `risk_reject_reason` state handler: collects reason, calls `are.mark_adherence(followed=False, reason=...)`, `are.log_risk_journal`, confirms to user.
-- `/stats` command: calls `are.compute_adherence_stats()`, displays formatted adherence report.
-- `/help` text updated to include `/stats`.
-- Adaptive risk block appended to both `🌡️ משטר שוק` and `📊 חדר מצב` handlers.
+- `risk_confirm|YES` / `risk_confirm|NO` callbacks.
+- `risk_reject_reason` state handler.
+- `/stats` command.
 
-### Runtime files (auto-created, not committed to git)
-- `risk_recommendations.json` — recommendation log, last 200 entries, `followed` field updated by callbacks.
-- `risk_journal.json` — full decision journal, last 500 entries, written on YES/NO response.
+### Runtime files (auto-created, gitignored)
+- `risk_recommendations.json` — recommendation log, last 200 entries.
+- `risk_journal.json` — full decision journal, last 500 entries.
 
 ---
 
 ## Changes — 2026-05-10 (session 2: dashboard + telegram upgrade)
 
 ### dashboard.py
-- `get_cached_market_regime()` new function: wraps SPY/QQQ fetch + compute_market_regime in `@st.cache_data(ttl=600)`. Prevents re-computation on every Streamlit re-run.
-- `_warm_symbol_cache`: period changed from "6mo" to "1y". Fixes cache miss for MAE/MFE (`compute_mfe_mae` needs "1y") and for Trend Template (`compute_trend_template_full` needs "1y").
-- `compute_live_portfolio_data`: SPY + QQQ added to parallel prefetch. TTL raised 180→300s. campaign_id added to live_positions dict.
-- Campaign buy records lookup built after `actual_open_trades` for Add-on quality analysis.
-- Command Center expander: expanded from 3 to 4 columns. Column 4: Trend Template 8 criteria + Add-on quality per position.
-- New "🧠 Minervini Mentor" tab (tabs[4]): avg TT score, win/loss streak, strengths, weaknesses, dynamic coaching insights.
-- Visual Journal: days held + R-per-day + actual vs planned risk metrics added per closed campaign.
-- DB Manager moved from tabs[4] to tabs[5].
-- Tabs definition updated to 6 tabs.
+- `get_cached_market_regime()` — wraps SPY/QQQ fetch + compute_market_regime in `@st.cache_data(ttl=600)`.
+- `_warm_symbol_cache`: period changed from "6mo" to "1y".
+- Campaign buy records lookup for Add-on quality analysis.
+- Command Center: 4-column expander with Trend Template 8 criteria + Add-on quality.
+- New "🧠 Minervini Mentor" tab (tabs[4]).
+- Visual Journal: days held + R-per-day + actual vs planned risk metrics.
+- DB Manager moved to tabs[5].
 
-### engine_core.py (additive only)
-- `generate_minervini_coaching(win_rate, expectancy_r, adj_rr, oversized_count, market_regime_status, streak_losses, total_r_net)`: returns list of Hebrew coaching insights based on Minervini methodology. Used by dashboard Mentor tab and Telegram /portfolio.
+### engine_core.py (additive)
+- `generate_minervini_coaching(...)` — dynamic Hebrew coaching insights.
 
 ### telegram_bot.py
-- Import: `import telegram_formatters as tf` added.
-- `get_main_menu()` redesigned: 4 category buttons only (מצב תיק / ניתוח / יומן / עזרה).
-- New functions: `get_portfolio_menu()`, `get_analysis_menu()`, `get_journal_menu()`.
-- New handlers: "📊 מצב תיק", "🔬 ניתוח", "📚 יומן", "❓ עזרה", "⬅️ חזרה לתפריט ראשי", "🧠 ניתוח מינרביני מלא".
-- `/mentor SYMBOL` command: calls `compute_trend_template_full()` and formats via `tf.fmt_minervini_trend_template()`.
-- `mentor_symbol` user_state action: prompts for symbol then runs /mentor flow.
-- Regime report: now uses `tf.fmt_regime_report()`.
-- `/portfolio`: appends top 2 Minervini coaching insights at summary.
-- All `analyze_symbol` responses now return `get_analysis_menu()` keyboard.
+- Hierarchical menus (4 categories → sub-menus).
+- `/mentor SYMBOL` command.
+- `mentor_symbol` user_state action.
+- Regime report via `tf.fmt_regime_report()`.
+- Coaching insights in `/portfolio`.
 
 ### telegram_formatters.py (NEW FILE)
-- RTL formatting helpers for consistent, readable Hebrew Telegram messages.
-- `fmt_position_card()`: unified position card for /portfolio.
-- `fmt_summary_footer()`: portfolio summary block.
-- `fmt_regime_report()`: market regime report.
-- `fmt_minervini_trend_template()`: 8-criteria Trend Template output.
-- Formatting rules: RTL markers, `▸` field prefix, em-dash separators, backtick numbers.
+- `fmt_position_card()`, `fmt_summary_footer()`, `fmt_regime_report()`, `fmt_minervini_trend_template()`.
 
-
-
-This file is a concise source of truth for the current repo state.
-
-Update it after meaningful architecture, deployment, or workflow changes.
+---
 
 ## Current date context
 
-Last updated: 2026-05-10
+Last updated: 2026-05-11
 
 ## Production wiring
 
-Docker Compose services (unchanged):
+Docker Compose services:
 
-- `sentinel-bot` runs `python3 main.py`
-- `telegram-bot` runs `python3 telegram_bot_secure_runner.py`
-- `dashboard` runs `streamlit run dashboard.py`
-- `risk-monitor` runs `python risk_monitor.py`
+| Service | Command |
+|---------|---------|
+| `sentinel-bot` | `python3 main.py` |
+| `telegram-bot` | `python3 telegram_bot_secure_runner.py` |
+| `dashboard` | `streamlit run dashboard.py` |
+| `risk-monitor` | `python risk_monitor.py` |
+| `report-scheduler` | `python3 report_scheduler.py` (new) |
 
 ## Code state vs deployed state
 
-**Session 1 changes (2026-05-09/10): deployed to Orange Pi. ✅**
-**Session 2 changes (2026-05-10): deployed to Orange Pi (2026-05-10, session 4). ✅**
-**Session 3 changes (2026-05-10): deployed to Orange Pi (2026-05-10, session 4). ✅**
+| Session | Changes | Deployed |
+|---------|---------|---------|
+| Session 1 (2026-05-09/10) | main.py v16.0, base infra | ✅ Orange Pi |
+| Session 2 (2026-05-10) | Dashboard + Telegram upgrade | ✅ Orange Pi |
+| Session 3 (2026-05-10) | Adaptive risk engine | ✅ Orange Pi |
+| Session 4 (2026-05-10) | Timezone fix + spam fix | ✅ Orange Pi |
+| Session 5 (2026-05-11) | PDF reports + test suite + dev menu | ⏳ pending deploy |
 
-| Service | Code version | Deployed | Status |
-|---------|-------------|---------|--------|
-| sentinel-bot | v16.0 + ZoneInfo timezone fix | ✅ deployed | active |
-| dashboard | parallel pre-fetch + Minervini metrics + Mentor tab + performance fixes | ✅ deployed | active |
-| engine_core | +5 Minervini functions + coaching + regime signals | ✅ deployed | active |
-| telegram-bot | hierarchical menus + /mentor + formatters + adaptive risk + /stats | ✅ deployed | active |
-| risk-monitor | market-hours cooldown + TZ fix + proactive risk alerts | ✅ deployed | active |
+## Session 5 deployment instructions
 
-## What changed in this session (2026-05-09)
+```bash
+cd ~/sentinel_trading
+git pull
+docker compose up -d --build report-scheduler telegram-bot
+docker compose logs report-scheduler --tail=20
+docker compose logs telegram-bot --tail=20
+```
 
-### main.py — v16.0
-
-- Sync window: 07:00–11:00 Asia/Jerusalem only (was: hour >= 6 always)
-- One attempt per clock-hour (was: retry every 15 min with no limit)
-- State in /app/ibkr_sync_state.json (was: plain text date file)
-- XML reports saved to /app/ibkr_reports/, last 3 kept (was: discarded after parse)
-- Telegram success notification + per-attempt failure warnings
-- Telegram alert after 3 failed attempts
-
-### dashboard.py
-
-- prefetch_symbols_parallel(): all symbols fetched in parallel via ThreadPoolExecutor
-- compute_live_portfolio_data now returns Minervini metrics per position:
-  InitRisk_USD, InitRisk_Pct, SizingGrade, DaysHeld, R_per_Day, EfficiencyLabel,
-  EfficiencyColor, MFE_R, MAE_R, MFE_Pct, MAE_Pct
-- Planned vs Actual expander in Command Center tab (per open position)
-- AI context export no longer re-calls get_live_price() (uses live_df cache)
-
-### engine_core.py — additive only, no existing functions changed
-
-- compute_initial_risk_metrics(): risk sizing grade per Minervini 1-2.5% NAV rule
-- compute_r_efficiency(): R-per-day capital efficiency label and color
-- compute_mfe_mae(): Max Adverse/Favorable Excursion from 1y price history
-- compute_trend_template_full(): complete 8-criteria Minervini Trend Template
-- analyze_addon_quality(): validates pyramiding was done above entry price only
-
-### tests/
-
-- tests/test_trade_metrics.py: 21 new deterministic unit tests
-- Full test suite: 24/24 passing
-
-## Telegram hardening status
-
-Status: implemented in code, pending server deployment verification.
-
-Protection layer: `telegram_bot_secure_runner.py`
-
-- admin-only access through TELEGRAM_ADMIN_ID
-- rate limiting and cooldown
-- data-source disclosure note for sensitive reports
-
-Open validation:
-- Pull latest `main` on Orange Pi server.
-- Rebuild/restart `telegram-bot`.
-- Test Telegram commands and rate limiting.
+Smoke tests:
+- `🛠️ פיתוח` in Telegram developer menu (admin only)
+- `/stats` → adherence report
+- `pytest -q` on server → must show 587 passed
 
 ## Known high-risk areas (unchanged)
 
@@ -163,102 +222,12 @@ Open validation:
 4. Supabase write flows must remain explicit and traceable.
 5. Telegram output must remain Hebrew-friendly and not too verbose.
 
-## Pending validation (next deploy)
-
-1. Confirm IBKR sync fires at 07:xx Israel time (first real test of timezone fix).
-2. Confirm /app/ibkr_reports/ directory created and XML file saved.
-3. Confirm NAV updated in sentinel_config.json after morning sync.
-4. Confirm no overnight alert spam from risk_monitor (market-hours gate working).
-5. Verify Minervini Mentor tab renders correctly (after dashboard deploy).
-6. Verify /mentor AAPL returns 8-criteria output (after telegram-bot deploy).
-7. Verify hierarchical Telegram menus work end-to-end.
-8. Measure dashboard load time on second interaction on Orange Pi.
-
-## Upgrade plan — Minervini Decision OS (session 4, 2026-05-10)
-
-Full upgrade plan approved and saved at: `C:\Users\lidor\.claude\plans\cached-hatching-stallman.md`
-
-### Remaining phases (in order):
-1. **שלב 1A ✅ pending** — תיקון NAV key bug: `dashboard.py` קורא `"current_nav"` אבל sentinel_config.json כותב `"nav"` → הדאשבורד מציג $7,500 במקום $7,922
-2. **שלב 1B ✅ pending** — SQL migration בטוח: `ADD COLUMN IF NOT EXISTS initial_stop, mae, mfe`
-3. **שלב 2 pending** — analytics_engine.py חדש: rolling windows 10/30/50, Expectancy, Payoff, PF, MFE capture, stop adherence + tests
-4. **שלב 3 pending** — upgrade adaptive_risk_engine.py: multi-factor algorithm (Expectancy+PF+Payoff) במקום weighted win rate בלבד
-5. **שלב 4 pending** — Dashboard: טאב System Health חדש (שביעי)
-6. **שלב 5 pending** — Dashboard: גרפי Rolling Intelligence בטאב Performance Matrix
-7. **שלב 6 pending** — Telegram: הודעות explainable (verdict+evidence+action+data note)
-8. **שלב 7 pending** — AI Master Context Export: structured JSON + human summary
-
-## Deployment instructions (sessions 2 + 3 combined)
-
-Run on Windows first:
-```bash
-git push origin main
-```
-
-Then on Orange Pi:
-```bash
-cd ~/sentinel_trading
-git pull
-docker compose up -d --build dashboard
-docker compose restart telegram-bot risk-monitor
-docker compose logs telegram-bot --tail=20
-docker compose logs risk-monitor --tail=20
-```
-
-`sentinel-bot` does NOT need restart (no changes to main.py).
-
-Smoke tests after deployment:
-- `🌡️ משטר שוק` in Telegram → should show ✅/❌ per SPY/QQQ criterion + adaptive risk block
-- `📊 חדר מצב` → should show adaptive risk block at bottom
-- `/stats` → should return adherence report (empty is fine initially)
-- Open dashboard → verify Minervini Mentor tab renders, positions load faster
-- Verify /mentor AAPL returns 8-criteria output
-- Run `pytest -q` on server to confirm 24/24 pass
-
-## Changes — 2026-05-10 (post-deployment fixes)
-
-### Timezone fix (main.py + docker-compose.yml)
-- Docker containers default to UTC. `datetime.now()` was returning UTC, not Israel time.
-- Sync window ran at 10:00–14:00 Israel instead of the intended 07:00–11:00 Israel.
-- Fix: added `TZ=Asia/Jerusalem` env to sentinel-bot and risk-monitor in docker-compose.yml.
-- Fix: main.py now uses `ZoneInfo("Asia/Jerusalem")` explicitly.
-- Fix: added `tzdata` to requirements.txt so ZoneInfo works on slim Docker images.
-
-### Alert spam fix (risk_monitor.py)
-- "Broken" status repeat alerts fired every 6 hours including overnight when market is closed.
-- Fix: added `is_during_us_market_hours()` — repeat cooldown alerts (same status, same key)
-  only fire during 11:00–21:00 UTC (≈ 14:00–00:00 Israel, Mon–Fri).
-- Escalations and first-time alerts are unaffected and fire at any hour.
-
-### Deployment instructions (immediate)
-```bash
-cd ~/sentinel_trading
-git pull
-docker compose up -d --build sentinel-bot risk-monitor
-# Optional: force one-time sync today with new Query ID
-rm ibkr_sync_state.json
-docker compose restart sentinel-bot
-```
-
-## Quality audit — 2026-05-10
-
-Full audit performed on all 2026-05-09 session changes.
-
-Results:
-- pytest: 24/24 passing — zero regressions
-- engine_core.py new functions: logic verified correct
-- main.py v16.0: state machine verified correct (window guard, per-hour guard, fail count, Telegram alerts)
-- dashboard.py: parallel prefetch verified correct
-- Bug fixed: `_warm_symbol_cache` now wraps calls in try/except to be truly exception-safe
-  (previously the comment said exceptions were absorbed but `f.result()` would have re-raised them)
-
-Code is production-ready pending server deployment.
-
 ## Rollback paths
 
 | Service | Rollback command |
 |---------|-----------------|
 | sentinel-bot | `git revert <commit>` + `docker compose up -d --build sentinel-bot` |
-| dashboard | `git revert <commit>` + `docker compose up -d --build dashboard` |
+| telegram-bot | `git revert <commit>` + `docker compose restart telegram-bot` |
+| report-scheduler | `docker compose stop report-scheduler` — safe, no state |
 | engine_core | Revert is safe — no existing functions changed |
-| Supabase | No schema changes made — no DB rollback needed |
+| Supabase | No schema changes made in session 5 |

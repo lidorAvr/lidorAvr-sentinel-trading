@@ -1,0 +1,225 @@
+/* Sentinel Trading — Report Base Stylesheet
+   RTL Hebrew with LTR spans for tickers, numbers, dates.
+   WeasyPrint compatible: no position:fixed, use @page for headers/footers. */
+
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Hebrew:wght@300;400;600;700&display=swap');
+
+/* ── Page setup ───────────────────────────────────────────────────────────── */
+@page {
+    size: A4 portrait;
+    margin: 18mm 15mm 20mm 15mm;
+
+    @top-center {
+        content: element(page-header);
+        font-family: 'Noto Sans Hebrew', sans-serif;
+        font-size: 8pt;
+        color: #6b7280;
+    }
+    @bottom-right {
+        content: "עמוד " counter(page) " מתוך " counter(pages);
+        font-family: 'Noto Sans Hebrew', sans-serif;
+        font-size: 8pt;
+        color: #9ca3af;
+        direction: rtl;
+    }
+    @bottom-left {
+        content: "Sentinel Trading — סודי למשתמש בלבד";
+        font-family: 'Noto Sans Hebrew', sans-serif;
+        font-size: 7pt;
+        color: #d1d5db;
+    }
+}
+
+/* Running header element */
+#page-header {
+    position: running(page-header);
+    font-size: 8pt;
+    color: #6b7280;
+    border-bottom: 1px solid #e5e7eb;
+    padding-bottom: 2mm;
+    width: 100%;
+}
+
+/* ── Reset & base ─────────────────────────────────────────────────────────── */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+    font-family: 'Noto Sans Hebrew', 'Arial Hebrew', Arial, sans-serif;
+    font-size: 10pt;
+    line-height: 1.55;
+    color: #1f2937;
+    direction: rtl;
+    unicode-bidi: embed;
+    background: white;
+}
+
+/* LTR override for English content */
+.ltr {
+    direction: ltr;
+    unicode-bidi: embed;
+    display: inline;
+}
+.ltr-block {
+    direction: ltr;
+    unicode-bidi: embed;
+    display: block;
+}
+
+/* ── Page breaks ─────────────────────────────────────────────────────────── */
+.page-break-before { page-break-before: always; }
+.no-break          { page-break-inside: avoid; }
+
+/* ── Typography ──────────────────────────────────────────────────────────── */
+h1 { font-size: 18pt; font-weight: 700; color: #111827; margin-bottom: 4mm; }
+h2 { font-size: 13pt; font-weight: 600; color: #1e3a5f; margin: 5mm 0 3mm; border-bottom: 2px solid #e5e7eb; padding-bottom: 1mm; }
+h3 { font-size: 11pt; font-weight: 600; color: #374151; margin: 4mm 0 2mm; }
+p  { margin-bottom: 2mm; }
+
+/* ── Cover section ──────────────────────────────────────────────────────── */
+.cover-header {
+    background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%);
+    color: white;
+    padding: 8mm 10mm;
+    margin: -5mm -5mm 6mm;
+    border-radius: 3mm;
+}
+.cover-header .system-name { font-size: 22pt; font-weight: 700; }
+.cover-header .report-type { font-size: 12pt; opacity: 0.85; margin-top: 1mm; }
+.cover-header .period-label { font-size: 11pt; opacity: 0.75; }
+
+/* ── Freshness banner ────────────────────────────────────────────────────── */
+.freshness-banner {
+    display: inline-block;
+    padding: 1.5mm 4mm;
+    border-radius: 2mm;
+    font-size: 8.5pt;
+    font-weight: 600;
+    margin: 3mm 0;
+}
+.freshness-fresh    { background: #d1fae5; color: #065f46; }
+.freshness-stale    { background: #fef3c7; color: #92400e; }
+.freshness-critical { background: #fee2e2; color: #991b1b; }
+.freshness-unknown  { background: #f3e8ff; color: #6b21a8; }
+.freshness-fallback { background: #ffedd5; color: #9a3412; border: 1px solid #fed7aa; }
+
+/* ── Verdict badge ───────────────────────────────────────────────────────── */
+.verdict-badge {
+    font-size: 14pt;
+    font-weight: 700;
+    padding: 3mm 8mm;
+    border-radius: 3mm;
+    display: inline-block;
+    margin: 3mm 0;
+}
+.verdict-strong    { background: #d1fae5; color: #065f46; }
+.verdict-mixed     { background: #fef9c3; color: #713f12; }
+.verdict-defensive { background: #fee2e2; color: #991b1b; }
+.verdict-neutral   { background: #f3f4f6; color: #374151; }
+
+/* ── KPI grid (table-based for WeasyPrint) ───────────────────────────────── */
+.kpi-grid {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 3mm;
+    margin: 4mm 0;
+}
+.kpi-card {
+    background: #f8fafc;
+    border: 1.5px solid #e2e8f0;
+    border-radius: 3mm;
+    padding: 3mm 4mm;
+    text-align: center;
+    width: 30%;
+    vertical-align: top;
+}
+.kpi-label  { font-size: 7.5pt; color: #6b7280; margin-bottom: 1mm; }
+.kpi-value  { font-size: 14pt; font-weight: 700; color: #1e3a5f; }
+.kpi-sub    { font-size: 7.5pt; color: #9ca3af; margin-top: 0.5mm; }
+.kpi-green  { border-color: #6ee7b7; background: #f0fdf4; }
+.kpi-red    { border-color: #fca5a5; background: #fff1f2; }
+.kpi-yellow { border-color: #fcd34d; background: #fffbeb; }
+
+/* ── Metrics table ───────────────────────────────────────────────────────── */
+.metrics-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 3mm 0;
+    font-size: 9.5pt;
+}
+.metrics-table th {
+    background: #1e3a5f;
+    color: white;
+    padding: 2.5mm 3mm;
+    font-weight: 600;
+    text-align: right;
+}
+.metrics-table td {
+    padding: 2mm 3mm;
+    border-bottom: 1px solid #f1f5f9;
+    vertical-align: middle;
+}
+.metrics-table tr:nth-child(even) td { background: #f8fafc; }
+.metrics-table .num { text-align: left; direction: ltr; font-weight: 600; }
+.metrics-table .good { color: #059669; }
+.metrics-table .bad  { color: #dc2626; }
+.metrics-table .warn { color: #d97706; }
+
+/* ── Setup league table ──────────────────────────────────────────────────── */
+.league-table { width: 100%; border-collapse: collapse; font-size: 9pt; }
+.league-table th { background: #374151; color: white; padding: 2mm 3mm; text-align: right; }
+.league-table td { padding: 2mm 3mm; border-bottom: 1px solid #e5e7eb; }
+
+/* ── System health list ──────────────────────────────────────────────────── */
+.health-list { list-style: none; margin: 2mm 0; }
+.health-list li { padding: 1.5mm 0; font-size: 9.5pt; border-bottom: 1px solid #f1f5f9; }
+
+/* ── Section divider ─────────────────────────────────────────────────────── */
+.section-divider {
+    border: none;
+    border-top: 2px solid #e5e7eb;
+    margin: 5mm 0;
+}
+
+/* ── Process score bar ───────────────────────────────────────────────────── */
+.score-bar-outer {
+    background: #e5e7eb;
+    border-radius: 2mm;
+    height: 5mm;
+    width: 100%;
+    margin: 2mm 0;
+}
+.score-bar-inner {
+    height: 5mm;
+    border-radius: 2mm;
+    background: linear-gradient(90deg, #ef4444, #f59e0b, #10b981);
+}
+
+/* ── Comparison delta ────────────────────────────────────────────────────── */
+.delta-up   { color: #059669; font-weight: 600; }
+.delta-down { color: #dc2626; font-weight: 600; }
+.delta-flat { color: #6b7280; }
+
+/* ── Chart wrapper ───────────────────────────────────────────────────────── */
+.chart-wrap {
+    margin: 3mm 0 4mm;
+    text-align: center;
+    page-break-inside: avoid;
+}
+.report-chart {
+    max-width: 100%;
+    height: auto;
+    border-radius: 2mm;
+    border: 1px solid #e5e7eb;
+}
+
+/* ── Coaching box ────────────────────────────────────────────────────────── */
+.coaching-box {
+    background: #eff6ff;
+    border-right: 4px solid #2563eb;
+    padding: 3mm 4mm;
+    margin: 3mm 0;
+    border-radius: 0 2mm 2mm 0;
+    font-size: 9.5pt;
+}
+.coaching-box .action-item { margin-top: 1.5mm; }
+.coaching-box .action-item::before { content: "◀ "; color: #2563eb; }

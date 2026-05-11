@@ -73,6 +73,42 @@ For ALGO trades:
 
 - ALGO can use different risk interpretation
 - symbol exposure caps are more important than discretionary initial-stop sizing
+- `current_stop` of 0 for ALGO is expected — display as "External / Unknown", never as `$0.00`
+- R is calculated using `target_risk_usd` as denominator, labeled as "Target Risk Base"
+
+## management_mode contract (runtime-derived, not stored in Supabase)
+
+Computed by `engine_core.classify_management_mode(setup_type, symbol)`.
+
+Values:
+- `manual_managed`: discretionary EP/VCP position managed by the user
+- `algo_observed`: externally managed by ALGO system; Sentinel observes only
+- `unknown`: insufficient data to classify; exclude from quality statistics
+
+Rules:
+- Sentinel must NEVER issue stop-raise or exit instructions to `algo_observed` positions.
+- `algo_observed` positions are excluded from EP/VCP execution discipline scoring.
+- `unknown` positions are excluded from Expectancy and Win Rate statistics.
+
+## risk_basis contract (runtime-derived)
+
+Computed by `engine_core.classify_risk_basis(stop, base_price, setup_type, target_risk_usd)`.
+
+Values:
+- `True`: real known stop exists; enters all quality statistics
+- `Target`: uses `target_risk_usd` as R denominator (ALGO or missing stop)
+- `Unknown`: no basis available; excluded from statistics
+
+## risk_visibility_score contract (runtime-derived)
+
+Computed by `engine_core.compute_risk_visibility_score(setup_type, stop, base_price, target_risk_usd)`.
+
+Range 0–100:
+- 100: stop known, risk known (True Risk basis)
+- 60: Target Risk basis only
+- 40: ALGO external, target risk available
+- 20: ALGO external, no target risk; or no stop and no target
+- 0: broken data
 
 ## NAV / account-size contract
 
