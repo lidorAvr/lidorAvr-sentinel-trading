@@ -31,6 +31,8 @@ def load() -> dict:
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
+        if not isinstance(data, dict):
+            return _fallback("תצורת JSON לא תקינה — לא אובייקט")
     except Exception as e:
         return _fallback(f"שגיאת קריאה: {e}")
 
