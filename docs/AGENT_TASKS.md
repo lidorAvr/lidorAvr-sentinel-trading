@@ -63,6 +63,143 @@ Rollback:
 
 ## Active tasks
 
+### TASK-20260511-011 — Clean up scripts/archive and root-level clutter
+
+Status: in_progress
+Assigned to: agent
+Risk: Low
+Affected services: none
+
+Goal:
+- Archived 26 orphaned one-shot fix scripts to `scripts/archive/`.
+- Verify `test_infra.py` and `test_xml_ibkr.py` (archived) are no longer needed.
+- Add `scripts/archive/README.md` with inventory.
+
+Progress log:
+- 2026-05-11: 26 files moved to scripts/archive/.
+
+Validation:
+- [x] All orphaned scripts moved to scripts/archive/
+- [ ] scripts/archive/README.md written
+- [x] pytest -q still passes (587 passed)
+
+---
+
+### TASK-20260511-010 — Comprehensive test suite: security, calculations, data validation, UX
+
+Status: validated
+Assigned to: agent
+Risk: Low
+Affected services: tests only
+
+Goal:
+- 587 tests covering functionality, security, UX, data validation, and math at highest precision.
+
+Done:
+- `tests/test_security.py` (30 tests): token masking, rate limiting, secrets not in logs, retry boundary.
+- `tests/test_calculations_comprehensive.py` (45 tests): R-multiples, profit factor, expectancy, dev score, adaptive risk math, NAV freshness.
+- `tests/test_data_validation.py` (50 tests): malformed input, edge cases, corrupt files, account state.
+- `tests/test_ux_formatting_comprehensive.py` (40 tests): Hebrew months, Markdown validity, verdict, coaching.
+- `tests/test_adaptive_risk_engine.py` (55 tests): RISK_LADDER, all directions, heat score, streaks, adherence.
+- `tests/test_ibkr_sync_full.py` (35 tests): all 17 error codes, retry logic, full pipeline.
+- 3 production bugs fixed: `adaptive_risk_engine.py` (3× `c["is_win"]` → `.get()`), `account_state.py` (non-dict JSON guard).
+
+Validation:
+- [x] 587 tests pass, 0 failures
+- [x] Committed and pushed to claude/review-dev-roadmap-6K19V
+
+---
+
+### TASK-20260511-009 — PDF weekly/monthly report service (Phase 1 + Phase 2)
+
+Status: validated
+Assigned to: agent
+Risk: Low
+Affected services: report-scheduler (new Docker service)
+
+Goal:
+- PDF reports via WeasyPrint + Jinja2 delivered to Telegram on schedule.
+- Charts embedded (Plotly + Kaleido): R bars, setup performance, equity curve, win/loss donut.
+
+Done:
+- `report_scheduler.py` — Israel-TZ scheduling, weekly (Sat 08:30) + monthly (1st 08:40), dedup.
+- `report_renderer.py` — HTML→PDF, `build_weekly_report`, `build_monthly_report`, `build_summary_text`.
+- `report_delivery.py` — `send_pdf`, `send_message`, 1024-char caption guard.
+- `report_snapshot_store.py` — WoW/MoM comparison snapshots.
+- `chart_generator.py` — 4 chart types, graceful None fallback.
+- `analytics_engine.py` — `compute_period_analytics`, `compute_trader_development_score`, `compute_verdict`.
+- Templates: `templates/weekly_report.html.j2`, `templates/monthly_report.html.j2`, `templates/report_base.css`.
+- docker-compose: `report-scheduler` service added.
+
+Validation:
+- [x] pytest -q passes (test_report_scheduler.py, test_chart_generator.py, test_calculations_comprehensive.py)
+- [x] Committed and pushed
+- [ ] Deploy on Orange Pi: `docker compose up -d --build report-scheduler`
+- [ ] Verify first weekly report arrives on Saturday 08:30 Israel time
+
+---
+
+### TASK-20260511-008 — Developer menu (🛠️) in Telegram
+
+Status: validated
+Assigned to: agent
+Risk: Low
+Affected services: telegram-bot
+
+Goal:
+- Admin-only developer actions accessible from Telegram without SSH.
+
+Done:
+- `🛠️ פיתוח` button in help sub-menu (admin-only).
+- Manual IBKR sync, last sync result, system health, config display (tokens masked), log view, git pull.
+- Rate-limited: 2 syncs/day, 3h cooldown between syncs.
+- `_dev_sync_check()` / `_dev_sync_record()` with state file.
+- `ibkr_sync_runner.py` extracted from `main.py` and reused.
+
+Validation:
+- [x] test_developer_menu.py passes
+- [x] test_ibkr_sync_full.py: 35 tests pass
+- [x] Committed and pushed
+- [ ] Verify on Orange Pi
+
+---
+
+### TASK-20260511-001 — IBKR error classification + smart GetStatement retry
+
+Status: validated
+Source requirement: REQ-20260511-001
+Assigned to: agent
+Risk: Medium
+Affected services: sentinel-bot (ibkr_sync_runner.py)
+
+Goal:
+- Classify IBKR Flex Query errors: temporary / fatal / rate_limit.
+- Retry GetStatement up to 3× with wait per attempt.
+- Immediate stop on fatal errors (prevents account lockout).
+
+Done (implemented in `ibkr_sync_runner.py`):
+- `IBKR_ERROR_CLASSES` dict: 17 codes mapped to (class, Hebrew description).
+- `parse_flex_error(xml_text)` → classified error dict or None.
+- `get_statement_with_retry(ref, token, max_retries, wait_sec)` → (xml, err).
+- Fatal errors stop after 1 attempt; temporary errors retry up to max_retries.
+- `run_ibkr_sync()` → structured `{"status", "code", "message", "nav"}`.
+- 35 unit tests covering all 17 error codes and full pipeline.
+
+Validation:
+- [x] 35 tests pass (test_ibkr_sync_full.py)
+- [x] All 17 known error codes tested and classified correctly
+- [x] Fatal error stops after 1 attempt (no retry)
+- [x] Temporary error retries exactly max_retries times
+- [x] NAV extracted and written to config on success
+- [x] Committed and pushed
+- [ ] Deploy on Orange Pi and verify morning sync behavior
+
+Files touched:
+- ibkr_sync_runner.py (NEW — extracted from main.py)
+- tests/test_ibkr_sync_full.py (NEW)
+
+---
+
 ### TASK-20260511-007 — Phase G: Portfolio Heat Map + Earnings Risk Module + AI Context Export upgrade
 
 Status: todo

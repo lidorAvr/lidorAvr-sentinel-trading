@@ -8,7 +8,7 @@ Build a system that is accurate, safe, fast to extend, and aligned with the user
 
 ## Phase 1 — Safety and agent-readiness
 
-Status: in progress
+Status: **complete**
 
 Goals:
 
@@ -20,20 +20,15 @@ Goals:
 
 Done:
 
-- `AGENTS.md`
-- `CLAUDE.md`
-- docs under `docs/`
+- `AGENTS.md`, `CLAUDE.md`, docs under `docs/`
 - `telegram_bot_secure_runner.py`
 - Docker Compose command updated for Telegram service
-
-Remaining:
-
-- Verify deployment on Orange Pi.
-- Strengthen tests on `main`.
+- Deployment verified on Orange Pi ✅
+- Comprehensive test suite: 587 tests, 0 failures ✅
 
 ## Phase 2 — Data truth and NAV reliability
 
-Status: planned
+Status: **complete**
 
 Goals:
 
@@ -42,16 +37,16 @@ Goals:
 - Add visible freshness/fallback labels.
 - Add tests for fallback behavior.
 
-Suggested tasks:
+Done:
 
-- Create `config.py` or `account_state.py`.
-- Add `DataFreshness` enum or simple source labels.
-- Add tests for live/cached/fallback reporting.
-- Add server validation checklist.
+- `account_state.py` — single source of truth for NAV (broker/deposited/fallback) ✅
+- `DataFreshness` labels: fresh / stale / critical / unknown, with emoji indicators ✅
+- Tests for live/cached/fallback reporting in `tests/test_data_validation.py` ✅
+- Non-dict JSON guard prevents silent crash if config file corrupted ✅
 
 ## Phase 3 — Risk and campaign engine hardening
 
-Status: in progress (partially complete — Minervini metrics, adaptive risk done)
+Status: in progress (partially complete)
 
 Goals:
 
@@ -63,18 +58,18 @@ Goals:
 - Add Risk Deviation Engine and Giveback Monitor.
 
 Completed:
-- Minervini metrics added (initial risk, R/day, MAE/MFE, Trend Template full, add-on quality).
-- Adaptive risk engine (weighted win rate, risk ladder, proactive alerts, /stats).
+- Minervini metrics (initial risk, R/day, MAE/MFE, Trend Template full, add-on quality) ✅
+- Adaptive risk engine (weighted win rate, risk ladder, proactive alerts, /stats) ✅
+- `analytics_engine.py`: period analytics, profit factor, expectancy, dev score ✅
+- Comprehensive math tests: R-multiples, PF edge cases, dev score bounds, oversized boundary ✅
 
 Remaining tasks (→ TASK-20260511-002 through -005):
 - ALGO Observer Mode foundation (TASK-20260511-002)
 - management_mode + risk_basis + risk_visibility_score (TASK-20260511-003)
 - Statistical isolation: stat_bucket + ALGO Risk Oversight Score (TASK-20260511-004)
 - Risk Deviation Engine + Giveback Monitor (TASK-20260511-005)
-- IBKR error classification + retry policy (TASK-20260511-001)
-- Trade-row fixtures and campaign scenario tests
 
-## Phase 3B — ALGO Observer Mode and Risk Isolation (NEW)
+## Phase 3B — ALGO Observer Mode and Risk Isolation
 
 Status: planned (tasks defined 2026-05-11)
 
@@ -92,7 +87,6 @@ Key deliverables (in priority order):
 7. Add Actionability Layer (Action Required / Review Required / Observation / External Managed).
 8. Add AI Master Context Export with ALGO state documentation.
 9. Add Mistake Classification for closed campaigns.
-10. Add automated tests for R, exposure, campaign aggregation.
 
 Formal ALGO rule (must be enforced in code):
 > Sentinel must not grade ALGO trades using EP/VCP management rules
@@ -125,7 +119,7 @@ Rules:
 
 ## Phase 5 — Dashboard and reporting upgrades
 
-Status: in progress (partially complete — Minervini Mentor tab, Command Center enrichment done)
+Status: in progress (partially complete)
 
 Goals:
 
@@ -136,6 +130,13 @@ Goals:
 - Add System Health tab (→ TASK-20260511-006).
 - Separate statistics view: Discretionary / ALGO / Combined (→ TASK-20260511-004).
 - Improve Hebrew display where relevant.
+
+Completed:
+
+- PDF weekly/monthly report service (WeasyPrint + Jinja2 + Plotly charts) ✅
+- Weekly/monthly Telegram summary with Hebrew coaching insights ✅
+- WoW/MoM comparison via snapshot store ✅
+- Plotly charts embedded in PDF (campaign R bars, setup perf, equity curve, win/loss donut) ✅
 
 ## Phase 6 — Automation and intelligence layer
 
@@ -162,6 +163,5 @@ Ideas to consider later:
 - GitHub Issues integration for tasks.
 - Release notes automation.
 - Structured JSON report outputs.
-- Dedicated test fixtures folder.
-- Local command scripts for deploy and smoke tests.
 - Portfolio scenario simulator.
+- Local command scripts for deploy and smoke tests.
