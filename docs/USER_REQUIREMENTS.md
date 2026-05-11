@@ -518,6 +518,327 @@ Related files:
 
 ---
 
+### REQ-20260511-002 — ALGO Observer Mode: management_mode field and stop display
+
+Status: approved
+Owner: both
+Area: risk engine / dashboard / Telegram
+Priority: High
+
+User request:
+- Sentinel must not manage ALGO positions as if they were discretionary EP/VCP trades.
+- Sentinel's role for ALGO: oversight, measurement, deviation alerting — not exit or stop instructions.
+- Replace `Current Stop: $0.00` display with a meaningful ALGO-aware status.
+- Add a formal `management_mode` field to every campaign/position.
+
+management_mode values:
+- `manual_managed`: user manages manually per EP/VCP rules
+- `system_assisted`: Sentinel suggests; user approves
+- `algo_observed`: external algo manages; Sentinel observes only
+- `unknown`: missing — exclude from quality statistics until fixed
+
+Stop display for ALGO:
+- Do NOT show `Current Stop: $0.00`.
+- Show: `Stop Status: Managed externally by ALGO / Stop Visibility: Unknown`.
+
+Formal rule (must be enforced in code and display):
+> Sentinel must not grade ALGO trades using discretionary EP/VCP management rules
+> unless the ALGO rule-set is explicitly imported and mapped.
+
+Acceptance criteria:
+- [ ] `management_mode` field added to campaign data structure (engine_core or Supabase column)
+- [ ] Dashboard and Telegram no longer show `$0.00` stop for ALGO positions
+- [ ] ALGO positions show `Stop Status: External / Unknown` instead
+- [ ] `unknown` mode positions excluded from quality statistics
+- [ ] `algo_observed` positions excluded from EP/VCP execution discipline scoring
+
+Related files:
+- `engine_core.py`
+- `dashboard.py`
+- `telegram_formatters.py`
+- `docs/DATA_CONTRACTS.md`
+
+---
+
+### REQ-20260511-003 — Risk Basis classification: True / Target / Estimated / Unknown
+
+Status: approved
+Owner: both
+Area: risk engine / dashboard / Telegram
+Priority: High
+
+User request:
+- Current system conflates R calculations from different bases, creating misleading statistics.
+- Every R value must carry an explicit risk basis label.
+
+Risk basis types:
+- `True Risk R`: EP/VCP with real, known stop — enters all quality statistics
+- `Target Risk R`: ALGO or trade without known stop — uses Target Risk USD as denominator
+- `Estimated Risk R`: partial data, approximated stop
+- `Unknown Risk R`: do not include in quality statistics
+
+ALGO R formula: `ALGO_R = PnL / Target_Risk_USD`
+This is `Target Risk Deviation`, NOT a manual stop violation.
+
+Risk Visibility Score per position (0–100):
+- 100: stop known, risk known, quantity known
+- 80: stop known, minor gaps
+- 60: Target Risk basis only
+- 40: external ALGO, no visible stop
+- 20: no stop, no rule, no Target Risk
+- 0: broken data
+
+Acceptance criteria:
+- [ ] `risk_basis` field added to position data: True/Target/Estimated/Unknown
+- [ ] `risk_visibility_score` computed per position (0–100)
+- [ ] Dashboard shows risk basis and visibility score per position
+- [ ] Telegram position cards include risk basis label
+- [ ] R statistics filter: True Risk R only for EP/VCP quality metrics
+
+Related files:
+- `engine_core.py`
+- `dashboard.py`
+- `telegram_formatters.py`
+
+---
+
+### REQ-20260511-004 — Statistical isolation: Strategy Contamination Guard
+
+Status: approved
+Owner: both
+Area: risk engine / dashboard
+Priority: High
+
+User request:
+- EP, VCP, and ALGO must not share the same performance statistics.
+- Mixing them produces false conclusions (e.g., "my EP discipline is weak" when it's an ALGO issue).
+- Every campaign must be assigned a `stat_bucket` that controls which statistics it enters.
+
+stat_bucket values:
+- `EP_MANUAL`: enters EP statistics
+- `VCP_MANUAL`: enters VCP statistics
+- `ALGO_OBSERVED`: enters ALGO statistics only
+- `TEST_PROBE`: excluded from full performance metrics
+- `DATA_INCOMPLETE`: excluded from all statistics
+- `BROKER_SYNC_ONLY`: IBKR data only, no qualitative scoring
+
+Required separate performance views:
+- Discretionary (EP + VCP combined)
+- ALGO only
+- Combined portfolio
+
+Per-view metrics: Win Rate, Avg Winner, Avg Loser, Profit Factor, Expectancy, Max Loss, Max Win,
+Largest Giveback, Avg Holding Time, Risk Deviation, Exposure Contribution, Drawdown Contribution.
+
+ALGO-specific metric replacing Execution Score:
+- `ALGO Risk Oversight Score` (0–100): weighted across exposure compliance (25%),
+  target risk deviation (25%), drawdown contribution (20%), giveback after profit (15%),
+  consecutive loss frequency (15%).
+
+Acceptance criteria:
+- [ ] `stat_bucket` field added to campaign data
+- [ ] `analytics_engine.py` separates stats into EP / VCP / ALGO / Combined buckets
+- [ ] Dashboard shows three separate performance tabs/sections
+- [ ] ALGO positions get `ALGO Risk Oversight Score`, not `Execution Score`
+- [ ] DATA_INCOMPLETE campaigns never enter Expectancy or Win Rate calculations
+
+Related files:
+- `analytics_engine.py` (new or extended)
+- `engine_core.py`
+- `dashboard.py`
+
+---
+
+### REQ-20260511-005 — Risk Deviation Engine + Giveback Monitor + Profit Protection
+
+Status: approved
+Owner: both
+Area: risk engine / Telegram / risk-monitor
+Priority: High
+
+User request:
+- System must detect when a position deviates materially from its risk target.
+- System must detect profit giveback (peak → current open R drop).
+- These apply to all positions but with different response: manage (manual) vs alert-only (ALGO).
+
+Risk Deviation Engine:
+- `risk_deviation_r = actual_open_loss / target_risk_usd`
+- Classification: ≤1R normal / 1–1.5R minor / 1.5–2R moderate / 2–3R severe / >3R system event
+- For EP/VCP: potential discipline violation. For ALGO: `External Risk Deviation`, not manual error.
+
+ALGO Guardrail alert thresholds (observe/alert only, no exit instruction):
+- Open loss ≤ 0.75R: info only
+- Open loss 1.0R: watch
+- Open loss 1.5R: alert — target risk exceeded
+- Open loss 2.0R: severe alert — verify algo is running correctly
+- Open loss > 3.0R: system event — algo outside risk framework
+
+Giveback Monitor:
+- `giveback_from_peak_r = peak_open_r - current_open_r`
+- Classification: ≤20% of peak profit: natural / 20–35%: watch / 35–50%: tighten / >50%: profit protection failure
+- For manual: action suggestion. For ALGO: alert only.
+
+Profit Protection Checkpoints (at 2R, 3R milestones):
+- Manual: suggest stop raise / partial exit / trailing stop
+- ALGO: `Profit Protection Checkpoint — Sentinel is not modifying ALGO management. Monitoring giveback.`
+
+Acceptance criteria:
+- [ ] `compute_risk_deviation(position)` added to `engine_core.py`
+- [ ] `compute_giveback_from_peak(position)` added to `engine_core.py` (tracks peak_open_r in state)
+- [ ] `risk_monitor.py` sends ALGO guardrail alerts at defined thresholds
+- [ ] Alerts clearly labeled: manual = potential violation, ALGO = oversight alert
+- [ ] Profit Protection Checkpoints fired at 2R and 3R milestones
+- [ ] Tests for risk deviation classification
+
+Related files:
+- `engine_core.py`
+- `risk_monitor.py`
+- `telegram_formatters.py`
+
+---
+
+### REQ-20260511-006 — Actionability Layer and Telegram message architecture
+
+Status: approved
+Owner: both
+Area: Telegram
+Priority: High
+
+User request:
+- Every Sentinel message must declare whether it requires action, review, observation, or is a system alert.
+- This prevents false urgency and prevents dismissing real alerts.
+
+Actionability levels:
+- `Action Required`: user must take a trade action
+- `Review Required`: check something, action optional
+- `Observation Only`: FYI, no action needed
+- `System Health`: data/sync issue
+- `External Managed`: algo is handling, Sentinel is observing
+
+ALGO Telegram message template:
+```
+🧠 Sentinel Risk Note
+Symbol: PLTR | Strategy: ALGO | Mode: External Managed
+Open R: -1.42R (Target Risk Base) | Exposure: 6.1%
+Actionability: Review Required
+מה קרה: הפוזיציה חרגה מאזור מעקב רגיל ביחס לסיכון יעד.
+Sentinel אינה יודעת חוקי יציאה. אין המלצת יציאה ידנית.
+פעולה: לוודא שהאלגו פעיל ומחובר.
+```
+
+Acceptance criteria:
+- [ ] `actionability` field added to all Telegram message generators
+- [ ] ALGO positions never receive "Action Required" exit/stop instructions
+- [ ] `telegram_formatters.py` includes `fmt_algo_risk_note()` template
+- [ ] All existing alert types updated with actionability classification
+- [ ] Manual positions still receive full management suggestions
+
+Related files:
+- `telegram_formatters.py`
+- `telegram_bot.py`
+- `risk_monitor.py`
+
+---
+
+### REQ-20260511-007 — System Health Monitor + Data Quality Badges + Position metadata
+
+Status: approved
+Owner: both
+Area: dashboard / Telegram
+Priority: High
+
+User request:
+- Data reliability is a prerequisite for everything else. Must surface it explicitly.
+- `/health` Telegram command must check and report all critical data integrity indicators.
+- Every position must display a data quality badge.
+- Every position must have an `intent` field describing its role.
+- Loss events must be classified by type (not all losses are equal).
+
+/health checks:
+IBKR Sync Status, Supabase Freshness, Last Execution Import, Lots Rebuild Status,
+Campaign Truth Status, Risk Snapshot Freshness, Missing Stops, Unknown Risk Positions,
+ALGO External Positions, Duplicate Campaigns, Open Quantity Mismatch, NAV Consistency,
+Alert Engine Status.
+
+Data Quality Badges (per position in dashboard and Telegram):
+- ✅ Verified: complete data
+- ⚠️ Partial: missing non-critical field
+- 🟠 External: algo-managed
+- 🔴 Broken: missing critical data
+- 🧪 Probe: test trade
+- 📊 Target-Based: R from Target Risk
+- 🧮 True-Risk: R from actual stop
+
+Position Intent field:
+- `starter` / `probe` / `full_position` / `runner` / `earnings_hold` / `algo_signal` / `reentry`
+- Probes and runners are not judged by the same standards as full positions.
+
+Mistake Classification (for closed campaigns):
+- `Good Loss`: loss per plan
+- `Bad Loss`: unauthorized entry or stop not honored
+- `System Loss`: algo/sync/order failure
+- `Market Loss`: gap or extraordinary event
+- `Data Loss`: unreliable calculation
+- `Probe Loss`: planned small loss
+
+Acceptance criteria:
+- [ ] `/health` command added to `telegram_bot.py`
+- [ ] Data quality badge computed per position in `engine_core.py` or `dashboard.py`
+- [ ] `intent` field added to campaign data
+- [ ] `mistake_classification` field available for closed campaigns
+- [ ] Dashboard shows badges and intent labels per position
+- [ ] `Probe Loss` and `Good Loss` excluded from discipline violation counts
+
+Related files:
+- `telegram_bot.py`
+- `engine_core.py`
+- `dashboard.py`
+
+---
+
+### REQ-20260511-008 — Portfolio Heat Map + Earnings Risk Module + AI Context Export upgrade
+
+Status: approved
+Owner: both
+Area: dashboard / Telegram / AI export
+Priority: Medium
+
+User request:
+- Dashboard must show portfolio risk by cluster (EP / VCP / ALGO / concentration / cash).
+- System must surface earnings risk for open positions before the event.
+- AI context export must explicitly document ALGO state to prevent AI advisors from giving wrong instructions.
+
+Portfolio Heat Map (dashboard):
+Cluster | Exposure % | Open R | Risk Contribution | Status
+EP / VCP / ALGO / Single Stock Concentration / Cash
+
+The system should say: "You are not at risk because of position count. You are at risk because of concentration, correlation, or an ALGO that is deviating."
+
+Earnings Risk Module (per open position):
+- Next Earnings Date, Days to Earnings, Current Open R, Realized Profit Taken, Remaining Size
+- Output: "MTZ: X days to earnings. Cushion: Y R. Decision required: exit / reduce / hold runner."
+
+AI Master Context Export additions:
+- Explicit ALGO section: "ALGO positions are externally managed. Sentinel does not know internal stop/exit rules. ALGO R uses Target Risk Base. Do not classify missing stop as manual discipline violation."
+- `stat_bucket` per position in export
+- `risk_basis` per position in export
+- `actionability` per alert in export
+- `management_mode` per position in export
+- Open questions and next required decisions section
+
+Acceptance criteria:
+- [ ] Portfolio Heat Map tab or section in dashboard
+- [ ] Earnings risk module: next earnings date fetched per open position
+- [ ] AI export includes management_mode, risk_basis, stat_bucket, ALGO note
+- [ ] AI export includes "Next Required Decisions" section
+
+Related files:
+- `dashboard.py`
+- `engine_core.py`
+- `telegram_bot.py` (AI export command)
+
+---
+
 ## Completed / validated requirements
 
 Move requirements here only after validation on server.

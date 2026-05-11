@@ -63,6 +63,228 @@ Rollback:
 
 ## Active tasks
 
+### TASK-20260511-007 — Phase G: Portfolio Heat Map + Earnings Risk Module + AI Context Export upgrade
+
+Status: todo
+Source requirement: REQ-20260511-008
+Assigned to: agent
+Risk: Low
+Affected services: dashboard, telegram-bot
+
+Goal:
+- Add Portfolio Heat Map (cluster-level exposure + open R + risk contribution).
+- Add Earnings Risk Module: next earnings date, days-to-event, cushion verdict per open position.
+- Upgrade AI Master Context Export: include management_mode, risk_basis, stat_bucket, ALGO note, next decisions section.
+
+Plan:
+1. `engine_core.py`: add `fetch_next_earnings_date(symbol)` using yfinance calendar.
+2. `dashboard.py`: add Portfolio Heat Map section (EP / VCP / ALGO / concentration / cash row).
+3. `dashboard.py`: add earnings risk warning per open position in Command Center expander.
+4. `telegram_bot.py`: update AI context export command to include new fields.
+
+Validation:
+- [ ] Portfolio Heat Map renders with correct cluster groupings
+- [ ] Earnings dates fetched without breaking dashboard load time
+- [ ] AI export includes management_mode, risk_basis, ALGO disclaimer
+- [ ] pytest -q passes
+- [ ] Deployed and verified
+
+Files touched:
+- engine_core.py, dashboard.py, telegram_bot.py
+
+Rollback:
+- git revert — no Supabase schema changes, safe
+
+---
+
+### TASK-20260511-006 — Phase F: Actionability Layer + Mistake Classification + /health command
+
+Status: todo
+Source requirement: REQ-20260511-006 / REQ-20260511-007
+Assigned to: agent
+Risk: Low
+Affected services: telegram-bot, dashboard
+
+Goal:
+- Add `actionability` classification to all Telegram messages and alerts.
+- Add `fmt_algo_risk_note()` to `telegram_formatters.py` using structured ALGO message template.
+- Add `/health` Telegram command with 13 data integrity checks.
+- Add `intent` and `mistake_classification` fields to campaign data.
+- Add Data Quality Badges per position.
+
+Plan:
+1. `telegram_formatters.py`: add `fmt_algo_risk_note(symbol, open_r, exposure, reason)` with actionability field.
+2. `telegram_bot.py`: add `/health` command — runs checklist and returns structured report.
+3. `engine_core.py`: add `compute_data_quality_badge(position)` → returns badge emoji + label.
+4. `dashboard.py`: display badges and intent labels per position in Command Center.
+5. Update all existing alert generators to include actionability level.
+
+Validation:
+- [ ] /health returns all 13 checks
+- [ ] ALGO positions never receive Action Required with exit instruction
+- [ ] Data quality badge computed correctly for verified / external / broken cases
+- [ ] pytest -q passes
+
+Files touched:
+- telegram_formatters.py, telegram_bot.py, engine_core.py, dashboard.py
+
+Rollback:
+- git revert — additive changes only, no schema changes
+
+---
+
+### TASK-20260511-005 — Phase E: Risk Deviation Engine + Giveback Monitor
+
+Status: todo
+Source requirement: REQ-20260511-005
+Assigned to: agent
+Risk: Medium
+Affected services: engine-core, risk-monitor, telegram-bot
+
+Goal:
+- Add `compute_risk_deviation(position)` to engine_core: deviation R = open loss / target risk USD, classified.
+- Add `compute_giveback_from_peak(position)` to engine_core: tracks peak open R, measures giveback %.
+- Wire ALGO guardrail thresholds into risk_monitor: alert at 1.5R / 2.0R / 3.0R open loss.
+- Fire Profit Protection Checkpoints at 2R and 3R milestones (different text for manual vs ALGO).
+- Add tests for deviation classification.
+
+Plan:
+1. `engine_core.py`: `compute_risk_deviation()` — five-tier classification (normal/minor/moderate/severe/system_event).
+2. `engine_core.py`: `compute_giveback_from_peak()` — four-tier classification (natural/watch/tighten/protection_failure).
+3. `risk_monitor.py`: per-position ALGO guardrail check using `compute_risk_deviation()`.
+4. `risk_monitor.py`: Profit Protection Checkpoint alerts at 2R / 3R, separate text for manual vs ALGO.
+5. `tests/test_risk_deviation.py`: unit tests for both functions.
+
+Validation:
+- [ ] Tests added and passing
+- [ ] ALGO alerts use "Review Required" language, not exit instructions
+- [ ] Manual positions receive management suggestion at checkpoints
+- [ ] pytest -q passes
+- [ ] Deployed on Orange Pi
+
+Files touched:
+- engine_core.py, risk_monitor.py, telegram_formatters.py, tests/test_risk_deviation.py
+
+Rollback:
+- git revert engine_core.py + risk_monitor.py — no schema changes
+
+---
+
+### TASK-20260511-004 — Phase D: Statistical isolation (stat_bucket + ALGO Risk Oversight Score)
+
+Status: todo
+Source requirement: REQ-20260511-004
+Assigned to: agent
+Risk: Medium
+Affected services: dashboard, engine-core, analytics_engine
+
+Goal:
+- Add `stat_bucket` field to campaign data: EP_MANUAL / VCP_MANUAL / ALGO_OBSERVED / TEST_PROBE / DATA_INCOMPLETE / BROKER_SYNC_ONLY.
+- `analytics_engine.py`: separate stats into Discretionary / ALGO / Combined buckets.
+- Dashboard shows three separate performance sections.
+- ALGO positions get `ALGO Risk Oversight Score` instead of `Execution Score`.
+- DATA_INCOMPLETE campaigns excluded from Expectancy and Win Rate.
+
+Plan:
+1. `engine_core.py`: add `classify_stat_bucket(campaign)` — derives bucket from setup_type + management_mode + data quality.
+2. `analytics_engine.py` (extend from REQ-20260510 planned work): bucket-aware stats computation.
+3. `dashboard.py`: Performance Matrix tab — add separate Discretionary / ALGO / Combined sections.
+4. `engine_core.py`: add `compute_algo_risk_oversight_score(campaign)` — weighted 5-factor score.
+
+Validation:
+- [ ] stat_bucket correctly assigned for EP, VCP, ALGO campaigns
+- [ ] Expectancy calculation excludes DATA_INCOMPLETE bucket
+- [ ] ALGO Risk Oversight Score returns 0–100 value
+- [ ] Dashboard shows three separate performance views
+- [ ] pytest -q passes
+
+Files touched:
+- engine_core.py, analytics_engine.py, dashboard.py
+
+Rollback:
+- git revert — no Supabase schema changes (stat_bucket derived at runtime)
+
+---
+
+### TASK-20260511-003 — Phase C: Risk Basis + Risk Visibility Score + management_mode display
+
+Status: todo
+Source requirement: REQ-20260511-002 / REQ-20260511-003
+Assigned to: agent
+Risk: Medium
+Affected services: engine-core, dashboard, telegram-bot
+
+Goal:
+- Add `management_mode` to position data: manual_managed / system_assisted / algo_observed / unknown.
+- Add `risk_basis` to position data: True / Target / Estimated / Unknown.
+- Add `risk_visibility_score` (0–100) per position.
+- Fix ALGO stop display: replace `$0.00` with `External / Unknown`.
+- `unknown` mode positions excluded from quality statistics.
+
+Plan:
+1. `engine_core.py`: add `classify_management_mode(campaign)` — derives from setup_type + existing stop data.
+2. `engine_core.py`: add `classify_risk_basis(campaign)` — True if stop known, Target if using target_risk_usd, else Estimated/Unknown.
+3. `engine_core.py`: add `compute_risk_visibility_score(campaign)` → int 0–100.
+4. `dashboard.py`: use management_mode to gate stop display — ALGO shows "External / Unknown" not "$0.00".
+5. `telegram_formatters.py`: `fmt_position_card()` shows risk_basis badge.
+6. All quality stats: filter out `unknown` management_mode positions.
+
+Validation:
+- [ ] ALGO positions show "External / Unknown" stop, not $0.00
+- [ ] risk_basis correctly classified for positions with and without stops
+- [ ] risk_visibility_score in range 0–100
+- [ ] unknown mode excluded from quality stats
+- [ ] pytest -q passes
+
+Files touched:
+- engine_core.py, dashboard.py, telegram_formatters.py
+
+Rollback:
+- git revert — additive, no schema changes
+
+---
+
+### TASK-20260511-002 — Phase B: ALGO Observer Mode — formal rules and display foundation
+
+Status: todo
+Source requirement: REQ-20260511-002
+Assigned to: agent
+Risk: Low
+Affected services: dashboard, telegram-bot
+
+Goal:
+- Establish ALGO Observer Mode as a formal, enforceable concept in the codebase.
+- Add constant / config that lists known ALGO symbols (already partially in engine_core.py).
+- Ensure no code path issues EP/VCP management instructions to ALGO positions.
+- Document the formal rule in code comments and DATA_CONTRACTS.md.
+
+Plan:
+1. `engine_core.py`: add `ALGO_SYMBOLS` set and `is_algo_position(campaign)` helper.
+2. Audit `telegram_bot.py` and `engine_core.py` for any code that sends stop-raise or exit instructions to ALGO positions — gate them with `is_algo_position()`.
+3. `docs/DATA_CONTRACTS.md`: add management_mode and stat_bucket to contracts.
+4. Add management_mode and risk_basis to `docs/DECISIONS.md` as architectural decisions.
+
+Plan:
+1. Add `is_algo_position()` to engine_core.
+2. Audit existing management suggestion code paths.
+3. Update DATA_CONTRACTS.md.
+4. Update DECISIONS.md.
+
+Validation:
+- [ ] is_algo_position() returns True for known ALGO symbols
+- [ ] No management suggestion code sends stop/exit instruction to ALGO positions
+- [ ] DATA_CONTRACTS.md updated
+- [ ] DECISIONS.md updated
+- [ ] pytest -q passes
+
+Files touched:
+- engine_core.py, telegram_bot.py, docs/DATA_CONTRACTS.md, docs/DECISIONS.md
+
+Rollback:
+- git revert — code audit + doc changes only
+
+---
+
 ### TASK-20260511-001 — IBKR error classification + smart GetStatement retry
 
 Status: todo
