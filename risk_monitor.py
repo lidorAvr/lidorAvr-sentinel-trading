@@ -22,6 +22,12 @@ STATUS_RANK = {
     "🟡 Yellow Flag": 3, "🟡 תקין אך במעקב": 3, "🟠 Weak": 4, "🔴 Broken": 5, "🚨 קריטי": 6, "🚨 חריגת סיכון אלגו": 6
 }
 
+DEVIATION_RANK = {"unknown": 0, "normal": 1, "minor": 2, "moderate": 3, "severe": 4, "system_event": 5}
+GIVEBACK_RANK  = {"na": 0, "natural": 1, "watch": 2, "tighten": 3, "protection_failure": 4}
+PROFIT_CHECKPOINTS = [2.0, 3.0]  # Fire alert when open_r crosses these thresholds
+DEVIATION_COOLDOWN_SEC  = 3 * 3600   # 3h cooldown for same deviation class
+GIVEBACK_COOLDOWN_SEC   = 6 * 3600   # 6h cooldown for same giveback class
+
 def load_state():
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f: return json.load(f)
@@ -85,6 +91,133 @@ def should_alert(prev, current_status, current_key):
 
     return False, last_alert_ts
 
+def _deviation_alert_text(sym, setup, open_r, dev, is_algo):
+    RTL_M = "‏"
+    if is_algo:
+        if dev["alert_level"] == "system":
+            heading = f"🚨 *אירוע מערכת — אלגו חורג ממסגרת סיכון*"
+        elif dev["alert_level"] == "severe":
+            heading = f"🔴 *התרעה חמורה — לבדוק שהאלגו פועל תקין*"
+        else:
+            heading = f"⚠️ *התרעת ALGO — חריגה מסיכון יעד*"
+        action_line = f"{RTL_M}פיקוח: לבדוק שהאלגו מחובר ופעיל. אין המלצת יציאה ידנית."
+    else:
+        if dev["alert_level"] == "system":
+            heading = f"🚨 *אירוע מערכת — חריגה קיצונית מסיכון*"
+        elif dev["alert_level"] == "severe":
+            heading = f"🔴 *חריגה חמורה מסיכון מתוכנן*"
+        else:
+            heading = f"⚠️ *חריגת סיכון — מעל סיכון יעד*"
+        action_line = f"{RTL_M}פעולה: לבדוק עמידה בסטופ ולהעריך מחדש."
+
+    mode = "ALGO | מנוהל חיצונית" if is_algo else setup
+    return (
+        f"{RTL_M}{heading}\n"
+        f"{RTL_M}סימול: *{sym}* | מצב: `{mode}`\n"
+        f"{RTL_M}חריגה: `{dev['deviation_r']:.2f}R` | סיווג: `{dev['label']}`\n"
+        f"{RTL_M}Open R נוכחי: `{open_r:.2f}R`\n"
+        f"{RTL_M}{action_line}"
+    )
+
+
+def _giveback_alert_text(sym, setup, peak_r, current_r, gb, is_algo):
+    RTL_M = "‏"
+    mode = "ALGO | מנוהל חיצונית" if is_algo else setup
+    if is_algo:
+        action_line = f"{RTL_M}פיקוח בלבד — Sentinel אינה מנהלת יציאות אלגו."
+    else:
+        action_line = f"{RTL_M}פעולה: לשקול הדקת סטופ / מימוש חלקי / מעבר לסטופ עוקב."
+    return (
+        f"{RTL_M}📉 *Giveback Alert — {gb['label']}*\n"
+        f"{RTL_M}סימול: *{sym}* | מצב: `{mode}`\n"
+        f"{RTL_M}שיא: `{peak_r:.2f}R` → נוכחי: `{current_r:.2f}R`\n"
+        f"{RTL_M}ויתור: `{gb['giveback_r']:.2f}R` ({gb['giveback_pct_of_peak']:.0f}% מהשיא)\n"
+        f"{RTL_M}{action_line}"
+    )
+
+
+def _checkpoint_alert_text(sym, setup, checkpoint_r, open_r, is_algo):
+    RTL_M = "‏"
+    mode = "ALGO | מנוהל חיצונית" if is_algo else setup
+    if is_algo:
+        action_line = (
+            f"{RTL_M}Sentinel אינה מנהלת יציאות אלגו.\n"
+            f"{RTL_M}פיקוח: Profit Protection Checkpoint — מעקב אחרי Giveback מכאן."
+        )
+    else:
+        action_line = (
+            f"{RTL_M}פעולה לפי מינרביני: לשקול הגנת רווח — העלאת סטופ, מימוש חלקי, או מעבר ל-Runner."
+        )
+    return (
+        f"{RTL_M}🏁 *Profit Protection Checkpoint — {checkpoint_r:.0f}R*\n"
+        f"{RTL_M}סימול: *{sym}* | מצב: `{mode}`\n"
+        f"{RTL_M}Open R: `{open_r:.2f}R` חצה סף `{checkpoint_r:.0f}R`\n"
+        f"{RTL_M}{action_line}"
+    )
+
+
+def check_position_risk_thresholds(sym, setup, open_r, open_pnl_usd, target_risk_usd,
+                                    is_algo, prev_state, now_ts):
+    """
+    Check risk deviation, giveback, and profit protection checkpoints for one position.
+    Returns (alerts_list, state_updates_dict).
+    alerts_list: list of strings to send via Telegram.
+    state_updates_dict: fields to merge into the position's state dict.
+    """
+    alerts = []
+    updates = {}
+
+    peak_open_r = max(prev_state.get("peak_open_r", 0.0), open_r if open_r > 0 else 0.0)
+    updates["peak_open_r"] = peak_open_r
+
+    # ── Risk Deviation (losses only) ──────────────────────────────────────
+    if open_pnl_usd < 0 and target_risk_usd > 0:
+        dev = ec.compute_risk_deviation(open_pnl_usd, target_risk_usd)
+        prev_dev_class = prev_state.get("last_deviation_class", "normal")
+        prev_dev_ts = prev_state.get("last_deviation_ts", 0)
+        alert_levels_to_notify = {"moderate", "severe", "system_event"}
+
+        escalated = DEVIATION_RANK.get(dev["classification"], 0) > DEVIATION_RANK.get(prev_dev_class, 0)
+        cooled_down = (now_ts - prev_dev_ts) > DEVIATION_COOLDOWN_SEC
+        should_fire = dev["classification"] in alert_levels_to_notify and (escalated or cooled_down)
+
+        if should_fire:
+            alerts.append(_deviation_alert_text(sym, setup, open_r, dev, is_algo))
+            updates["last_deviation_class"] = dev["classification"]
+            updates["last_deviation_ts"] = now_ts
+        elif dev["classification"] not in ("normal", "minor"):
+            # Track class even without alert
+            updates["last_deviation_class"] = dev["classification"]
+
+    # ── Profit Protection Checkpoints ─────────────────────────────────────
+    checkpoints_hit = set(prev_state.get("checkpoints_hit", []))
+    for cp in PROFIT_CHECKPOINTS:
+        if open_r >= cp and cp not in checkpoints_hit:
+            alerts.append(_checkpoint_alert_text(sym, setup, cp, open_r, is_algo))
+            checkpoints_hit.add(cp)
+    updates["checkpoints_hit"] = list(checkpoints_hit)
+
+    # ── Giveback Monitor (only when meaningful profit existed) ────────────
+    if peak_open_r >= 1.5 and open_r < peak_open_r:
+        gb = ec.compute_giveback_from_peak(peak_open_r, open_r)
+        prev_gb_class = prev_state.get("last_giveback_class", "natural")
+        prev_gb_ts = prev_state.get("last_giveback_ts", 0)
+        alert_classes_to_notify = {"watch", "tighten", "protection_failure"}
+
+        escalated = GIVEBACK_RANK.get(gb["classification"], 0) > GIVEBACK_RANK.get(prev_gb_class, 0)
+        cooled_down = (now_ts - prev_gb_ts) > GIVEBACK_COOLDOWN_SEC
+        should_fire = gb["classification"] in alert_classes_to_notify and (escalated or cooled_down)
+
+        if should_fire:
+            alerts.append(_giveback_alert_text(sym, setup, peak_open_r, open_r, gb, is_algo))
+            updates["last_giveback_class"] = gb["classification"]
+            updates["last_giveback_ts"] = now_ts
+        elif gb["classification"] not in ("na", "natural"):
+            updates["last_giveback_class"] = gb["classification"]
+
+    return alerts, updates
+
+
 def send_telegram(text):
     if not ADMIN_ID: return
     try: bot.send_message(ADMIN_ID, text, parse_mode="Markdown")
@@ -114,7 +247,8 @@ def main():
     spy_hist = ec.get_cached_history("SPY", "1y", "1d")
     total_algo_exposure = 0.0
     new_position_state = {}
-    
+    now_ts = datetime.utcnow().timestamp()
+
     for _, row in open_pos.iterrows():
         sym, setup, entry = row["symbol"], row["setup_type"], float(row["price"])
         qty, sl, init_sl = float(row["quantity"]), float(row["stop_loss"]), float(row["initial_stop"])
@@ -186,13 +320,34 @@ def main():
                 
             send_telegram(msg)
             
-        new_position_state[campaign_id] = {"status": engine["status"], "alert_key": alert_key, "updated_at": datetime.utcnow().isoformat(), "last_alert_ts": new_alert_ts}
+        new_pos_entry = {
+            "status": engine["status"], "alert_key": alert_key,
+            "updated_at": datetime.utcnow().isoformat(), "last_alert_ts": new_alert_ts,
+        }
+        # Carry over threshold-tracking fields from previous state
+        if prev:
+            for carry_key in ("peak_open_r", "last_deviation_class", "last_deviation_ts",
+                              "last_giveback_class", "last_giveback_ts", "checkpoints_hit"):
+                if carry_key in prev:
+                    new_pos_entry[carry_key] = prev[carry_key]
+
+        # Risk Deviation / Giveback / Profit Protection Checkpoints
+        is_algo = ec.is_algo_position(setup, sym)
+        threshold_alerts, threshold_updates = check_position_risk_thresholds(
+            sym=sym, setup=setup, open_r=open_r, open_pnl_usd=open_pnl,
+            target_risk_usd=target_risk_usd, is_algo=is_algo,
+            prev_state=new_pos_entry, now_ts=now_ts,
+        )
+        new_pos_entry.update(threshold_updates)
+        for alert_text in threshold_alerts:
+            send_telegram(alert_text)
+
+        new_position_state[campaign_id] = new_pos_entry
         
     algo_cluster_pct = (total_algo_exposure / acc_size) * 100 if acc_size > 0 else 0
     prev_cluster = state.get("cluster", {})
     prev_cluster_status = prev_cluster.get("status", "green")
     last_cluster_alert = prev_cluster.get("last_alert_ts", 0)
-    now_ts = datetime.utcnow().timestamp()
     
     if algo_cluster_pct > ec.ALGO_CLUSTER_CRITICAL_PCT: # 35.0
         cluster_status = "red"

@@ -822,3 +822,74 @@ def generate_minervini_coaching(win_rate, expectancy_r, adj_rr, oversized_count=
         insights.append(f"💡 <b>+{total_r_net:.1f}R מצטבר</b> — מינרביני: 'תיק מצליח. שמור על הדיסציפלינה ואל תגדיל סיכון מתוך ביטחון יתר.'")
 
     return insights
+
+
+def compute_risk_deviation(open_pnl_usd, target_risk_usd):
+    """
+    Measure how far a losing position has deviated from its target risk.
+
+    open_pnl_usd    current open PnL (negative = loss)
+    target_risk_usd planned risk per trade in USD
+
+    Returns a dict with deviation_r (in R units), classification, Hebrew label,
+    and alert_level. Meaningful only when open_pnl_usd < 0.
+    """
+    if target_risk_usd <= 0:
+        return {
+            "deviation_r": 0.0, "classification": "unknown",
+            "label": "אין בסיס סיכון", "alert_level": "none",
+        }
+
+    deviation_r = abs(open_pnl_usd) / target_risk_usd
+
+    if deviation_r <= 1.0:
+        cls, label, alert = "normal",       "תקין",            "info"
+    elif deviation_r <= 1.5:
+        cls, label, alert = "minor",        "חריגה קלה",       "watch"
+    elif deviation_r <= 2.0:
+        cls, label, alert = "moderate",     "חריגה בינונית",   "alert"
+    elif deviation_r <= 3.0:
+        cls, label, alert = "severe",       "חריגה חמורה",     "severe"
+    else:
+        cls, label, alert = "system_event", "אירוע מערכת",     "system"
+
+    return {
+        "deviation_r": round(deviation_r, 2),
+        "classification": cls,
+        "label": label,
+        "alert_level": alert,
+    }
+
+
+def compute_giveback_from_peak(peak_open_r, current_open_r):
+    """
+    Measure profit giveback from the peak open R.
+
+    Returns giveback_r (absolute R lost from peak), giveback_pct_of_peak
+    (percentage of peak profit surrendered), classification, and Hebrew label.
+    Only meaningful when peak_open_r > 0.
+    """
+    if peak_open_r <= 0:
+        return {
+            "giveback_r": 0.0, "giveback_pct_of_peak": 0.0,
+            "classification": "na", "label": "אין שיא רווח",
+        }
+
+    giveback_r = peak_open_r - current_open_r
+    giveback_pct = (giveback_r / peak_open_r) * 100
+
+    if giveback_pct <= 20:
+        cls, label = "natural",           "ויתור טבעי"
+    elif giveback_pct <= 35:
+        cls, label = "watch",             "מעקב — ויתור מעל 20%"
+    elif giveback_pct <= 50:
+        cls, label = "tighten",           "להדק — ויתור מעל 35%"
+    else:
+        cls, label = "protection_failure", "כשל הגנת רווח — ויתור מעל 50%"
+
+    return {
+        "giveback_r": round(giveback_r, 2),
+        "giveback_pct_of_peak": round(giveback_pct, 1),
+        "classification": cls,
+        "label": label,
+    }
