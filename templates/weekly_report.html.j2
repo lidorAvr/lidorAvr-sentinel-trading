@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>Sentinel — דוח שבועי {{ period_label }}</title>
+<style>{{ base_css }}</style>
+</head>
+<body>
+
+{# Running header for all pages after cover #}
+<div id="page-header">🛡️ Sentinel Trading | דוח שבועי {{ period_label }} | הופק: <span class="ltr">{{ generated_at[:10] }}</span></div>
+
+{# ══ PAGE 1: Executive Summary ══════════════════════════════════════════════ #}
+<div class="cover-header">
+  <div class="system-name">🛡️ Sentinel Trading</div>
+  <div class="report-type">דוח שבועי</div>
+  <div class="period-label"><span class="ltr">{{ period_label }}</span></div>
+</div>
+
+<div class="freshness-banner freshness-{{ freshness }}">{{ freshness_label }}</div>
+
+<div class="verdict-badge verdict-{{ verdict_class }}">{{ verdict }}</div>
+
+{# KPI cards — 3-column table #}
+<table class="kpi-grid">
+  <tr>
+    <td class="kpi-card{% if realized_pnl >= 0 %} kpi-green{% elif realized_pnl < 0 %} kpi-red{% endif %}">
+      <div class="kpi-label">רווח ממומש</div>
+      <div class="kpi-value ltr">{% if realized_pnl >= 0 %}+{% endif %}${{ "%.0f"|format(realized_pnl) }}</div>
+      <div class="kpi-sub"><span class="ltr">{{ "%.2f"|format(total_r_net) }}R</span></div>
+    </td>
+    <td class="kpi-card{% if win_rate >= 0.55 %} kpi-green{% elif win_rate < 0.4 %} kpi-red{% endif %}">
+      <div class="kpi-label">Win Rate</div>
+      <div class="kpi-value ltr">{{ "%.0f"|format(win_rate * 100) }}%</div>
+      <div class="kpi-sub">{{ campaigns_closed }} קמפיינים</div>
+    </td>
+    <td class="kpi-card{% if expectancy_r >= 0.5 %} kpi-green{% elif expectancy_r < 0 %} kpi-red{% endif %}">
+      <div class="kpi-label">Expectancy</div>
+      <div class="kpi-value ltr">{{ "%+.2f"|format(expectancy_r) }}R</div>
+      <div class="kpi-sub">לקמפיין ממוצע</div>
+    </td>
+  </tr>
+  <tr>
+    <td class="kpi-card">
+      <div class="kpi-label">Profit Factor</div>
+      <div class="kpi-value ltr">{{ "%.2f"|format(profit_factor) }}</div>
+      <div class="kpi-sub">ניצחונות / הפסדים</div>
+    </td>
+    <td class="kpi-card">
+      <div class="kpi-label">NAV</div>
+      <div class="kpi-value ltr">${{ "{:,.0f}".format(nav) }}</div>
+      <div class="kpi-sub">{{ nav_source }}{% if is_stale %} ⚠️{% endif %}</div>
+    </td>
+    <td class="kpi-card{% if dev_score is not none and dev_score >= 75 %} kpi-green{% elif dev_score is not none and dev_score < 50 %} kpi-red{% endif %}">
+      <div class="kpi-label">ציון תהליך</div>
+      <div class="kpi-value ltr">{% if dev_score is not none %}{{ dev_score }}/100{% else %}—{% endif %}</div>
+      <div class="kpi-sub">{{ dev_label }}</div>
+    </td>
+  </tr>
+</table>
+
+{# ══ PAGE 2: Performance Breakdown ══════════════════════════════════════════ #}
+<div class="page-break-before"></div>
+<h2>📊 ניתוח ביצועים — <span class="ltr">{{ period_label }}</span></h2>
+
+<table class="metrics-table no-break">
+  <tr><th>מדד</th><th>ערך</th>{% if comparison %}<th>שינוי מהשבוע הקודם</th>{% endif %}</tr>
+  <tr>
+    <td>קמפיינים שנסגרו</td>
+    <td class="num">{{ campaigns_closed }}</td>
+    {% if comparison and comparison.campaigns_closed is defined %}<td class="num {{ 'delta-up' if comparison.campaigns_closed.delta > 0 else 'delta-down' if comparison.campaigns_closed.delta < 0 else 'delta-flat' }}">{{ "%+d"|format(comparison.campaigns_closed.delta|int) }}</td>{% elif comparison %}<td>—</td>{% endif %}
+  </tr>
+  <tr>
+    <td>Win Rate</td>
+    <td class="num {{ 'good' if win_rate >= 0.55 else 'bad' if win_rate < 0.4 else 'warn' }}"><span class="ltr">{{ "%.1f"|format(win_rate*100) }}%</span></td>
+    {% if comparison and 'win_rate' in comparison %}<td class="num {{ 'delta-up' if comparison.win_rate.improving else 'delta-down' }}"><span class="ltr">{{ "%+.1f"|format(comparison.win_rate.delta*100) }}%</span></td>{% elif comparison %}<td>—</td>{% endif %}
+  </tr>
+  <tr>
+    <td>Expectancy</td>
+    <td class="num {{ 'good' if expectancy_r >= 0.3 else 'bad' if expectancy_r < 0 else '' }}"><span class="ltr">{{ "%+.2f"|format(expectancy_r) }}R</span></td>
+    {% if comparison and 'expectancy_r' in comparison %}<td class="num {{ 'delta-up' if comparison.expectancy_r.improving else 'delta-down' }}"><span class="ltr">{{ "%+.2f"|format(comparison.expectancy_r.delta) }}R</span></td>{% elif comparison %}<td>—</td>{% endif %}
+  </tr>
+  <tr>
+    <td>Profit Factor</td>
+    <td class="num {{ 'good' if profit_factor >= 1.5 else 'bad' if profit_factor < 1 else '' }}"><span class="ltr">{{ "%.2f"|format(profit_factor) }}</span></td>
+    {% if comparison and 'profit_factor' in comparison %}<td class="num {{ 'delta-up' if comparison.profit_factor.improving else 'delta-down' }}"><span class="ltr">{{ "%+.2f"|format(comparison.profit_factor.delta) }}</span></td>{% elif comparison %}<td>—</td>{% endif %}
+  </tr>
+  <tr>
+    <td>ממוצע ניצחון</td>
+    <td class="num good"><span class="ltr">+{{ "%.2f"|format(avg_win_r) }}R</span></td>
+    <td>—</td>
+  </tr>
+  <tr>
+    <td>ממוצע הפסד</td>
+    <td class="num bad"><span class="ltr">{{ "%.2f"|format(avg_loss_r) }}R</span></td>
+    <td>—</td>
+  </tr>
+  <tr>
+    <td>Payoff Ratio</td>
+    <td class="num"><span class="ltr">{% if avg_loss_r != 0 %}{{ "%.2f"|format((avg_win_r / avg_loss_r)|abs) }}{% else %}—{% endif %}</span></td>
+    <td>—</td>
+  </tr>
+  <tr>
+    <td>סה"כ R נטו</td>
+    <td class="num {{ 'good' if total_r_net > 0 else 'bad' }}"><span class="ltr">{{ "%+.2f"|format(total_r_net) }}R</span></td>
+    {% if comparison and 'total_r_net' in comparison %}<td class="num {{ 'delta-up' if comparison.total_r_net.improving else 'delta-down' }}"><span class="ltr">{{ "%+.2f"|format(comparison.total_r_net.delta) }}R</span></td>{% elif comparison %}<td>—</td>{% endif %}
+  </tr>
+  <tr>
+    <td>רווח ממומש</td>
+    <td class="num {{ 'good' if realized_pnl > 0 else 'bad' }}"><span class="ltr">{{ "%+,.0f"|format(realized_pnl) }}$</span></td>
+    <td>—</td>
+  </tr>
+</table>
+
+{% if best_trade or worst_trade %}
+<h3>🏆 עסקאות קיצוניות</h3>
+<table class="metrics-table no-break">
+  {% if best_trade %}<tr><td>העסקה הטובה ביותר</td><td class="num good"><span class="ltr">{{ best_trade.symbol }} | {{ "%+.2f"|format(best_trade.net_r) }}R | +${{ "%.0f"|format(best_trade.net_pnl) }}</span></td></tr>{% endif %}
+  {% if worst_trade %}<tr><td>העסקה הגרועה ביותר</td><td class="num bad"><span class="ltr">{{ worst_trade.symbol }} | {{ "%+.2f"|format(worst_trade.net_r) }}R | ${{ "%.0f"|format(worst_trade.net_pnl) }}</span></td></tr>{% endif %}
+</table>
+{% endif %}
+
+{# ══ PAGE 3: Execution Quality ════════════════════════════════════════════== #}
+<div class="page-break-before"></div>
+<h2>⚙️ איכות ביצוע</h2>
+
+<table class="metrics-table no-break">
+  <tr><th>מדד</th><th>ערך</th><th>סטטוס</th></tr>
+  <tr>
+    <td>שיעור חסרי סטופ התחלתי</td>
+    <td class="num"><span class="ltr">{{ "%.1f"|format(missing_stop_rate*100) }}%</span></td>
+    <td>{% if missing_stop_rate < 0.1 %}✅ תקין{% elif missing_stop_rate < 0.25 %}⚠️ לשיפור{% else %}🔴 חמור{% endif %}</td>
+  </tr>
+  <tr>
+    <td>שיעור פוזיציות Oversized</td>
+    <td class="num"><span class="ltr">{{ "%.1f"|format(oversized_rate*100) }}%</span></td>
+    <td>{% if oversized_rate < 0.15 %}✅ תקין{% elif oversized_rate < 0.30 %}⚠️ לשיפור{% else %}🔴 חמור{% endif %}</td>
+  </tr>
+  <tr>
+    <td>R ממוצע ליום אחזקה</td>
+    <td class="num"><span class="ltr">{{ "%.3f"|format(avg_r_per_day) }}R/day</span></td>
+    <td>{% if avg_r_per_day > 0.05 %}✅{% elif avg_r_per_day > 0 %}🟡{% else %}🔴{% endif %}</td>
+  </tr>
+  {% if risk_adherence_rate is not none %}
+  <tr>
+    <td>ציות להמלצות סיכון</td>
+    <td class="num"><span class="ltr">{{ "%.1f"|format(risk_adherence_rate*100) }}%</span></td>
+    <td>{% if risk_adherence_rate >= 0.7 %}✅{% elif risk_adherence_rate >= 0.5 %}⚠️{% else %}🔴{% endif %}</td>
+  </tr>
+  {% endif %}
+</table>
+
+{% if dev_score is not none %}
+<h3>ציון פיתוח סוחר</h3>
+<div class="score-bar-outer">
+  <div class="score-bar-inner" style="width: {{ dev_score }}%;"></div>
+</div>
+<p style="font-size:9pt; color:#374151; margin-top:1mm;">
+  <strong>{{ dev_score }}/100</strong> — {{ dev_label }}
+  {% if dev_breakdown %}
+  &nbsp;|&nbsp;
+  <span class="ltr">תהליך: {{ dev_breakdown.process }}, Edge: {{ dev_breakdown.edge }}, סיכון: {{ dev_breakdown.risk }}, ביצוע: {{ dev_breakdown.execution }}</span>
+  {% endif %}
+</p>
+{% endif %}
+
+{# Setup breakdown #}
+{% if setup_breakdown %}
+<h3>📋 פירוט לפי אסטרטגיה</h3>
+<table class="league-table no-break">
+  <tr><th>Setup</th><th>קמפיינים</th><th>Net R</th><th>Win%</th><th>Avg R</th><th>PF</th></tr>
+  {% for setup, stats in setup_breakdown.items() %}
+  <tr>
+    <td><span class="ltr">{{ setup }}</span></td>
+    <td>{{ stats.count }}</td>
+    <td class="{{ 'good' if stats.net_r > 0 else 'bad' }}"><span class="ltr">{{ "%+.2f"|format(stats.net_r) }}R</span></td>
+    <td><span class="ltr">{{ "%.1f"|format(stats.win_rate*100) }}%</span></td>
+    <td><span class="ltr">{{ "%+.2f"|format(stats.avg_r) }}R</span></td>
+    <td><span class="ltr">{{ "%.2f"|format(stats.profit_factor) }}</span></td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{# ══ PAGE 4: System Health ════════════════════════════════════════════════== #}
+<div class="page-break-before"></div>
+<h2>🏥 בריאות מערכת</h2>
+<ul class="health-list">
+  <li>{{ sync_status }}</li>
+  <li>{{ nav_freshness_label }}</li>
+  <li>{{ risk_monitor_status }}</li>
+  <li>{{ report_service_status }}</li>
+</ul>
+
+{# ══ PAGE 5: Coaching ════════════════════════════════════════════════════=== #}
+<h2>🎓 Minervini Coaching</h2>
+{% if coaching_insights %}
+{% for insight in coaching_insights[:3] %}
+<div class="coaching-box">{{ insight }}</div>
+{% endfor %}
+{% else %}
+<div class="coaching-box">אין תובנות זמינות לשבוע זה.</div>
+{% endif %}
+
+<h3>3 פעולות לשבוע הבא</h3>
+<div class="coaching-box">
+  {% if missing_stop_rate > 0.15 %}
+  <div class="action-item">לוודא שכל BUY חדש מוזן עם initial stop לפני פתיחת פוזיציה.</div>
+  {% endif %}
+  {% if oversized_rate > 0.20 %}
+  <div class="action-item">לבדוק sizing בפוזיציות הבאות — {{ "%.0f"|format(oversized_rate*100) }}% מעל 125% מ-Target Risk.</div>
+  {% endif %}
+  {% if expectancy_r < 0.3 and campaigns_closed > 0 %}
+  <div class="action-item">להעלות סלקטיביות — Expectancy של {{ "%+.2f"|format(expectancy_r) }}R לא מצדיק את ה-drawdown.</div>
+  {% endif %}
+  {% if risk_adherence_rate is not none and risk_adherence_rate < 0.6 %}
+  <div class="action-item">לעקוב אחרי המלצות Adaptive Risk — ציות של {{ "%.0f"|format(risk_adherence_rate*100) }}% בלבד.</div>
+  {% endif %}
+  {% if not missing_stop_rate > 0.15 and not oversized_rate > 0.20 and not (expectancy_r < 0.3 and campaigns_closed > 0) %}
+  <div class="action-item">להמשיך בשמירת המשמעת — התהליך תקין השבוע.</div>
+  {% endif %}
+</div>
+
+<p style="font-size:7.5pt; color:#9ca3af; margin-top:6mm; text-align:center; direction:ltr;">
+  Sentinel Trading Report | Generated {{ generated_at[:19] }} | For internal use only
+</p>
+
+</body>
+</html>
