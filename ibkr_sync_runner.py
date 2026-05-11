@@ -124,7 +124,9 @@ def run_ibkr_sync(log_fn=print) -> dict:
             }
 
         root = ET.fromstring(res.text)
-        code_elem = root.find(".//code")
+        code_elem = root.find(".//ReferenceCode")
+        if code_elem is None:
+            code_elem = root.find(".//code")
         if code_elem is None:
             log_fn(f"SendRequest: no reference code in response: {res.text[:300]}")
             return {
