@@ -47,8 +47,11 @@ def load_settings():
     return {"total_deposited": 7500.0, "risk_pct_input": 0.5}
 
 def save_settings(total_deposited, risk_pct_input, saved_nav=None):
+    existing = load_settings()
+    existing["total_deposited"] = total_deposited
+    existing["risk_pct_input"] = risk_pct_input
     with open(SETTINGS_FILE, "w") as f:
-        json.dump({"total_deposited": total_deposited, "risk_pct_input": risk_pct_input}, f)
+        json.dump(existing, f)
 
 settings = load_settings()
 
@@ -96,7 +99,7 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("💼 Account Settings")
 
 # קריאת הנתונים מקובץ ההגדרות העדכני
-saved_nav = float(settings.get("current_nav", settings.get("total_deposited", 7500.0)))
+saved_nav = float(settings.get("nav", settings.get("total_deposited", 7500.0)))
 
 st.sidebar.success(f"🏦 Live IBKR NAV: **${saved_nav:,.2f}**")
 
