@@ -293,7 +293,7 @@ def _build_health_report():
     status_icon = "✅" if n_bad == 0 and n_warn == 0 else ("⚠️" if n_bad == 0 else "🔴")
 
     lines = [
-        f"{RTL}🏥 *Sentinel System Health* {status_icon}",
+        f"{RTL}🏥 Sentinel System Health {status_icon}",
         f"{RTL}{SEP}",
         f"{RTL}✅ {n_ok} תקין | ⚠️ {n_warn} אזהרה | 🔴 {n_bad} שגיאה ({total} בדיקות)",
         f"{RTL}{SEP}",
@@ -804,7 +804,7 @@ def handle_all_messages(message):
 
     if text == "🏥 בריאות מערכת":
         return bot.send_message(chat_id, _build_health_report(),
-                                reply_markup=get_developer_menu(), parse_mode="Markdown")
+                                reply_markup=get_developer_menu())
 
     if text in ["❓ עזרה", "❓ פקודות מערכת", "/help"]:
         help_txt = (
@@ -844,7 +844,7 @@ def handle_all_messages(message):
         return bot.send_message(chat_id, msg, parse_mode="Markdown")
 
     if text in ["/health", "🏥 בריאות מערכת"]:
-        return bot.send_message(chat_id, _build_health_report(), parse_mode="Markdown")
+        return bot.send_message(chat_id, _build_health_report())
 
     if text == "🧠 ניתוח מינרביני מלא":
         bot.send_message(chat_id, f"{RTL}🧠 *ניתוח Trend Template מלא (8 קריטריונים):*\nהקלד סימול מניה (לדוגמה: AAPL):", parse_mode="Markdown")
