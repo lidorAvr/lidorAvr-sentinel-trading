@@ -6,6 +6,7 @@ Tests for developer menu helpers:
 All deterministic; no network, no Telegram, no IBKR calls.
 """
 import sys, os, json, tempfile
+import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 # ── Mock all heavy dependencies before importing telegram_bot ──────────────────
@@ -208,3 +209,110 @@ class TestReadLastLogLines:
     def test_returns_string(self):
         result = tb._read_last_log_lines("/nonexistent", 10)
         assert isinstance(result, str)
+
+
+# ── _process_uploaded_ibkr_xml ────────────────────────────────────────────────
+
+_VALID_XML = (
+    "<FlexQueryResponse>"
+    "<ChangeInNAV endingValue='8500.50' />"
+    "<Trades><Trade id='1' /><Trade id='2' /></Trades>"
+    "</FlexQueryResponse>"
+)
+
+_NO_NAV_NO_TRADES_XML = "<FlexQueryResponse><SomeOtherSection /></FlexQueryResponse>"
+
+
+def _make_message(file_name="report.xml", xml_bytes=_VALID_XML.encode()):
+    msg = MagicMock()
+    msg.chat.id = 99
+    msg.document.file_name = file_name
+    msg.document.file_id = "fid123"
+    tb.bot.get_file.return_value = MagicMock(file_path="path/to/file")
+    tb.bot.download_file.return_value = xml_bytes
+    return msg
+
+
+class TestProcessUploadedIbkrXml:
+    def setup_method(self):
+        tb.bot.reset_mock()
+
+    def test_success_sends_success_message(self, tmp_path):
+        msg = _make_message()
+        with (patch.object(tb, "_REPORTS_DIR", str(tmp_path)),
+              patch.object(tb, "_CONFIG_PATH", str(tmp_path / "cfg.json")),
+              patch.object(tb, "MANUAL_RESULT_FILE", str(tmp_path / "result.json"))):
+            tb._process_uploaded_ibkr_xml(99, msg)
+        calls = [str(c) for c in tb.bot.send_message.call_args_list]
+        assert any("✅" in c or "הצלחה" in c for c in calls)
+
+    def test_success_creates_xml_file(self, tmp_path):
+        msg = _make_message()
+        with (patch.object(tb, "_REPORTS_DIR", str(tmp_path)),
+              patch.object(tb, "_CONFIG_PATH", str(tmp_path / "cfg.json")),
+              patch.object(tb, "MANUAL_RESULT_FILE", str(tmp_path / "result.json"))):
+            tb._process_uploaded_ibkr_xml(99, msg)
+        xml_files = list(tmp_path.glob("ibkr_*.xml"))
+        assert len(xml_files) == 1
+
+    def test_success_updates_nav_in_config(self, tmp_path):
+        cfg_path = tmp_path / "cfg.json"
+        cfg_path.write_text('{"total_deposited": 5000.0}')
+        msg = _make_message()
+        with (patch.object(tb, "_REPORTS_DIR", str(tmp_path)),
+              patch.object(tb, "_CONFIG_PATH", str(cfg_path)),
+              patch.object(tb, "MANUAL_RESULT_FILE", str(tmp_path / "result.json"))):
+            tb._process_uploaded_ibkr_xml(99, msg)
+        import json as _json
+        cfg = _json.load(open(cfg_path))
+        assert cfg["nav"] == pytest.approx(8500.50)
+        assert "nav_updated_at" in cfg
+
+    def test_success_writes_manual_result_file(self, tmp_path):
+        msg = _make_message()
+        result_path = tmp_path / "result.json"
+        with (patch.object(tb, "_REPORTS_DIR", str(tmp_path)),
+              patch.object(tb, "_CONFIG_PATH", str(tmp_path / "cfg.json")),
+              patch.object(tb, "MANUAL_RESULT_FILE", str(result_path))):
+            tb._process_uploaded_ibkr_xml(99, msg)
+        import json as _json
+        result = _json.load(open(result_path))
+        assert result["status"] == "success"
+        assert result["nav"] == pytest.approx(8500.50)
+        assert result.get("source") == "manual_upload"
+
+    def test_non_xml_file_rejected(self, tmp_path):
+        msg = _make_message(file_name="report.csv")
+        with patch.object(tb, "_REPORTS_DIR", str(tmp_path)):
+            tb._process_uploaded_ibkr_xml(99, msg)
+        calls = [str(c) for c in tb.bot.send_message.call_args_list]
+        assert any("XML" in c or "❌" in c for c in calls)
+        assert not list(tmp_path.glob("ibkr_*.xml"))
+
+    def test_no_nav_no_trades_rejected(self, tmp_path):
+        msg = _make_message(xml_bytes=_NO_NAV_NO_TRADES_XML.encode())
+        with (patch.object(tb, "_REPORTS_DIR", str(tmp_path)),
+              patch.object(tb, "_CONFIG_PATH", str(tmp_path / "cfg.json"))):
+            tb._process_uploaded_ibkr_xml(99, msg)
+        calls = [str(c) for c in tb.bot.send_message.call_args_list]
+        assert any("⚠️" in c or "תקין" in c for c in calls)
+
+    def test_invalid_xml_returns_error(self, tmp_path):
+        msg = _make_message(xml_bytes=b"<not valid xml <<>>")
+        with (patch.object(tb, "_REPORTS_DIR", str(tmp_path)),
+              patch.object(tb, "_CONFIG_PATH", str(tmp_path / "cfg.json"))):
+            tb._process_uploaded_ibkr_xml(99, msg)
+        calls = [str(c) for c in tb.bot.send_message.call_args_list]
+        assert any("❌" in c for c in calls)
+
+    def test_old_reports_cleaned_up(self, tmp_path):
+        for i in range(5):
+            (tmp_path / f"ibkr_2025-01-0{i+1}_00-00.xml").write_text("<old/>")
+        msg = _make_message()
+        with (patch.object(tb, "_REPORTS_DIR", str(tmp_path)),
+              patch.object(tb, "_CONFIG_PATH", str(tmp_path / "cfg.json")),
+              patch.object(tb, "MANUAL_RESULT_FILE", str(tmp_path / "result.json")),
+              patch.object(tb, "_REPORTS_TO_KEEP", 3)):
+            tb._process_uploaded_ibkr_xml(99, msg)
+        xml_files = list(tmp_path.glob("ibkr_*.xml"))
+        assert len(xml_files) <= 3
