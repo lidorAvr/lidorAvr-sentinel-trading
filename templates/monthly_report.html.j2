@@ -60,6 +60,24 @@
 <div class="page-break-before"></div>
 <h2>📊 ביצועים חודשיים — <span class="ltr">{{ period_label }}</span></h2>
 
+{# Equity curve + Win/Loss donut side by side #}
+{% if chart_equity_curve or chart_win_loss %}
+<table style="width:100%; border-collapse:collapse; margin-bottom:4mm;">
+  <tr>
+    {% if chart_equity_curve %}
+    <td style="width:{% if chart_win_loss %}62%{% else %}100%{% endif %}; padding-left:2mm; vertical-align:top;">
+      <div class="chart-wrap"><img src="{{ chart_equity_curve }}" alt="עקומת Equity" class="report-chart"></div>
+    </td>
+    {% endif %}
+    {% if chart_win_loss %}
+    <td style="width:{% if chart_equity_curve %}38%{% else %}100%{% endif %}; padding-right:2mm; vertical-align:top;">
+      <div class="chart-wrap"><img src="{{ chart_win_loss }}" alt="Win/Loss" class="report-chart" style="width:100%;"></div>
+    </td>
+    {% endif %}
+  </tr>
+</table>
+{% endif %}
+
 <table class="metrics-table no-break">
   <tr><th>מדד</th><th>החודש</th>{% if comparison %}<th>חודש קודם</th><th>שינוי MoM</th>{% endif %}</tr>
   {% set rows = [
@@ -102,6 +120,13 @@
 {# ══ PAGE 3: Setup League Table ══════════════════════════════════════════=== #}
 <div class="page-break-before"></div>
 <h2>🏆 דירוג אסטרטגיות</h2>
+
+{% if chart_setup_perf %}
+<div class="chart-wrap">
+  <img src="{{ chart_setup_perf }}" alt="ביצועי Setups" class="report-chart">
+</div>
+{% endif %}
+
 {% if setup_breakdown %}
 <table class="league-table no-break">
   <tr><th>Setup</th><th>קמפיינים</th><th>Net R</th><th>Win%</th><th>Avg R</th><th>Profit Factor</th></tr>

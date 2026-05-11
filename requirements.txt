@@ -10,3 +10,4 @@ openai>=1.14.0
 tzdata
 jinja2
 weasyprint
+kaleido

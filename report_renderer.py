@@ -1,6 +1,7 @@
 """
 report_renderer.py — build HTML from Jinja2 templates and convert to PDF via WeasyPrint.
 Falls back to HTML-only if WeasyPrint is not installed (useful in dev).
+Charts are generated via chart_generator (Plotly+Kaleido); skipped gracefully if unavailable.
 """
 import os
 from datetime import datetime
@@ -43,16 +44,19 @@ def render_weekly(
     from analytics_engine import compute_verdict
     verdict, verdict_class = compute_verdict(analytics)
 
+    output_dir = os.path.join(_REPORTS_DIR, "weekly")
+    charts     = _generate_weekly_charts(analytics, _period_label(period_start, period_end), output_dir)
+
     ctx = _base_ctx(analytics, account_state, period_start, period_end,
                     verdict, verdict_class, dev_score_data, system_health,
                     risk_adherence_rate)
     ctx.update({
-        "comparison":       comparison or {},
+        "comparison":        comparison or {},
         "coaching_insights": coaching_insights or [],
+        **charts,
     })
 
-    output_dir = os.path.join(_REPORTS_DIR, "weekly")
-    filename   = f"sentinel_weekly_{period_start.strftime('%Y-%m-%d')}.pdf"
+    filename = f"sentinel_weekly_{period_start.strftime('%Y-%m-%d')}.pdf"
     return _render("weekly_report.html.j2", ctx, output_dir, filename)
 
 
@@ -74,17 +78,21 @@ def render_monthly(
     from analytics_engine import compute_verdict
     verdict, verdict_class = compute_verdict(analytics)
 
+    output_dir = os.path.join(_REPORTS_DIR, "monthly")
+    wb         = weekly_breakdown or []
+    charts     = _generate_monthly_charts(analytics, wb, _period_label(period_start, period_end), output_dir)
+
     ctx = _base_ctx(analytics, account_state, period_start, period_end,
                     verdict, verdict_class, dev_score_data, system_health,
                     risk_adherence_rate)
     ctx.update({
-        "comparison":       comparison or {},
+        "comparison":        comparison or {},
         "coaching_insights": coaching_insights or [],
-        "weekly_breakdown": weekly_breakdown or [],
+        "weekly_breakdown":  wb,
+        **charts,
     })
 
-    output_dir = os.path.join(_REPORTS_DIR, "monthly")
-    filename   = f"sentinel_monthly_{period_start.strftime('%Y-%m')}.pdf"
+    filename = f"sentinel_monthly_{period_start.strftime('%Y-%m')}.pdf"
     return _render("monthly_report.html.j2", ctx, output_dir, filename)
 
 
@@ -94,25 +102,67 @@ def build_summary_text(analytics: dict, period_label: str, period_type: str = "w
     """
     from analytics_engine import compute_verdict
     verdict, _ = compute_verdict(analytics)
-    pf  = analytics.get("profit_factor", 0)
+    pf     = analytics.get("profit_factor", 0)
     pf_str = f"{pf:.2f}" if pf < 90 else "∞"
     type_heb = "שבועי" if period_type == "weekly" else "חודשי"
     lines = [
         f"🛡️ *Sentinel — דוח {type_heb}*",
         f"📅 תקופה: `{period_label}`",
         f"",
-        f"{'✅' if analytics.get('total_r_net',0) > 0 else '🔴'} *{verdict}*",
+        f"{'✅' if analytics.get('total_r_net', 0) > 0 else '🔴'} *{verdict}*",
         f"",
-        f"📊 קמפיינים: `{analytics.get('campaigns_closed',0)}`  |  "
-        f"Win%: `{analytics.get('win_rate',0)*100:.1f}%`",
-        f"💰 Realized PnL: `${analytics.get('realized_pnl',0):+,.0f}`  |  "
-        f"Net R: `{analytics.get('total_r_net',0):+.2f}R`",
-        f"🎯 Expectancy: `{analytics.get('expectancy_r',0):+.2f}R`  |  "
+        f"📊 קמפיינים: `{analytics.get('campaigns_closed', 0)}`  |  "
+        f"Win%: `{analytics.get('win_rate', 0)*100:.1f}%`",
+        f"💰 Realized PnL: `${analytics.get('realized_pnl', 0):+,.0f}`  |  "
+        f"Net R: `{analytics.get('total_r_net', 0):+.2f}R`",
+        f"🎯 Expectancy: `{analytics.get('expectancy_r', 0):+.2f}R`  |  "
         f"PF: `{pf_str}`",
-        f"⚙️ Missing Stop: `{analytics.get('missing_stop_rate',0)*100:.1f}%`  |  "
-        f"Oversized: `{analytics.get('oversized_rate',0)*100:.1f}%`",
+        f"⚙️ Missing Stop: `{analytics.get('missing_stop_rate', 0)*100:.1f}%`  |  "
+        f"Oversized: `{analytics.get('oversized_rate', 0)*100:.1f}%`",
     ]
     return "\n".join(lines)
+
+
+# ── Chart generation helpers ───────────────────────────────────────────────────
+
+def _generate_weekly_charts(analytics: dict, period_label: str, output_dir: str) -> dict:
+    """Generate weekly PNG charts. Returns dict of template context keys → paths (or None)."""
+    try:
+        import chart_generator as cg
+        charts_dir = os.path.join(output_dir, "charts")
+        return {
+            "chart_campaign_r":    cg.campaign_r_bars(analytics, period_label, charts_dir),
+            "chart_setup_perf":    cg.setup_performance_bars(analytics, period_label, charts_dir),
+            "chart_equity_curve":  None,
+            "chart_win_loss":      None,
+        }
+    except Exception:
+        return _no_charts()
+
+
+def _generate_monthly_charts(analytics: dict, weekly_breakdown: list,
+                              period_label: str, output_dir: str) -> dict:
+    """Generate monthly PNG charts."""
+    try:
+        import chart_generator as cg
+        charts_dir = os.path.join(output_dir, "charts")
+        return {
+            "chart_campaign_r":   None,
+            "chart_setup_perf":   cg.setup_performance_bars(analytics, period_label, charts_dir),
+            "chart_equity_curve": cg.weekly_equity_curve(weekly_breakdown, period_label, charts_dir),
+            "chart_win_loss":     cg.win_loss_donut(analytics, period_label, charts_dir),
+        }
+    except Exception:
+        return _no_charts()
+
+
+def _no_charts() -> dict:
+    return {
+        "chart_campaign_r":   None,
+        "chart_setup_perf":   None,
+        "chart_equity_curve": None,
+        "chart_win_loss":     None,
+    }
 
 
 # ── Internals ──────────────────────────────────────────────────────────────────
@@ -190,7 +240,6 @@ def _render(template_name: str, ctx: dict, output_dir: str, filename: str) -> st
         WeasyHTML(string=html_str, base_url=_TEMPLATES_DIR).write_pdf(pdf_path)
         return pdf_path
     else:
-        # Fallback: return HTML path when WeasyPrint not available
         return html_path
 
 

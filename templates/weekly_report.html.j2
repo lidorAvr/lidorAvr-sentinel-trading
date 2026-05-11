@@ -63,6 +63,12 @@
 <div class="page-break-before"></div>
 <h2>📊 ניתוח ביצועים — <span class="ltr">{{ period_label }}</span></h2>
 
+{% if chart_campaign_r %}
+<div class="chart-wrap">
+  <img src="{{ chart_campaign_r }}" alt="Net R לפי קמפיין" class="report-chart">
+</div>
+{% endif %}
+
 <table class="metrics-table no-break">
   <tr><th>מדד</th><th>ערך</th>{% if comparison %}<th>שינוי מהשבוע הקודם</th>{% endif %}</tr>
   <tr>
@@ -124,6 +130,12 @@
 <div class="page-break-before"></div>
 <h2>⚙️ איכות ביצוע</h2>
 
+{% if chart_setup_perf %}
+<div class="chart-wrap">
+  <img src="{{ chart_setup_perf }}" alt="ביצועי Setups" class="report-chart">
+</div>
+{% endif %}
+
 <table class="metrics-table no-break">
   <tr><th>מדד</th><th>ערך</th><th>סטטוס</th></tr>
   <tr>
@@ -164,7 +176,7 @@
 </p>
 {% endif %}
 
-{# Setup breakdown #}
+{# Setup breakdown table #}
 {% if setup_breakdown %}
 <h3>📋 פירוט לפי אסטרטגיה</h3>
 <table class="league-table no-break">
