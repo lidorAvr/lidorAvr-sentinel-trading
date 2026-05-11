@@ -54,17 +54,20 @@ def parse_flex_error(xml_text: str):
         return {"code": -1, "class": "temporary", "description": str(e)}
 
 
+_DEFAULT_FETCH_URL = (
+    "https://gdcdyn.interactivebrokers.com/Universal/servlet/"
+    "FlexStatementService.GetStatement"
+)
+
+
 def get_statement_with_retry(ref_code: str, token: str, max_retries: int = 3,
-                              wait_sec: int = 60, log_fn=print):
+                              wait_sec: int = 60, log_fn=print,
+                              fetch_url: str = _DEFAULT_FETCH_URL):
     """
     Fetch statement using ref_code, retrying on temporary errors.
     Returns (xml_text, None) on success, or (None, error_dict) on failure.
     Only one SendRequest is issued per sync — this reuses the same ref_code.
     """
-    fetch_url = (
-        "https://www.interactivebrokers.com/Universal/servlet/"
-        "FlexStatementService.GetStatement"
-    )
     last_error = None
     for attempt in range(1, max_retries + 1):
         try:
@@ -135,10 +138,14 @@ def run_ibkr_sync(log_fn=print) -> dict:
             }
 
         ref_code = code_elem.text
-        log_fn(f"SendRequest OK — ref: {ref_code}. Waiting 15s…")
+        url_elem = root.find(".//Url")
+        fetch_url = (url_elem.text.strip() if url_elem is not None and url_elem.text
+                     else _DEFAULT_FETCH_URL)
+        log_fn(f"SendRequest OK — ref: {ref_code}. URL: {fetch_url}. Waiting 15s…")
         time.sleep(15)
 
-        xml_text, error = get_statement_with_retry(ref_code, token, log_fn=log_fn)
+        xml_text, error = get_statement_with_retry(ref_code, token, log_fn=log_fn,
+                                                   fetch_url=fetch_url)
         if error:
             log_fn(
                 f"GetStatement failed after retries: "

@@ -28,8 +28,12 @@ import ibkr_sync_runner as m
 def _error_xml(code):
     return f"<FlexStatementResponse><ErrorCode>{code}</ErrorCode></FlexStatementResponse>"
 
+_IBKR_FETCH_URL = "https://gdcdyn.interactivebrokers.com/Universal/servlet/FlexStatementService.GetStatement"
+
 def _success_xml(ref="REF123456"):
-    return f"<FlexStatementResponse><Status>Success</Status><ReferenceCode>{ref}</ReferenceCode></FlexStatementResponse>"
+    return (f"<FlexStatementResponse><Status>Success</Status>"
+            f"<ReferenceCode>{ref}</ReferenceCode>"
+            f"<Url>{_IBKR_FETCH_URL}</Url></FlexStatementResponse>")
 
 def _success_xml_legacy(ref="REF123456"):
     """Old lowercase <code> format — kept for backward-compat coverage."""
