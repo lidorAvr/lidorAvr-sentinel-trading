@@ -224,6 +224,7 @@ def handle_portfolio_room(chat_id):
         total_locked_profit = total_giveback_risk = 0
         algo_count = 0
         active_symbols = []
+        open_r_vals = []  # running R for each open position → fed into adaptive risk
 
         msg = f"{RTL}🔭 *חדר מצב - דו\"ח ריכוז פוזיציות:*\n\n"
 
@@ -264,6 +265,7 @@ def handle_portfolio_room(chat_id):
 
             total_campaign_r = (total_pos_profit / target_risk_usd) if str(setup).upper() == 'ALGO' and target_risk_usd > 0 else ((total_pos_profit / original_campaign_risk) if original_campaign_risk > 0 else 0)
             open_r_val = (open_pnl_usd / target_risk_usd) if str(setup).upper() == 'ALGO' and target_risk_usd > 0 else ((open_pnl_usd / original_campaign_risk) if original_campaign_risk > 0 else 0)
+            open_r_vals.append(open_r_val)
 
             engine_res = ec.evaluate_position_engine(
                 symbol=sym, entry_price=entry, entry_date_str=entry_date,
@@ -370,14 +372,28 @@ def handle_portfolio_room(chat_id):
         spy_hist_caching = ec.get_cached_history("SPY", "1y", "1d")
         regime_for_coaching = ec.compute_market_regime(spy_hist_caching)
         regime_status_str = regime_for_coaching.get('data', {}).get('status', '') if regime_for_coaching.get('ok') else ''
+        # Compute win rate from closed discretionary campaigns only (matches dashboard logic).
+        # Using get_all_trades df (already loaded) avoids counting open campaigns as losses.
         try:
-            camp_all = pd.DataFrame(repo.get_campaigns_pnl(supabase))
-            if not camp_all.empty and 'campaign_id' in camp_all.columns:
-                closed_cids = camp_all.groupby('campaign_id')['pnl_usd'].sum()
-                wins_c = (closed_cids > 0).sum()
-                wr_c = wins_c / len(closed_cids) if len(closed_cids) > 0 else 0
-            else:
-                wr_c = 0
+            wr_c = 0
+            if not df.empty and "campaign_id" in df.columns:
+                closed_wins = 0
+                closed_total = 0
+                for cid, grp in df.groupby("campaign_id"):
+                    if pd.isna(cid):
+                        continue
+                    setup_t = str(grp["setup_type"].iloc[0] if "setup_type" in grp.columns else "").upper()
+                    if setup_t == "ALGO":
+                        continue
+                    buys_q = grp[grp["quantity"] > 0]["quantity"].sum()
+                    sells_q = grp[grp["quantity"] < 0]["quantity"].abs().sum()
+                    if buys_q <= 0 or (buys_q - sells_q) / buys_q > 0.01:
+                        continue  # not fully closed
+                    total_pnl_c = grp[grp["quantity"] < 0]["pnl_usd"].sum()
+                    closed_total += 1
+                    if total_pnl_c > 0:
+                        closed_wins += 1
+                wr_c = closed_wins / closed_total if closed_total > 0 else 0
         except Exception:
             wr_c = 0
         coaching_insights = ec.generate_minervini_coaching(
@@ -394,7 +410,10 @@ def handle_portfolio_room(chat_id):
         try:
             current_risk_pct = float(account_settings.get("risk_pct_input", 0.5))
             closed_camps = are.compute_closed_campaigns(df)
-            risk_rec = are.compute_adaptive_risk(closed_camps, current_risk_pct, acc_size)
+            risk_rec = are.compute_adaptive_risk(
+                closed_camps, current_risk_pct, acc_size,
+                open_r_list=open_r_vals or None,
+            )
             msg += tf.fmt_adaptive_risk_block(risk_rec)
         except Exception:
             pass

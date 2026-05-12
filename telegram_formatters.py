@@ -167,8 +167,17 @@ def fmt_adaptive_risk_block(risk_rec: dict) -> str:
         lines.append(f"{RTL}  ▸ רצף רווחים: `{risk_rec['win_streak']}` עסקאות")
     elif risk_rec['loss_streak'] > 0:
         lines.append(f"{RTL}  ▸ ⚠️ רצף הפסדים: `{risk_rec['loss_streak']}` עסקאות")
-    lines.append(f"{RTL}  ▸ שיעור הצלחה (10 אחרונות): `{risk_rec['recent_10_wr']:.0f}%`")
-    lines.append(f"{RTL}  ▸ שיעור הצלחה (50 אחרונות): `{risk_rec['all_50_wr']:.0f}%`")
+    n10 = risk_rec.get('n_used_10', min(10, risk_rec.get('n_trades', 10)))
+    n50 = risk_rec.get('n_used_50', min(50, risk_rec.get('n_trades', 50)))
+    if n10 == n50:
+        lines.append(f"{RTL}  ▸ שיעור הצלחה ({n10} קמפיינים סגורים): `{risk_rec['recent_10_wr']:.0f}%`")
+    else:
+        lines.append(f"{RTL}  ▸ שיעור הצלחה ({n10} אחרונות): `{risk_rec['recent_10_wr']:.0f}%`")
+        lines.append(f"{RTL}  ▸ שיעור הצלחה ({n50} אחרונות): `{risk_rec['all_50_wr']:.0f}%`")
+    if risk_rec.get('payoff_ratio', 1.0) >= 1.2:
+        lines.append(f"{RTL}  ▸ 📈 ביצועי ניצחונות אחרונים: `{risk_rec['payoff_ratio']:.1f}x` מממוצע היסטורי")
+    if risk_rec.get('open_r_bonus', 0) > 0:
+        lines.append(f"{RTL}  ▸ 🟢 בונוס פוזיציות פתוחות: `+{risk_rec['open_r_bonus']:.0f}` נקודות חום")
     curr_pct = risk_rec['current_risk_pct']
     rec_pct = risk_rec['recommended_risk_pct']
     curr_usd = risk_rec['current_risk_usd']

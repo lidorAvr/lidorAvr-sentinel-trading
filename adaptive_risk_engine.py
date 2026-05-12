@@ -108,6 +108,7 @@ def compute_closed_campaigns(trades_df: pd.DataFrame) -> list[dict]:
         closed.append({
             "campaign_id": cid,
             "symbol": str(group.iloc[0].get("symbol", "")),
+            "setup_type": str(group.iloc[0].get("setup_type", "") or ""),
             "total_pnl_usd": round(float(total_pnl), 2),
             "close_date": close_date,
             "is_win": float(total_pnl) > 0,
@@ -121,6 +122,7 @@ def compute_adaptive_risk(
     closed_campaigns: list[dict],
     current_risk_pct: float,
     nav: float,
+    open_r_list: list[float] | None = None,
 ) -> dict:
     """
     מחשב המלצת סיכון אדפטיבית.
@@ -128,6 +130,7 @@ def compute_adaptive_risk(
     closed_campaigns: פלט של compute_closed_campaigns (ממוין חדש→ישן)
     current_risk_pct: אחוז סיכון נוכחי מ-sentinel_config.json (למשל 0.5)
     nav: NAV נוכחי בדולרים
+    open_r_list: רשימת R צף לכל פוזיציה פתוחה (חיובי = רווח, שלילי = הפסד)
     """
     if len(closed_campaigns) < 3:
         return {
@@ -139,22 +142,40 @@ def compute_adaptive_risk(
     recent_50 = closed_campaigns[:50]
     recent_10 = closed_campaigns[:10]
 
-    # Weighted Win Rate: last 10 weight=2, rest weight=1
-    weighted_wins = 0
-    weighted_total = 0
+    # Separate ALGO from discretionary — ALGO managed externally, carry less weight
+    disc_camps = [c for c in closed_campaigns if c.get("setup_type", "").upper() != "ALGO"]
+    if disc_camps:
+        actual_recent_10 = disc_camps[:10]
+        actual_recent_50 = disc_camps[:50]
+    else:
+        actual_recent_10 = recent_10
+        actual_recent_50 = recent_50
+
+    # Weighted Win Rate: last 10 weight=2, rest weight=1; ALGO at 0.25x (observer only)
+    weighted_wins = 0.0
+    weighted_total = 0.0
     for i, c in enumerate(recent_50):
-        w = 2 if i < 10 else 1
+        is_algo = c.get("setup_type", "").upper() == "ALGO"
+        base_w = 2.0 if i < 10 else 1.0
+        w = base_w * (0.25 if is_algo else 1.0)
         weighted_wins += w * (1 if c.get("is_win") else 0)
         weighted_total += w
 
     weighted_wr = weighted_wins / weighted_total if weighted_total > 0 else 0.0
-    recent_10_wr = (sum(1 for c in recent_10 if c.get("is_win")) / len(recent_10)) if recent_10 else 0.0
-    all_50_wr = (sum(1 for c in recent_50 if c.get("is_win")) / len(recent_50)) if recent_50 else 0.0
 
-    # Streak Detection (newest first)
+    # Win rates shown to user — from discretionary only (no ALGO noise)
+    recent_10_wr = (
+        sum(1 for c in actual_recent_10 if c.get("is_win")) / len(actual_recent_10)
+    ) if actual_recent_10 else 0.0
+    all_50_wr = (
+        sum(1 for c in actual_recent_50 if c.get("is_win")) / len(actual_recent_50)
+    ) if actual_recent_50 else 0.0
+
+    # Streak Detection: discretionary only — ALGO losses should not penalise the trader
+    streak_source = disc_camps[:50] if disc_camps else recent_50
     win_streak = 0
     loss_streak = 0
-    for c in recent_50:
+    for c in streak_source:
         if c.get("is_win"):
             if loss_streak > 0:
                 break
@@ -165,6 +186,35 @@ def compute_adaptive_risk(
             loss_streak += 1
 
     heat_score = weighted_wr * 100  # 0–100
+
+    # Payoff quality factor: are recent wins bigger than historical wins?
+    wins_10 = [c["total_pnl_usd"] for c in actual_recent_10 if c.get("is_win") and c.get("total_pnl_usd", 0) > 0]
+    wins_50 = [c["total_pnl_usd"] for c in actual_recent_50 if c.get("is_win") and c.get("total_pnl_usd", 0) > 0]
+    avg_win_10 = sum(wins_10) / len(wins_10) if wins_10 else 0.0
+    avg_win_50 = sum(wins_50) / len(wins_50) if wins_50 else 0.0
+    payoff_ratio = avg_win_10 / avg_win_50 if avg_win_50 > 0 and avg_win_10 > 0 else 1.0
+
+    payoff_delta = 0.0
+    if len(wins_10) >= 2:
+        if payoff_ratio >= 1.5:
+            payoff_delta = 10.0   # Recent wins 50%+ above historical → hot streak
+        elif payoff_ratio >= 1.2:
+            payoff_delta = 5.0
+        elif payoff_ratio < 0.6:
+            payoff_delta = -10.0  # Recent wins shrinking → cooling off
+
+    # Open position bonus: running winners are strong evidence of a hot period
+    open_r_bonus = 0.0
+    if open_r_list:
+        running_r = sum(r for r in open_r_list if r > 0)
+        if running_r >= 5.0:
+            open_r_bonus = 10.0
+        elif running_r >= 2.0:
+            open_r_bonus = 5.0
+        elif running_r >= 1.0:
+            open_r_bonus = 2.0
+
+    heat_score = min(100.0, max(0.0, heat_score + payoff_delta + open_r_bonus))
 
     if heat_score >= 60 and loss_streak < 3:
         heat_label, heat_color, direction = "חזק", "🔥", "up"
@@ -192,6 +242,8 @@ def compute_adaptive_risk(
         "ok": True,
         "error": None,
         "n_trades": len(recent_50),
+        "n_used_10": len(actual_recent_10),
+        "n_used_50": len(actual_recent_50),
         "heat_score": round(heat_score, 1),
         "heat_label": heat_label,
         "heat_color": heat_color,
@@ -199,6 +251,8 @@ def compute_adaptive_risk(
         "loss_streak": loss_streak,
         "recent_10_wr": round(recent_10_wr * 100, 1),
         "all_50_wr": round(all_50_wr * 100, 1),
+        "payoff_ratio": round(payoff_ratio, 2),
+        "open_r_bonus": round(open_r_bonus, 1),
         "current_risk_pct": current_risk_pct,
         "current_risk_usd": curr_usd,
         "recommended_risk_pct": rec_pct,

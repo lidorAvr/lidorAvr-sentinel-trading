@@ -751,6 +751,13 @@ else:
                 incomplete_count = len(camp_df[camp_df['stat_bucket'] == ec.STAT_BUCKET_DATA_INCOMPLETE])
                 if incomplete_count > 0:
                     st.caption(f"⚠️ {incomplete_count} קמפיינים ב-DATA_INCOMPLETE — לא נספרים")
+            st.caption(
+                "ℹ️ **Discretionary** = עסקאות ידניות עם סטופ התחלתי ידוע. "
+                "**Combined** = כל הקמפיינים הניתנים לספירה (ידני + סטופ ידוע, ללא ALGO). "
+                "אם Combined = Discretionary, כל עסקאותיך הידניות כבר כוללות סטופ — זה טוב! "
+                "**DATA_INCOMPLETE** = חסר סטופ → מוחרג מ-Win Rate/Expectancy. "
+                "**ALGO** = מנוהל חיצונית, נמדד בנפרד."
+            )
 
             # ── ALGO Risk Oversight Score per position ────────────────────────
             if not algo_df.empty:
@@ -1005,19 +1012,48 @@ else:
                     st.success(f"✅ סה״כ R מצטבר חיובי: +{total_r_net:.1f}R")
         with c_weakness:
             st.markdown("**⚡ חולשות — לשים לב**")
-            if win_rate < 0.40:
+            found_weakness = False
+
+            if win_rate < 0.40 and combined_stats["count"] >= 3:
                 st.error(f"🔴 שיעור הצלחה נמוך: {win_rate*100:.1f}% — מינרביני: 'למד מכל כישלון'")
+                found_weakness = True
+            elif 0.40 <= win_rate < 0.50 and combined_stats["count"] >= 5:
+                st.warning(f"⚠️ שיעור הצלחה מתחת ל-50%: {win_rate*100:.1f}% — שאף ל-50%+ לפי מינרביני")
+                found_weakness = True
+
             if expectancy_r < 0:
                 st.error(f"🔴 Expectancy שלילית: {expectancy_r:.2f}R — 'אל תוסיף עד שזה חיובי'")
+                found_weakness = True
+            elif 0 <= expectancy_r < 0.3 and combined_stats["count"] >= 5:
+                st.warning(f"⚠️ Expectancy נמוכה: {expectancy_r:.2f}R — כוון ל-0.3R+ לטרייד")
+                found_weakness = True
+
+            if adj_rr < 1.5 and adj_rr > 0 and combined_stats["count"] >= 5:
+                st.warning(f"⚠️ Payoff Ratio נמוך: {adj_rr:.2f}:1 — מינרביני: 'כוון ל-2:1, תן לרווחים לרוץ'")
+                found_weakness = True
+
             if not live_df.empty:
                 oversized = live_df[live_df['SizingGrade'] == 'oversized']
                 if not oversized.empty:
                     st.warning(f"⚠️ {len(oversized)} פוזיציות בסיכון מעל 2.5%: {', '.join(oversized['Symbol'].tolist())}")
+                    found_weakness = True
                 high_mae = live_df[live_df['MAE_R'].notna() & (live_df['MAE_R'] < -1.5)]
                 if not high_mae.empty:
                     st.warning(f"⚠️ MAE גבוה: {', '.join(high_mae['Symbol'].tolist())} — 'בדוק תקפות הסטופ'")
+                    found_weakness = True
+
+            if not camp_df.empty:
+                incomplete_count = len(camp_df[camp_df['stat_bucket'] == ec.STAT_BUCKET_DATA_INCOMPLETE])
+                if incomplete_count > 0:
+                    st.warning(f"⚠️ {incomplete_count} קמפיינים ב-DATA_INCOMPLETE — הזן סטופ התחלתי לספירה בסטטיסטיקה")
+                    found_weakness = True
+
             if regime.get('ok') and regime.get('data', {}).get('status', '').lower() in ['downtrend', 'ירידה']:
                 st.error("🔴 שוק בירידה — מינרביני: 'עמוד על הגנה, 0-25% חשיפה'")
+                found_weakness = True
+
+            if not found_weakness:
+                st.success("✅ אין חולשות מזוהות — המשך לפי הכללים")
 
         # ─── תובנות המנטור ───────────────────────────────────────────────
         st.markdown("---")

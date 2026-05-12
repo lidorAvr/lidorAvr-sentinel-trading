@@ -103,7 +103,8 @@ class TestComputeAdaptiveRiskDirections:
         result = are.compute_adaptive_risk(_campaigns(6, 4), 0.5, 10000)
         for key in ("ok", "heat_score", "direction", "recommended_risk_pct",
                     "recommended_risk_usd", "current_risk_pct", "n_trades",
-                    "win_streak", "loss_streak", "recent_10_wr", "all_50_wr"):
+                    "win_streak", "loss_streak", "recent_10_wr", "all_50_wr",
+                    "n_used_10", "n_used_50", "payoff_ratio", "open_r_bonus"):
             assert key in result, f"Missing key: {key}"
 
     def test_not_enough_trades(self):
@@ -403,3 +404,115 @@ class TestComputeClosedCampaigns:
     def test_sorted_newest_first(self):
         result = are.compute_closed_campaigns(self._df())
         assert result[0]["close_date"] >= result[1]["close_date"]
+
+    def test_setup_type_included_in_result(self):
+        df = pd.DataFrame([
+            {"campaign_id": "a1", "symbol": "AAPL", "side": "BUY", "setup_type": "VCP",
+             "quantity": 10, "price": 150, "pnl_usd": 0, "trade_date": "2025-01-05"},
+            {"campaign_id": "a1", "symbol": "AAPL", "side": "SELL", "setup_type": "VCP",
+             "quantity": -10, "price": 160, "pnl_usd": 100, "trade_date": "2025-01-10"},
+        ])
+        result = are.compute_closed_campaigns(df)
+        assert len(result) == 1
+        assert result[0]["setup_type"] == "VCP"
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# ALGO EXCLUSION FROM STREAK
+# ════════════════════════════════════════════════════════════════════════════════
+
+def _algo_loss(n=1, start_day=10):
+    base = datetime(2025, 1, 1) + timedelta(days=start_day - 1)
+    return [{"campaign_id": f"al{i}", "is_win": False, "setup_type": "ALGO",
+             "close_date": base - timedelta(days=i), "total_pnl_usd": -50.0}
+            for i in range(n)]
+
+
+class TestAlgoExclusion:
+    def test_algo_losses_do_not_trigger_streak(self):
+        # 3 ALGO losses (newest first) then 3 disc wins — should NOT hit loss_streak >= 3
+        campaigns = _algo_loss(3, start_day=10) + _win(3, start_day=7)
+        result = are.compute_adaptive_risk(campaigns, 1.0, 10000)
+        assert result["loss_streak"] == 0
+        assert result["win_streak"] == 3
+
+    def test_disc_losses_still_trigger_streak(self):
+        # 3 disc losses newest-first → direction = down_fast
+        campaigns = _loss(3, start_day=10) + _win(3, start_day=7)
+        result = are.compute_adaptive_risk(campaigns, 1.0, 10000)
+        assert result["loss_streak"] == 3
+        assert result["direction"] == "down_fast"
+
+    def test_algo_campaigns_downweighted_in_heat(self):
+        # 8 ALGO wins + 2 disc losses → heat should not be as high as 8 pure disc wins
+        algo_wins = [{"campaign_id": f"aw{i}", "is_win": True, "setup_type": "ALGO",
+                      "close_date": datetime(2025, 1, 10) - timedelta(days=i),
+                      "total_pnl_usd": 100.0} for i in range(8)]
+        disc_losses = _loss(2, start_day=2)
+        campaigns = algo_wins + disc_losses
+        result_mixed = are.compute_adaptive_risk(campaigns, 0.5, 10000)
+
+        pure_disc = _win(8) + _loss(2)
+        result_pure = are.compute_adaptive_risk(pure_disc, 0.5, 10000)
+        # ALGO at 0.25x weight → mixed heat should be lower than pure disc 80% win rate
+        assert result_mixed["heat_score"] < result_pure["heat_score"]
+
+    def test_n_used_reflects_disc_only(self):
+        # 5 disc + 3 ALGO → n_used_10 should be 5, not 8
+        disc = _win(3) + _loss(2)
+        algo = _algo_loss(3, start_day=3)
+        campaigns = disc + algo
+        result = are.compute_adaptive_risk(campaigns, 0.5, 10000)
+        assert result["n_used_10"] == 5
+        assert result["n_used_50"] == 5
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# OPEN POSITION R BONUS
+# ════════════════════════════════════════════════════════════════════════════════
+
+class TestOpenRBonus:
+    def test_no_open_positions_no_bonus(self):
+        result = are.compute_adaptive_risk(_campaigns(5, 5), 0.5, 10000, open_r_list=None)
+        assert result["open_r_bonus"] == 0.0
+
+    def test_large_open_r_adds_bonus(self):
+        result = are.compute_adaptive_risk(_campaigns(5, 5), 0.5, 10000, open_r_list=[3.0, 2.5])
+        assert result["open_r_bonus"] == 10.0  # sum=5.5 >= 5
+
+    def test_moderate_open_r_adds_smaller_bonus(self):
+        result = are.compute_adaptive_risk(_campaigns(5, 5), 0.5, 10000, open_r_list=[1.5, 0.8])
+        assert result["open_r_bonus"] == 5.0  # sum=2.3 >= 2
+
+    def test_negative_open_r_not_added(self):
+        result = are.compute_adaptive_risk(_campaigns(5, 5), 0.5, 10000, open_r_list=[-2.0, -1.0])
+        assert result["open_r_bonus"] == 0.0  # only positive R counted
+
+    def test_open_r_bonus_can_lift_direction(self):
+        # Heat score near 55 (borderline) + large open R bonus lifts to >= 60
+        # 6W + 4L in 10 → weighted_wr=0.6 → heat=60 (already at threshold)
+        # Let's use 5W+5L=50 + big open bonus to push it up
+        neutral = _campaigns(5, 5)
+        result_no_bonus = are.compute_adaptive_risk(neutral, 0.5, 10000, open_r_list=None)
+        result_with_bonus = are.compute_adaptive_risk(neutral, 0.5, 10000, open_r_list=[4.0, 2.0])
+        assert result_with_bonus["heat_score"] > result_no_bonus["heat_score"]
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# N_USED LABELS — fewer than 10/50 closed campaigns
+# ════════════════════════════════════════════════════════════════════════════════
+
+class TestNUsedLabels:
+    def test_n_used_10_equals_actual_count_when_fewer_than_10(self):
+        # Only 5 disc campaigns → n_used_10 == 5
+        campaigns = _win(3) + _loss(2)  # 5 campaigns
+        result = are.compute_adaptive_risk(campaigns, 0.5, 10000)
+        assert result["n_used_10"] == 5
+        assert result["n_used_50"] == 5
+
+    def test_n_used_10_and_50_differ_when_more_than_10(self):
+        # 15 campaigns → n_used_10=10, n_used_50=15
+        campaigns = _win(10) + _loss(5)
+        result = are.compute_adaptive_risk(campaigns, 0.5, 10000)
+        assert result["n_used_10"] == 10
+        assert result["n_used_50"] == 15
