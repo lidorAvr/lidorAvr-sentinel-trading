@@ -9,6 +9,9 @@ import engine_core as ec
 import telegram_formatters as tf
 import adaptive_risk_engine as are
 import supabase_repository as repo
+from telegram_menus import (get_main_menu, get_developer_menu, get_portfolio_menu,
+                             get_analysis_menu, get_journal_menu,
+                             get_rating_keyboard, get_setup_keyboard)
 from ibkr_sync_runner import (run_ibkr_sync, MANUAL_RESULT_FILE,
                                _REPORTS_DIR, _REPORTS_TO_KEEP, _CONFIG_PATH)
 
@@ -415,59 +418,6 @@ def _build_health_report():
     lines += [f"{RTL}{c}" for c in checks]
     return "\n".join(lines)
 
-
-def get_main_menu():
-    """תפריט ראשי — 5 קטגוריות."""
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(types.KeyboardButton("📊 מצב תיק"), types.KeyboardButton("🔬 ניתוח"))
-    markup.add(types.KeyboardButton("📚 יומן"), types.KeyboardButton("❓ עזרה"))
-    markup.add(types.KeyboardButton("🛠️ מפתח"))
-    return markup
-
-
-def get_developer_menu():
-    """תפריט מפתח — כלי פיתוח ודיבאג."""
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(types.KeyboardButton("📡 IBKR Sync ידני"), types.KeyboardButton("📤 העלה דוח XML"))
-    markup.add(types.KeyboardButton("🔄 Git Pull + Deploy"), types.KeyboardButton("⚙️ הצג Config"))
-    markup.add(types.KeyboardButton("📊 תוצאת Sync אחרון"), types.KeyboardButton("🏥 בריאות מערכת"))
-    markup.add(types.KeyboardButton("📋 לוגים"), types.KeyboardButton("⬅️ חזרה לתפריט ראשי"))
-    return markup
-
-def get_portfolio_menu():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
-    markup.add(types.KeyboardButton("📊 חדר מצב (פוזיציות)"))
-    markup.add(types.KeyboardButton("🌡️ משטר שוק וסיכונים"))
-    markup.add(types.KeyboardButton("⬅️ חזרה לתפריט ראשי"))
-    return markup
-
-def get_analysis_menu():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
-    markup.add(types.KeyboardButton("🔬 סקירת מניה"))
-    markup.add(types.KeyboardButton("🧠 ניתוח מינרביני מלא"))
-    markup.add(types.KeyboardButton("⬅️ חזרה לתפריט ראשי"))
-    return markup
-
-def get_journal_menu():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
-    markup.add(types.KeyboardButton("🔍 סריקת יומן (Backlog)"))
-    markup.add(types.KeyboardButton("🧹 ארכיון עסקאות (Legacy)"))
-    markup.add(types.KeyboardButton("⬅️ חזרה לתפריט ראשי"))
-    return markup
-
-def get_rating_keyboard(t_id, field):
-    keyboard = types.InlineKeyboardMarkup(row_width=5)
-    btns = [types.InlineKeyboardButton(text=str(i), callback_data=f"v|{t_id}|{field}|{i}") for i in range(1, 11)]
-    keyboard.add(*btns)
-    keyboard.add(types.InlineKeyboardButton(text="⏭️ דילוג", callback_data=f"v|{t_id}|{field}|-1"))
-    return keyboard
-
-def get_setup_keyboard(t_id):
-    setups = ["VCP", "ALGO", "SWING", "EP"]
-    keyboard = types.InlineKeyboardMarkup(row_width=2)
-    for s in setups: keyboard.add(types.InlineKeyboardButton(text=s, callback_data=f"v|{t_id}|setup_type|{s}"))
-    keyboard.add(types.InlineKeyboardButton(text="⏭️ דילוג", callback_data=f"v|{t_id}|setup_type|Skipped"))
-    return keyboard
 
 def send_long_message(chat_id, text, reply_markup=None):
     max_len = 3900
