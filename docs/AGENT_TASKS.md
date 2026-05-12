@@ -65,7 +65,7 @@ Rollback:
 
 ### TASK-20260512-007 — Fix ALGO visibility alert threshold (always-fires bug)
 
-Status: todo
+Status: validated
 Risk: Low
 Affected services: risk_monitor
 
@@ -74,27 +74,27 @@ Problem discovered in production (2026-05-12):
 - `_algo_visibility_alert()` fires when avg < **60**, so it fires for EVERY ALGO position always.
 - Alert message is misleading: "שקיפות נמוכה" when 40 is the normal/healthy ALGO score.
 
-Fix:
-1. In `engine_core.py → compute_algo_oversight_summary()`: change `vis_avg < 60.0` threshold to `< 30.0`.
+Fix applied (2026-05-12):
+1. `engine_core.py → compute_algo_oversight_summary()`: threshold changed `vis_avg < 60.0` → `< 30.0`.
    - < 30 means ALGO positions lack even target_risk_usd (score = 20) — truly blind.
    - 40 = ALGO with target_risk_usd → acceptable, no alert needed.
-2. Update `_algo_visibility_alert()` text to clarify what "low visibility" means for ALGO.
-3. Update `test_phase4_algo_oversight.py` threshold tests.
+2. `risk_monitor.py → _algo_visibility_alert()`: text updated — explains 40=normal, 20=missing target_risk_usd.
+3. `tests/test_phase4_algo_oversight.py`: updated + 1 new test (score=40 must NOT alert).
 
 Secondary question to investigate:
 - Why does risk_monitor see only **2 ALGO positions** when user has more?
   - Likely: others are closed (pnl recorded) or `setup_type` casing differs (e.g. `algo` vs `ALGO`).
   - Check: `SELECT campaign_id, setup_type, quantity FROM trades WHERE setup_type ILIKE 'algo' AND quantity > 0`.
 
-Files to touch:
-- `engine_core.py` (compute_algo_oversight_summary, visibility_below_threshold condition)
-- `risk_monitor.py` (no change needed — already uses engine result)
-- `tests/test_phase4_algo_oversight.py` (threshold assertion updates)
+Files touched:
+- `engine_core.py`
+- `risk_monitor.py`
+- `tests/test_phase4_algo_oversight.py`
 
 Validation:
-- [ ] tests updated and passing
-- [ ] alert no longer fires for ALGO positions with normal 40/100 score
-- [ ] alert still fires for positions scoring 20 (no target_risk_usd)
+- [x] tests updated and passing (926 tests, 0 failures)
+- [x] alert no longer fires for ALGO positions with normal 40/100 score
+- [x] alert still fires for positions scoring 20 (no target_risk_usd)
 
 ---
 

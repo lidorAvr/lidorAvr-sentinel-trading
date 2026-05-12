@@ -1319,7 +1319,7 @@ def compute_algo_oversight_summary(algo_positions: list, acc_size: float) -> dic
         total_exposure_usd     float
         total_exposure_pct     float
         visibility_avg         float  (avg oversight_score, 0-100)
-        visibility_below_threshold bool  (avg < 60)
+        visibility_below_threshold bool  (avg < 30 — ALGO max is 40, alert only for score=20: no target_risk_usd)
         symbol_cap_breaches    list of {symbol, exposure_pct, cap_pct}
         deep_loss_positions    list of {symbol, open_r, campaign_id}  (open_r <= -2.0)
     """
@@ -1363,7 +1363,7 @@ def compute_algo_oversight_summary(algo_positions: list, acc_size: float) -> dic
         "total_exposure_usd": round(total_exp, 2),
         "total_exposure_pct": round(total_exp_pct, 2),
         "visibility_avg": round(vis_avg, 1),
-        "visibility_below_threshold": vis_avg < 60.0,
+        "visibility_below_threshold": vis_avg < 30.0,
         "symbol_cap_breaches": cap_breaches,
         "deep_loss_positions": deep_loss,
     }
