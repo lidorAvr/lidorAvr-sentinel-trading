@@ -99,10 +99,13 @@ Completed extractions:
 - `telegram_callbacks.py` ✅ (all @bot.callback_query_handler routes)
 - `telegram_backlog.py` ✅ (get_next_missing journal flow, 16 tests)
 - `telegram_portfolio.py` ✅ (handle_drilldown + handle_market_regime + handle_portfolio_room, 23 tests)
+- `bot_health.py` ✅ (build_health_report — 13-check system health, 15 tests)
 
 Remaining module split:
 - `telegram_handlers.py` — developer menu, analysis, misc message routing
   (lower priority — these are short routing blocks, not large extractable handlers)
+- IBKR sync workflow (`_dev_sync_check`, `_run_manual_sync_thread`, `_process_uploaded_ibkr_xml`)
+  could move to `telegram_devops.py` — deferred to preserve test patching scope
 
 Rules:
 
