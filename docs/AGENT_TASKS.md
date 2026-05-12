@@ -63,7 +63,79 @@ Rollback:
 
 ## Active tasks
 
-*(none — session 8 tasks implemented and merged to main)*
+### TASK-20260512-007 — Fix ALGO visibility alert threshold (always-fires bug)
+
+Status: todo
+Risk: Low
+Affected services: risk_monitor
+
+Problem discovered in production (2026-05-12):
+- `compute_risk_visibility_score()` caps ALGO positions at **40/100** max (expected — no real stop known).
+- `_algo_visibility_alert()` fires when avg < **60**, so it fires for EVERY ALGO position always.
+- Alert message is misleading: "שקיפות נמוכה" when 40 is the normal/healthy ALGO score.
+
+Fix:
+1. In `engine_core.py → compute_algo_oversight_summary()`: change `vis_avg < 60.0` threshold to `< 30.0`.
+   - < 30 means ALGO positions lack even target_risk_usd (score = 20) — truly blind.
+   - 40 = ALGO with target_risk_usd → acceptable, no alert needed.
+2. Update `_algo_visibility_alert()` text to clarify what "low visibility" means for ALGO.
+3. Update `test_phase4_algo_oversight.py` threshold tests.
+
+Secondary question to investigate:
+- Why does risk_monitor see only **2 ALGO positions** when user has more?
+  - Likely: others are closed (pnl recorded) or `setup_type` casing differs (e.g. `algo` vs `ALGO`).
+  - Check: `SELECT campaign_id, setup_type, quantity FROM trades WHERE setup_type ILIKE 'algo' AND quantity > 0`.
+
+Files to touch:
+- `engine_core.py` (compute_algo_oversight_summary, visibility_below_threshold condition)
+- `risk_monitor.py` (no change needed — already uses engine result)
+- `tests/test_phase4_algo_oversight.py` (threshold assertion updates)
+
+Validation:
+- [ ] tests updated and passing
+- [ ] alert no longer fires for ALGO positions with normal 40/100 score
+- [ ] alert still fires for positions scoring 20 (no target_risk_usd)
+
+---
+
+### TASK-20260512-008 — Runner Mode: inline decision buttons + decision tracking
+
+Status: proposed
+Risk: Medium
+Affected services: risk_monitor, telegram_bot
+
+User request (2026-05-12):
+- Alert text action items ("✅ להחזיק", "🚫 לא להוסיף") should become Telegram inline keyboard buttons.
+- User clicks a button → system records the decision + timestamp.
+- Risk monitor reads the stored decision on the next cycle and adjusts monitoring accordingly.
+- "Not leaving things in the air."
+
+Proposed buttons for Runner Mode alert:
+1. ✅ להחזיק — Tennis Ball  → records `runner_decision: hold`
+2. 🔒 הדק סטופ             → prompts user to enter new stop price
+3. 📊 מימוש חלקי           → records `runner_decision: partial_exit` + asks qty
+4. 📝 הערה ידנית           → opens free-text input
+
+Implementation plan:
+1. `risk_monitor.py`: replace `send_telegram(_runner_state_alert(...))` with
+   `send_telegram_with_keyboard(text, _runner_decision_keyboard(sym, campaign_id))`.
+2. `telegram_bot.py`: add `@bot.callback_query_handler` for `runner_decision|*` callbacks.
+   - Hold → ACK message + save to `management_notes` in Supabase.
+   - Tighten stop → reply "הזן מחיר סטופ חדש:" then await next message (multi-step flow).
+   - Partial exit → save intent, next message asks qty.
+3. `risk_monitor_state.json`: add `runner_decision` + `runner_decision_ts` per campaign.
+4. Risk monitor: when `runner_decision = hold` → suppress repeated Runner alerts for 24h.
+
+Files to touch:
+- `risk_monitor.py`
+- `telegram_bot.py`
+- Tests: `tests/test_phase3_state_alerts.py` (keyboard structure)
+
+Blockers:
+- Needs multi-step conversation state in `telegram_bot.py` (user response to bot prompt).
+  Existing pattern: check how tighten-stop flow works elsewhere in the bot.
+
+---
 
 ---
 

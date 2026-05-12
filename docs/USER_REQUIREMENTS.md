@@ -839,6 +839,39 @@ Related files:
 
 ---
 
+### REQ-20260512-001 — Telegram alerts must include inline decision buttons
+
+Status: proposed
+Owner: user
+Area: Telegram / risk_monitor
+Priority: Medium
+
+User request (2026-05-12):
+- Actionable items in risk alerts (e.g. Runner Mode "✅ להחזיק", "🔒 הדק סטופ") should not remain
+  as plain text. They should be presented as Telegram inline keyboard buttons.
+- When the user clicks a button, the system must record the decision.
+- The system must track and act on the decision in subsequent monitoring cycles.
+- "לא משאירים דברים באוויר" — every alert that requires a decision must lead to one.
+
+Acceptance criteria:
+- [ ] Runner Mode alert includes inline keyboard with ≥ 3 actionable buttons.
+- [ ] Clicking a button sends an acknowledgement and persists the decision.
+- [ ] Decision (+ timestamp) is saved to `management_notes` in Supabase or to state JSON.
+- [ ] Risk monitor reads the stored decision and suppresses duplicate alerts for 24h after "hold" decision.
+- [ ] Multi-step flows (e.g. "הדק סטופ" → ask for price → confirm) work without crashing the bot.
+- [ ] ALGO positions never get decision buttons that imply exit/stop instructions.
+
+Implementation notes:
+- See TASK-20260512-008 for full plan.
+- Requires multi-step conversation state in `telegram_bot.py`.
+- Pattern: reuse existing callback_query_handler infrastructure.
+
+Related files:
+- `risk_monitor.py`
+- `telegram_bot.py`
+
+---
+
 ## Completed / validated requirements
 
 Move requirements here only after validation on server.
