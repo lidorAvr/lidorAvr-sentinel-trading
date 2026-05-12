@@ -136,7 +136,8 @@ def _giveback_alert_text(sym, setup, peak_r, current_r, gb, is_algo):
     )
 
 
-def _checkpoint_alert_text(sym, setup, checkpoint_r, open_r, is_algo):
+def _checkpoint_alert_text(sym, setup, checkpoint_r, open_r, is_algo,
+                            protected_profit=None, giveback_usd=None, giveback_pct=None):
     RTL_M = "‏"
     mode = "ALGO | מנוהל חיצונית" if is_algo else setup
     if is_algo:
@@ -148,11 +149,80 @@ def _checkpoint_alert_text(sym, setup, checkpoint_r, open_r, is_algo):
         action_line = (
             f"{RTL_M}פעולה לפי מינרביני: לשקול הגנת רווח — העלאת סטופ, מימוש חלקי, או מעבר ל-Runner."
         )
+    extra = ""
+    if protected_profit is not None and giveback_usd is not None:
+        extra = (f"\n{RTL_M}• רווח מוגן: `${protected_profit:.0f}` "
+                 f"| Giveback עד סטופ: `${giveback_usd:.0f}`"
+                 + (f" ({giveback_pct:.0f}%)" if giveback_pct is not None else ""))
     return (
         f"{RTL_M}🏁 *Profit Protection Checkpoint — {checkpoint_r:.0f}R*\n"
         f"{RTL_M}סימול: *{sym}* | מצב: `{mode}`\n"
-        f"{RTL_M}Open R: `{open_r:.2f}R` חצה סף `{checkpoint_r:.0f}R`\n"
+        f"{RTL_M}Open R: `{open_r:.2f}R` חצה סף `{checkpoint_r:.0f}R`{extra}\n"
         f"{RTL_M}{action_line}"
+    )
+
+
+# ── Phase 3 — State-change alert templates ───────────────────────────────────
+
+def _runner_state_alert(sym, setup, open_r, protected_profit, giveback_usd,
+                         giveback_pct, current_stop, days_to_earnings):
+    RTL_M = "‏"
+    earnings_line = ""
+    if days_to_earnings is not None and days_to_earnings <= 30:
+        earnings_line = f"\n{RTL_M}• דוחות בעוד: `{days_to_earnings} ימים`"
+    return (
+        f"{RTL_M}🏃 *Runner Mode — {sym}*\n"
+        f"{RTL_M}הפוזיציה הגיעה ל-`{open_r:.1f}R` — מצב Runner.\n"
+        f"{RTL_M}─────────────────\n"
+        f"{RTL_M}• Open R: `{open_r:.1f}R`\n"
+        f"{RTL_M}• רווח מוגן (לפי סטופ): `${protected_profit:.0f}`\n"
+        f"{RTL_M}• Giveback עד סטופ: `${giveback_usd:.0f}` ({giveback_pct:.0f}%)\n"
+        f"{RTL_M}• סטופ נוכחי: `${current_stop:.2f}`{earnings_line}\n"
+        f"{RTL_M}─────────────────\n"
+        f"{RTL_M}✅ להחזיק אם יש Tennis Ball ומחזור יורד בירידות.\n"
+        f"{RTL_M}⚠️ Giveback > 40%? — שקל הדקת סטופ.\n"
+        f"{RTL_M}🚫 לא להוסיף לפני בסיס חדש."
+    )
+
+
+def _broken_state_alert(sym, setup, open_r, reason):
+    RTL_M = "‏"
+    return (
+        f"{RTL_M}🔴 *טרייד שבור — {sym}*\n"
+        f"{RTL_M}הפוזיציה כבר לא עומדת בתוכנית המקורית.\n"
+        f"{RTL_M}סיבה: `{reason}`\n"
+        f"{RTL_M}Open R: `{open_r:.1f}R`\n"
+        f"{RTL_M}─────────────────\n"
+        f"{RTL_M}• לפעול לפי תוכנית היציאה שהוגדרה מראש.\n"
+        f"{RTL_M}• לתעד: האם הייתה חריגת סיכון? נדרש Re-entry Watch?"
+    )
+
+
+def _dead_money_alert(sym, setup, age_days, open_r):
+    RTL_M = "‏"
+    return (
+        f"{RTL_M}⏳ *Dead Money Risk — {sym}*\n"
+        f"{RTL_M}הפוזיציה לא שבורה, אבל גם לא מתקדמת.\n"
+        f"{RTL_M}• ותק: `{age_days:.0f} ימים` | Open R: `{open_r:.1f}R`\n"
+        f"{RTL_M}─────────────────\n"
+        f"{RTL_M}✅ להחזיק אם יש Tight action ומחזור יורד.\n"
+        f"{RTL_M}↩️ לשקול צמצום אם יש הזדמנות טובה יותר.\n"
+        f"{RTL_M}🚫 לא להוסיף עד פריצה/חוזקה חדשה."
+    )
+
+
+def _breakeven_protocol_alert(sym, open_r, capital_at_risk_usd):
+    RTL_M = "‏"
+    return (
+        f"{RTL_M}🧷 *Breakeven Protection Required — {sym}*\n"
+        f"{RTL_M}הפוזיציה הגיעה ל-`{open_r:.1f}R`, אבל לפי הסטופ הנוכחי\n"
+        f"{RTL_M}עדיין קיים סיכון הון של `${capital_at_risk_usd:.0f}`.\n"
+        f"{RTL_M}זה לא מתאים לניהול Risk First.\n"
+        f"{RTL_M}─────────────────\n"
+        f"{RTL_M}1. לקדם סטופ לפחות לאזור כניסה.\n"
+        f"{RTL_M}2. לממש חלק ולהשאיר Runner.\n"
+        f"{RTL_M}3. להשאיר רק עם סיבה טכנית מתועדת.\n"
+        f"{RTL_M}🚫 לא לתת לפוזיציה של 3R להפוך להפסד מלא."
     )
 
 
@@ -373,7 +443,8 @@ def main():
         # Carry over threshold-tracking fields from previous state
         if prev:
             for carry_key in ("peak_open_r", "last_deviation_class", "last_deviation_ts",
-                              "last_giveback_class", "last_giveback_ts", "checkpoints_hit"):
+                              "last_giveback_class", "last_giveback_ts", "checkpoints_hit",
+                              "position_state", "state_label", "breakeven_alerted"):
                 if carry_key in prev:
                     new_pos_entry[carry_key] = prev[carry_key]
 
@@ -385,8 +456,81 @@ def main():
             prev_state=new_pos_entry, now_ts=now_ts,
         )
         new_pos_entry.update(threshold_updates)
+
+        # Enrich checkpoint alerts with Phase 1 protected-profit / giveback values
+        _side_pos = "BUY"
+        _open_pnl_at_stop = ec.compute_open_pnl_at_stop(_side_pos, entry, sl, qty)
+        _protected_profit  = ec.compute_protected_profit_usd(realized_pnl, _open_pnl_at_stop)
+        _giveback_usd      = ec.compute_giveback_usd(open_pnl, _open_pnl_at_stop)
+        _giveback_pct      = ec.compute_giveback_pct_of_open_profit(_giveback_usd, open_pnl)
+        _capital_at_risk   = ec.compute_capital_at_risk_usd(_side_pos, entry, sl, qty)
+
         for alert_text in threshold_alerts:
             send_telegram(alert_text)
+
+        # ── Phase 3: Position State Machine ──────────────────────────────────
+        # Age in days since campaign entry
+        try:
+            _entry_dt = pd.to_datetime(entry_date).to_pydatetime().replace(tzinfo=None)
+            _age_days = max(0.0, float((datetime.utcnow() - _entry_dt).days))
+        except Exception:
+            _age_days = 0.0
+
+        # Earnings window (cached, non-blocking)
+        _days_to_earnings = None
+        try:
+            _earn = ec.fetch_next_earnings_date(sym)
+            if _earn.get("ok") and _earn.get("days_to_event") is not None:
+                _days_to_earnings = int(_earn["days_to_event"])
+        except Exception:
+            pass
+
+        _mgt_mode = ec.classify_management_mode(setup, sym)
+
+        _state_result = ec.compute_position_state(
+            side=_side_pos,
+            management_mode=_mgt_mode,
+            age_days=_age_days,
+            open_r=open_r,
+            realized_pnl=realized_pnl,
+            original_campaign_risk=original_campaign_risk,
+            current_price=curr,
+            current_stop=sl,
+            days_to_earnings=_days_to_earnings,
+            follow_through_score=None,
+            violation_score=0,
+            has_new_high_since_entry=True,
+            has_open_quantity=(qty > 0),
+        )
+
+        _new_state  = _state_result["state"]
+        _prev_state = new_pos_entry.get("position_state", "")
+
+        # State-change alerts (push only for high-priority transitions)
+        if _new_state != _prev_state and _mgt_mode != "algo_observed":
+            if _new_state == ec.POSITION_STATE_RUNNER:
+                send_telegram(_runner_state_alert(
+                    sym, setup, open_r,
+                    _protected_profit, _giveback_usd, _giveback_pct,
+                    sl, _days_to_earnings,
+                ))
+            elif _new_state == ec.POSITION_STATE_BROKEN:
+                send_telegram(_broken_state_alert(sym, setup, open_r,
+                                                   _state_result["reason"]))
+            elif _new_state == ec.POSITION_STATE_DEAD_MONEY:
+                send_telegram(_dead_money_alert(sym, setup, _age_days, open_r))
+
+        # Break-even Protocol: 3R+ but capital still at risk (one-time alert)
+        if (open_r >= 3.0
+                and _capital_at_risk > 0
+                and not new_pos_entry.get("breakeven_alerted", False)
+                and _mgt_mode != "algo_observed"):
+            send_telegram(_breakeven_protocol_alert(sym, open_r, _capital_at_risk))
+            new_pos_entry["breakeven_alerted"] = True
+
+        new_pos_entry["position_state"] = _new_state
+        new_pos_entry["state_label"]    = _state_result["label"]
+        # ─────────────────────────────────────────────────────────────────────
 
         new_position_state[campaign_id] = new_pos_entry
         
