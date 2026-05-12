@@ -91,12 +91,17 @@ Goals:
 - Move secure runner protections into explicit code once safe.
 - Apply Actionability Layer to all messages — `fmt_actionability()` + `fmt_algo_risk_note()` done ✅ (TASK-006).
 
+Completed extractions:
+- `supabase_repository.py` ✅ (dependency-injected repo layer, 24 tests)
+- `telegram_menus.py` ✅ (all menu/keyboard builders, 20 tests)
+- `bot_core.py` ✅ (shared bot/supabase/user_state/RTL instances)
+- `bot_helpers.py` ✅ (pure helpers: _bot_log, _read_last_log_lines, _write_runner_decision, get_account_settings, get_nav_and_risk)
+- `telegram_callbacks.py` ✅ (all @bot.callback_query_handler routes)
+
 Remaining module split:
-- `telegram_handlers.py`
-- `telegram_backlog.py`
-- `telegram_portfolio.py`
-- `telegram_callbacks.py`
-- `supabase_repository.py`
+- `telegram_backlog.py` — get_next_missing, journal scan, legacy cleanup
+- `telegram_portfolio.py` — handle_drilldown, portfolio/regime report builders
+- `telegram_handlers.py` — developer menu, analysis, misc message routing
 
 Rules:
 
