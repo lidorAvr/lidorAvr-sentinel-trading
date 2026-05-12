@@ -1,7 +1,6 @@
 import os, telebot, json, traceback, threading, subprocess, glob as _glob
 import pandas as pd
 from telebot import types
-from supabase import create_client
 from dotenv import load_dotenv
 from datetime import datetime
 import xml.etree.ElementTree as ET
@@ -9,54 +8,22 @@ import engine_core as ec
 import telegram_formatters as tf
 import adaptive_risk_engine as are
 import supabase_repository as repo
+from bot_core import bot, supabase, user_state, RTL, ADMIN_ID, TOKEN
+from bot_helpers import (_bot_log, _read_last_log_lines, _write_runner_decision,
+                         get_account_settings, get_nav_and_risk,
+                         _DEV_LOG_FILES, _BOT_LOG_FILE, _BOT_LOG_MAX_LINES, _RM_STATE_FILE)
 from telegram_menus import (get_main_menu, get_developer_menu, get_portfolio_menu,
                              get_analysis_menu, get_journal_menu,
                              get_rating_keyboard, get_setup_keyboard)
 from ibkr_sync_runner import (run_ibkr_sync, MANUAL_RESULT_FILE,
                                _REPORTS_DIR, _REPORTS_TO_KEEP, _CONFIG_PATH)
 
-load_dotenv()
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ADMIN_ID = os.getenv("TELEGRAM_ADMIN_ID")
-bot = telebot.TeleBot(TOKEN)
-supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
-
-user_state = {}
-RTL = "\u200F"
-
 # \u2500\u2500 Developer-menu constants \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 _DEV_STATE_FILE      = "/app/ibkr_dev_state.json"
 _MANUAL_TRIGGER_FILE = "/app/ibkr_manual_trigger"
 _DEPLOY_TRIGGER_FILE = "/app/deploy_trigger"
-_BOT_LOG_FILE        = "/app/logs/sentinel_bot.log"
-_BOT_LOG_MAX_LINES   = 2000
-
-_DEV_LOG_FILES = {
-    "sentinel-main":    "/app/logs/sentinel_main.log",
-    "sentinel-bot":     "/app/logs/sentinel_bot.log",
-    "risk-monitor":     "/app/logs/sentinel_risk.log",
-}
-
 _DEV_SYNC_MAX_PER_DAY     = 2
 _DEV_SYNC_COOLDOWN_HOURS  = 3
-
-
-def _bot_log(msg: str):
-    """Append a line to the bot log file (developer menu log viewer reads this)."""
-    try:
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        line = f"[{ts}] {msg}\n"
-        os.makedirs(os.path.dirname(_BOT_LOG_FILE), exist_ok=True)
-        with open(_BOT_LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(line)
-        import random
-        if random.random() < 0.05:
-            lines = open(_BOT_LOG_FILE, encoding="utf-8").readlines()
-            if len(lines) > _BOT_LOG_MAX_LINES:
-                with open(_BOT_LOG_FILE, "w", encoding="utf-8") as f:
-                    f.writelines(lines[-_BOT_LOG_MAX_LINES:])
-    except Exception:
-        pass
 
 
 def _dev_sync_check() -> tuple:
@@ -90,40 +57,6 @@ def _dev_sync_record(state: dict):
             json.dump(state, f)
     except Exception:
         pass
-
-
-_RM_STATE_FILE = "risk_monitor_state.json"
-
-def _write_runner_decision(campaign_id: str, decision: str) -> None:
-    """Write runner_decision + runner_decision_ts into risk_monitor_state.json for the given campaign."""
-    try:
-        try:
-            with open(_RM_STATE_FILE, "r", encoding="utf-8") as f:
-                rm_state = json.load(f)
-        except Exception:
-            rm_state = {"positions": {}, "cluster": {}}
-        pos_entry = rm_state.setdefault("positions", {}).get(campaign_id)
-        if pos_entry is None:
-            rm_state["positions"][campaign_id] = {}
-            pos_entry = rm_state["positions"][campaign_id]
-        pos_entry["runner_decision"] = decision
-        pos_entry["runner_decision_ts"] = datetime.now().timestamp()
-        with open(_RM_STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(rm_state, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-
-
-def _read_last_log_lines(path: str, n: int = 50) -> str:
-    try:
-        if not os.path.exists(path):
-            return f"_(\u05E7\u05D5\u05D1\u05E5 \u05DC\u05D0 \u05E7\u05D9\u05D9\u05DD: {path})_"
-        with open(path, encoding="utf-8") as f:
-            lines = f.readlines()
-        tail = "".join(lines[-n:]) if lines else "(\u05E8\u05D9\u05E7)"
-        return tail.strip()
-    except Exception as e:
-        return f"_(\u05E9\u05D2\u05D9\u05D0\u05D4 \u05D1\u05E7\u05E8\u05D9\u05D0\u05EA \u05DC\u05D5\u05D2: {e})_"
 
 
 def _run_manual_sync_thread(chat_id: int):
@@ -259,28 +192,6 @@ def get_ibkr_nav():
                 if ending_val: return float(ending_val)
         return None
     except: return None
-
-def get_account_settings():
-    try:
-        with open("sentinel_config.json", "r") as f: return json.load(f)
-    except: return {"total_deposited": 7500.0, "risk_pct_input": 0.5}
-
-
-def get_nav_and_risk(account_settings=None):
-    """
-    Single source of truth for NAV + target risk.
-    Returns (acc_size, target_risk_usd, nav_freshness_label).
-    Uses get_nav_with_freshness() so staleness is always surfaced.
-    """
-    if account_settings is None:
-        account_settings = get_account_settings()
-    nav_info = ec.get_nav_with_freshness()
-    acc_size = nav_info["nav"] if nav_info["ok"] else float(account_settings.get("total_deposited", 7500.0))
-    risk_pct = float(account_settings.get("risk_pct_input", 0.5))
-    target_risk_usd = acc_size * (risk_pct / 100)
-    stale_label = nav_info["freshness_label"] if nav_info["is_stale"] else None
-    return acc_size, target_risk_usd, stale_label
-
 
 def _build_health_report():
     """
@@ -584,137 +495,6 @@ def handle_drilldown(chat_id, symbol):
         if data['issues']: rep += f"\n{RTL}⚠️ *אזהרות:* {', '.join(data['issues'])}\n"
         bot.edit_message_text(rep, chat_id, msg_id, parse_mode="Markdown")
     except Exception as e: bot.edit_message_text(f"❌ שגיאה בשליפת נתוני עומק: {e}", chat_id, msg_id)
-
-@bot.callback_query_handler(func=lambda call: True)
-def handle_queries(call):
-    chat_id = call.message.chat.id
-    data = call.data
-    if data.startswith("devlog|"):
-        bot.answer_callback_query(call.id)
-        service_name = data.split("|", 1)[1]
-        log_path = _DEV_LOG_FILES.get(service_name, "")
-        lines = _read_last_log_lines(log_path, 50)
-        # Telegram message limit: split if needed
-        header = f"{RTL}📋 *לוגים — {service_name} (50 שורות אחרונות):*\n"
-        body   = f"```\n{lines[-3600:]}\n```"
-        try:
-            bot.send_message(chat_id, header + body,
-                             reply_markup=get_developer_menu(), parse_mode="Markdown")
-        except Exception:
-            bot.send_message(chat_id, header + lines[-3000:],
-                             reply_markup=get_developer_menu())
-        return
-    if data.startswith("drill|"):
-        symbol = data.split("|")[1]
-        bot.answer_callback_query(call.id)
-        handle_drilldown(chat_id, symbol)
-        return
-    if data == "start_trail_flow":
-        if chat_id in user_state and 'temp_positions' in user_state[chat_id]:
-            count = len(user_state[chat_id]['temp_positions'])
-            bot.send_message(chat_id, f"🎯 *קידום סטופ:*\nהקלד את מספר הטרייד מהרשימה (1-{count}):\n(או שלח 'ביטול')", parse_mode="Markdown")
-            user_state[chat_id]['action'] = 'select_trade_index'
-        else: bot.send_message(chat_id, "⚠️ המידע פג תוקף. לחץ שוב על 'חדר מצב'.")
-        bot.answer_callback_query(call.id)
-    elif data == "cancel_action":
-        bot.send_message(chat_id, "❌ הפעולה בוטלה.", reply_markup=get_main_menu())
-        if chat_id in user_state: del user_state[chat_id]
-        bot.answer_callback_query(call.id)
-    elif data.startswith("risk_confirm|"):
-        bot.answer_callback_query(call.id)
-        parts = data.split("|")
-        action = parts[1]
-        rec_pct = float(parts[2])
-        curr_pct = float(parts[3])
-        account_settings = get_account_settings()
-        nav, _, _ = get_nav_and_risk(account_settings)
-
-        if action == "YES":
-            success = are.update_risk_pct(rec_pct)
-            are.mark_adherence(recommended_pct=rec_pct, actual_pct=rec_pct, followed=True)
-            are.log_risk_journal({
-                "direction": "up" if rec_pct > curr_pct else "down_fast",
-                "current_risk_pct": curr_pct,
-                "recommended_risk_pct": rec_pct,
-                "action": "confirmed",
-                "actual_pct_set": rec_pct,
-                "nav": nav,
-            })
-            status = "✅" if success else "⚠️ שגיאת שמירה"
-            try:
-                bot.edit_message_text(
-                    f"{RTL}{status} *סיכון עודכן ל-{rec_pct:.2f}%*\n"
-                    f"{RTL}(${round(nav * rec_pct / 100):,.0f} לעסקה) — נשמר ביומן הסיכון.",
-                    chat_id, call.message.message_id, parse_mode="Markdown"
-                )
-            except Exception:
-                bot.send_message(chat_id, f"{status} סיכון עודכן ל-{rec_pct:.2f}%", parse_mode="Markdown")
-
-        elif action == "NO":
-            user_state[chat_id] = {
-                "action": "risk_reject_reason",
-                "rec_pct": rec_pct,
-                "curr_pct": curr_pct,
-                "original_msg_id": call.message.message_id,
-            }
-            try:
-                bot.edit_message_text(
-                    f"{RTL}❌ *דוחה שינוי סיכון*\n{RTL}המלצה: `{rec_pct:.2f}%` ← נדחתה\n\n{RTL}📝 חובה: הסבר את הסיבה (יירשם ביומן):",
-                    chat_id, call.message.message_id, parse_mode="Markdown"
-                )
-            except Exception:
-                bot.send_message(chat_id, f"{RTL}📝 *הסבר מדוע דחית:*", parse_mode="Markdown")
-
-    elif data.startswith("runner_decision|"):
-        bot.answer_callback_query(call.id)
-        parts = data.split("|")
-        action   = parts[1] if len(parts) > 1 else ""
-        sym      = parts[2] if len(parts) > 2 else ""
-        cid      = parts[3] if len(parts) > 3 else ""
-        try: bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=None)
-        except Exception: pass
-
-        if action == "hold":
-            _write_runner_decision(cid, "hold")
-            if cid:
-                try:
-                    ts_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-                    repo.update_management_notes(supabase, cid, f"Runner: להחזיק ({ts_str})")
-                except Exception: pass
-            bot.send_message(chat_id, f"{RTL}✅ *{sym} — להחזיק*\nההחלטה נרשמה. Sentinel לא ישלח התראות Runner ל-24 שעות.", parse_mode="Markdown")
-
-        elif action == "tighten":
-            user_state[chat_id] = {"action": "tighten_stop", "sym": sym, "campaign_id": cid}
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("❌ ביטול", callback_data="cancel_action"))
-            bot.send_message(chat_id, f"{RTL}🔒 *{sym} — הדקת סטופ*\nהזן את מחיר הסטופ החדש:", reply_markup=markup, parse_mode="Markdown")
-
-        elif action == "partial":
-            if cid:
-                try:
-                    ts_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-                    repo.update_management_notes(supabase, cid, f"Runner: כוונת מימוש חלקי ({ts_str})")
-                except Exception: pass
-            bot.send_message(chat_id, f"{RTL}📊 *{sym} — מימוש חלקי*\nהכוונה נרשמה. בצע את הפקודה ב-IBKR ועדכן במערכת לאחר ביצוע.", parse_mode="Markdown")
-
-    elif data.startswith("v|"):
-        bot.answer_callback_query(call.id)
-        parts = data.split('|')
-        try:
-            t_id, field, val = parts[1], parts[2], parts[3]
-            if field in ['quality', 'score']:
-                repo.update_trade(supabase, t_id, {field: int(val)})
-            elif field == 'initial_stop':
-                repo.update_trade(supabase, t_id, {"initial_stop": float(val), "stop_loss": float(val)})
-            elif field == 'stop_loss':
-                repo.update_trade(supabase, t_id, {field: float(val)})
-            else:
-                save_val = "Skipped" if val == 'Skipped' else val
-                repo.update_trade(supabase, t_id, {field: save_val})
-
-            bot.delete_message(chat_id, call.message.message_id)
-            get_next_missing(chat_id)
-        except Exception as e: bot.send_message(chat_id, f"❌ *תקלה בעדכון:* {str(e)}", parse_mode="Markdown")
 
 @bot.message_handler(content_types=['document'])
 def handle_document_upload(message):
@@ -1364,6 +1144,8 @@ def handle_all_messages(message):
             return
 
     bot.send_message(chat_id, "🎯 *Sentinel Standby*\nמערכת מוכנה לפעולה. בחר מהתפריט למטה:", reply_markup=get_main_menu(), parse_mode="Markdown")
+
+import telegram_callbacks  # registers @bot.callback_query_handler
 
 if __name__ == "__main__":
     _bot_log("Sentinel Telegram Bot — started")
