@@ -1532,3 +1532,253 @@ def classify_mistake(intent: str, stat_bucket: str, pnl_usd: float,
     if any(w in notes for w in ("violated", "no stop", "moved stop", "averaged down", "חריגה")):
         return "bad_loss"
     return "unknown"
+
+
+# ── Phase 2 — Position State Machine ─────────────────────────────────────────
+# Pure classification — no DB, no yfinance, no side-effects.
+# The caller (risk_monitor.py) fetches live prices, earnings dates, and
+# follow-through scores, then passes them here.
+#
+# State priority (highest first):
+#   1. ALGO_OBSERVED  — externally managed, oversight only
+#   2. DATA_INCOMPLETE — missing critical data to compute R
+#   3. BROKEN          — price traded through stop, or violation_score >= 6
+#   4. RUNNER          — open_r >= 5R, or realized >= original_risk with trend
+#   5. PROFIT_PROTECTION — open_r >= 2R
+#   6. WORKING         — open_r >= 1R with acceptable follow-through
+#   7. YELLOW_FLAG     — violation_score 2-5 (minor/major violations)
+#   8. DEAD_MONEY      — age >= 8d, flat R, no new high, weak follow-through
+#   9. PROVING         — age 3-7d, R in early range
+#  10. NEW             — age <= 2d
+#  11. Fallback        — PROVING (catch-all for edge cases)
+#
+# EVENT_RISK is always a secondary flag (can co-exist with any primary state).
+# ─────────────────────────────────────────────────────────────────────────────
+
+POSITION_STATE_NEW               = "NEW"
+POSITION_STATE_PROVING           = "PROVING"
+POSITION_STATE_WORKING           = "WORKING"
+POSITION_STATE_PROFIT_PROTECTION = "PROFIT_PROTECTION"
+POSITION_STATE_RUNNER            = "RUNNER"
+POSITION_STATE_YELLOW_FLAG       = "YELLOW_FLAG"
+POSITION_STATE_BROKEN            = "BROKEN"
+POSITION_STATE_DEAD_MONEY        = "DEAD_MONEY"
+POSITION_STATE_ALGO_OBSERVED     = "ALGO_OBSERVED"
+POSITION_STATE_DATA_INCOMPLETE   = "DATA_INCOMPLETE"
+
+_STATE_LABELS: dict[str, str] = {
+    POSITION_STATE_NEW:               "🆕 חדש",
+    POSITION_STATE_PROVING:           "🔍 מוכיח",
+    POSITION_STATE_WORKING:           "✅ עובד",
+    POSITION_STATE_PROFIT_PROTECTION: "🛡️ הגנת רווח",
+    POSITION_STATE_RUNNER:            "🏃 Runner Mode",
+    POSITION_STATE_YELLOW_FLAG:       "🟡 דגל צהוב",
+    POSITION_STATE_BROKEN:            "🔴 שבור",
+    POSITION_STATE_DEAD_MONEY:        "⏳ Dead Money",
+    POSITION_STATE_ALGO_OBSERVED:     "🤖 ALGO — פיקוח בלבד",
+    POSITION_STATE_DATA_INCOMPLETE:   "⚠️ נתונים חלקיים",
+}
+
+# R thresholds
+_R_RUNNER          = 5.0
+_R_PROFIT_PROTECT  = 2.0
+_R_WORKING         = 1.0
+
+# Runner via realized PnL: realized_pnl >= original_campaign_risk + follow-through OK
+_RUNNER_FOLLOW_THROUGH_MIN = 70.0
+
+# Working: follow-through must be OK (or unknown → benefit of the doubt)
+_WORKING_FOLLOW_THROUGH_MIN = 60.0
+
+# Dead Money
+_DEAD_MONEY_MIN_DAYS          = 8
+_DEAD_MONEY_MIN_R             = -0.5
+_DEAD_MONEY_MAX_R             = 0.75
+_DEAD_MONEY_FOLLOW_MAX        = 50.0   # follow_through_score < this → weak
+
+# Proving window
+_PROVING_MIN_DAYS = 3
+_PROVING_MAX_DAYS = 7
+_NEW_MAX_DAYS     = 2
+
+# Violation score thresholds
+_VIOLATION_YELLOW_FLAG = 2
+_VIOLATION_BROKEN      = 6
+
+# Event Risk windows
+_EVENT_RISK_MAX_DAYS    = 15
+_EVENT_RISK_ORANGE_DAYS = 7
+_EVENT_RISK_RED_DAYS    = 3
+
+
+def compute_event_risk_info(
+    days_to_earnings: "int | None",
+    management_mode: str,
+) -> dict:
+    """
+    Compute event-risk flag and severity.
+
+    Only active for manual_managed positions — ALGO positions carry their own
+    event risk independently of Sentinel.
+
+    Returns:
+      active    bool
+      severity  "yellow" | "orange" | "red" | None
+      days      int | None
+    """
+    if days_to_earnings is None or management_mode == "algo_observed":
+        return {"active": False, "severity": None, "days": days_to_earnings}
+    if days_to_earnings <= _EVENT_RISK_RED_DAYS:
+        severity = "red"
+    elif days_to_earnings <= _EVENT_RISK_ORANGE_DAYS:
+        severity = "orange"
+    elif days_to_earnings <= _EVENT_RISK_MAX_DAYS:
+        severity = "yellow"
+    else:
+        return {"active": False, "severity": None, "days": days_to_earnings}
+    return {"active": True, "severity": severity, "days": days_to_earnings}
+
+
+def _price_through_stop(side: str, current_price: float, current_stop: float) -> bool:
+    """True when price has traded through the stop (position is broken)."""
+    if current_price <= 0 or current_stop <= 0:
+        return False
+    if side.upper() in ("BUY", "LONG"):
+        return current_price <= current_stop
+    return current_price >= current_stop   # SHORT
+
+
+def _make_state(state: str, event_risk: dict, reason: str) -> dict:
+    return {
+        "state":      state,
+        "label":      _STATE_LABELS.get(state, state),
+        "event_risk": event_risk,
+        "reason":     reason,
+    }
+
+
+def compute_position_state(
+    side: str,
+    management_mode: str,
+    age_days: float,
+    open_r: float,
+    realized_pnl: float,
+    original_campaign_risk: float,
+    current_price: float,
+    current_stop: float,
+    days_to_earnings: "int | None",
+    follow_through_score: "float | None" = None,
+    violation_score: int = 0,
+    has_new_high_since_entry: bool = True,
+    has_open_quantity: bool = True,
+) -> dict:
+    """
+    Classify an open campaign into one of the 10 position states.
+
+    Parameters
+    ----------
+    side                      "BUY" / "LONG" or "SELL" / "SHORT"
+    management_mode           "manual_managed" | "algo_observed" | "unknown"
+    age_days                  calendar days since first trade in the campaign
+    open_r                    current open R (from Phase 1 compute_r_true/target)
+    realized_pnl              total realized P&L in USD (partial-close profits)
+    original_campaign_risk    Phase 1 result; 0 = data unavailable
+    current_price             live market price (0 = unavailable)
+    current_stop              current stop level (0 = unknown / ALGO)
+    days_to_earnings          None = unknown; int = calendar days until event
+    follow_through_score      0–100; None = not yet computed (treated as neutral)
+    violation_score           cumulative violation points (Violation Engine)
+    has_new_high_since_entry  False = price never made new high after entry
+    has_open_quantity         False = position fully closed (caller should not call)
+
+    Returns
+    -------
+    dict:
+      state       str  — primary state constant
+      label       str  — Hebrew/emoji display label
+      event_risk  dict — compute_event_risk_info() result
+      reason      str  — human-readable reason for logging
+    """
+    er = compute_event_risk_info(days_to_earnings, management_mode)
+
+    # ── 1. ALGO_OBSERVED ─────────────────────────────────────────────────────
+    if management_mode == "algo_observed":
+        return _make_state(POSITION_STATE_ALGO_OBSERVED, er,
+                           "פוזיציית אלגו — פיקוח בלבד")
+
+    # ── 2. DATA_INCOMPLETE ───────────────────────────────────────────────────
+    if management_mode == "unknown" or original_campaign_risk <= 0:
+        return _make_state(POSITION_STATE_DATA_INCOMPLETE, er,
+                           "נתוני סיכון חסרים — לא ניתן לחשב R")
+
+    # ── 3. BROKEN ────────────────────────────────────────────────────────────
+    if _price_through_stop(side, current_price, current_stop):
+        return _make_state(POSITION_STATE_BROKEN, er, "מחיר עבר את הסטופ")
+    if violation_score >= _VIOLATION_BROKEN:
+        return _make_state(POSITION_STATE_BROKEN, er,
+                           f"ניקוד חריגות {violation_score} — שבור")
+
+    # ── 4. RUNNER ────────────────────────────────────────────────────────────
+    runner_by_r = open_r >= _R_RUNNER
+    runner_by_realized = (
+        original_campaign_risk > 0
+        and realized_pnl >= original_campaign_risk
+        and has_open_quantity
+        and (follow_through_score is None or follow_through_score >= _RUNNER_FOLLOW_THROUGH_MIN)
+    )
+    if runner_by_r or runner_by_realized:
+        reason = (f"Runner: {open_r:.1f}R" if runner_by_r
+                  else "רווח ממומש ≥ סיכון מקורי + יתרה פתוחה")
+        return _make_state(POSITION_STATE_RUNNER, er, reason)
+
+    # ── 5. PROFIT_PROTECTION ─────────────────────────────────────────────────
+    if open_r >= _R_PROFIT_PROTECT:
+        return _make_state(POSITION_STATE_PROFIT_PROTECTION, er,
+                           f"הגנת רווח: {open_r:.1f}R")
+
+    # ── 6. WORKING ───────────────────────────────────────────────────────────
+    good_ft = (follow_through_score is None
+               or follow_through_score >= _WORKING_FOLLOW_THROUGH_MIN)
+    if open_r >= _R_WORKING and good_ft:
+        return _make_state(POSITION_STATE_WORKING, er, f"עובד: {open_r:.1f}R")
+
+    # ── 7. YELLOW_FLAG ───────────────────────────────────────────────────────
+    if violation_score >= _VIOLATION_YELLOW_FLAG:
+        return _make_state(POSITION_STATE_YELLOW_FLAG, er,
+                           f"דגל צהוב: ניקוד חריגות {violation_score}")
+
+    # ── 8. DEAD_MONEY ────────────────────────────────────────────────────────
+    weak_ft = (follow_through_score is not None
+               and follow_through_score < _DEAD_MONEY_FOLLOW_MAX)
+    if (age_days >= _DEAD_MONEY_MIN_DAYS
+            and _DEAD_MONEY_MIN_R <= open_r <= _DEAD_MONEY_MAX_R
+            and weak_ft
+            and not has_new_high_since_entry):
+        return _make_state(POSITION_STATE_DEAD_MONEY, er,
+                           f"הון מת: {age_days:.0f} ימים, {open_r:.1f}R, אין שיא חדש")
+
+    # ── 9. PROVING ───────────────────────────────────────────────────────────
+    if _PROVING_MIN_DAYS <= age_days <= _PROVING_MAX_DAYS and open_r <= _R_WORKING:
+        return _make_state(POSITION_STATE_PROVING, er,
+                           f"מוכיח: יום {age_days:.0f}, {open_r:.1f}R")
+
+    # ── 10. NEW ──────────────────────────────────────────────────────────────
+    if age_days <= _NEW_MAX_DAYS:
+        return _make_state(POSITION_STATE_NEW, er, f"חדש: יום {age_days:.0f}")
+
+    # ── Fallback ─────────────────────────────────────────────────────────────
+    return _make_state(POSITION_STATE_PROVING, er,
+                       f"פוזיציה מתפתחת: {open_r:.1f}R, {age_days:.0f} ימים")
+
+
+def get_position_state_display_label(state_result: dict) -> str:
+    """
+    Build the combined display label for Telegram/dashboard.
+    Merges primary state label with event risk when active.
+    Example: "🏃 Runner Mode + 📅 Event Risk (7 ימים)"
+    """
+    label = state_result.get("label", "")
+    er = state_result.get("event_risk", {})
+    if er.get("active") and er.get("days") is not None:
+        label = f"{label} + 📅 Event Risk ({er['days']} ימים)"
+    return label
