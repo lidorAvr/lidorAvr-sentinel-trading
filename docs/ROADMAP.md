@@ -123,21 +123,46 @@ Done:
 
 ## Phase 6 — Automation and intelligence layer
 
-Status: future
+Status: **complete** (session 8, 2026-05-12)
 
-Goals:
+Done (24-module spec — Phases 1–6 on branch `claude/review-dev-roadmap-6K19V` → main):
 
-- Smarter risk monitor.
-- Better ALGO-aware alerts (guardrail thresholds, giveback, profit protection checkpoints).
-- More accurate management suggestions with actionability classification.
-- More automated journal/backlog workflows.
+**Phase 1 — Risk Basis Engine** ✅
+- Risk computation (R_true, R_target, original_campaign_risk, frozen_target_risk)
+- Capital at risk, protected profit, giveback USD/%, giveback severity
+- Sizing ratio (7 tiers), data scope + sample size context
 
-Rules:
+**Phase 2 — Position State Machine** ✅
+- 10 states with priority ordering
+- Event-risk flag (earnings proximity, manual positions only)
+- `compute_position_state()` + `get_position_state_display_label()`
 
+**Phase 3 — State Machine wiring** ✅
+- State-change alerts: Runner / Broken / Dead Money / Breakeven Protocol
+- Enriched checkpoint alerts with Phase 1 values
+- State persistence in `risk_monitor_state.json`
+
+**Phase 4 — ALGO Oversight** ✅
+- Portfolio-level visibility (avg score < 60 → alert)
+- Per-symbol cap breach detection
+- Per-position: loss streak alerts (yellow/orange), deep loss (≤ −2R) gate
+- All alerts: oversight language only, no exit/stop instructions
+
+**Phase 5 — Anti-Spam / Alert State Table** ✅
+- `STATE_ALERT_COOLDOWN`: RUNNER/BROKEN 4h, DEAD_MONEY 12h (oscillation protection)
+- `ALERT_PRIORITY` dict: explicit P0–P3 for all 14 alert types
+- `_should_fire_state_alert()`: unified dedup gate
+
+**Phase 6 — Master Context Export** ✅
+- `build_position_context_data()` helper (testable, Streamlit-free)
+- Dashboard Section 2+4 enriched with State / Sizing / EventRisk / Protected Profit / Breakeven
+
+**Test suite: 925 tests, 0 failures** (329 new tests across 6 test files)
+
+Rules (preserved throughout):
 - No automatic trade state mutation without explicit user-approved rules.
-- ALGO positions must never receive automated exit instructions.
-- Alerts must be bounded to avoid noise.
-- Every automated suggestion must explain evidence, trigger, and actionability level.
+- ALGO positions never receive automated exit instructions.
+- All alerts bounded to avoid noise (dedup + cooldown + market-hours gate).
 
 ## Parking lot
 

@@ -63,7 +63,98 @@ Rollback:
 
 ## Active tasks
 
-*(none — all session 6 tasks validated and deployed)*
+*(none — session 8 tasks implemented and merged to main)*
+
+---
+
+## Completed tasks (session 8 — 2026-05-12)
+
+### TASK-20260512-001 — Phase 1: Risk Basis Engine
+
+Status: implemented
+Risk: Low
+Affected services: engine_core (no runtime change — new pure functions)
+
+Done:
+- `compute_original_campaign_risk()`, `compute_frozen_target_risk()`, R_true / R_target
+- `compute_capital_at_risk_usd()`, `compute_open_pnl_at_stop()`, `compute_protected_profit_usd()`
+- `compute_giveback_usd/pct()`, `classify_giveback_severity()`
+- `compute_sizing_ratio()` with 7 tiers
+- `get_sample_size_context()`, `add_data_scope()`, data scope constants
+- 75 tests in `tests/test_risk_basis_engine.py`
+
+---
+
+### TASK-20260512-002 — Phase 2: Position State Machine
+
+Status: implemented
+Risk: Low
+Affected services: engine_core
+
+Done:
+- 10 state constants + `compute_position_state()` with priority ordering
+- `compute_event_risk_info()`: earnings-window risk (RED ≤ 3d / ORANGE ≤ 7d / YELLOW ≤ 15d, manual only)
+- `get_position_state_display_label()`: merged label
+- 100 tests in `tests/test_position_state_machine.py`
+
+---
+
+### TASK-20260512-003 — Phase 3: State Machine wiring in risk_monitor.py
+
+Status: implemented
+Risk: Medium
+Affected services: risk_monitor
+
+Done:
+- Enriched `_checkpoint_alert_text()` with Phase 1 values
+- 4 new state-change alert functions (Runner / Broken / Dead Money / Breakeven Protocol)
+- Main loop: state compute per position, one-time/transition alerts, state persistence
+- 40 tests in `tests/test_phase3_state_alerts.py`
+
+---
+
+### TASK-20260512-004 — Phase 4: ALGO Oversight
+
+Status: implemented
+Risk: Low
+Affected services: risk_monitor, engine_core
+
+Done:
+- `compute_algo_oversight_summary()`: portfolio visibility, cap breaches, deep loss
+- 3 ALGO oversight alert functions (deep loss / streak / visibility)
+- Per-position streak tracking + one-time deep loss gate with recovery reset
+- Post-loop portfolio visibility check (24h cooldown)
+- 48 tests in `tests/test_phase4_algo_oversight.py`
+
+---
+
+### TASK-20260512-005 — Phase 5: Anti-Spam / Alert State Table
+
+Status: implemented
+Risk: Low
+Affected services: risk_monitor
+
+Done:
+- `STATE_ALERT_COOLDOWN` dict (RUNNER/BROKEN 4h, DEAD_MONEY 12h)
+- `ALERT_PRIORITY` dict: P0–P3 for all 14 alert types
+- `_should_fire_state_alert()`: oscillation-safe gate
+- `last_state_alert_ts` / `last_state_alert_type` in state JSON
+- 33 tests in `tests/test_phase5_anti_spam.py`
+
+---
+
+### TASK-20260512-006 — Phase 6: Master Context Export
+
+Status: implemented
+Risk: Low
+Affected services: dashboard, engine_core
+
+Done:
+- `build_position_context_data()` in engine_core.py
+- Dashboard Section 2 enriched: State / Sizing / EventRisk / Protected Profit / Breakeven
+- Dashboard Section 4 enriched: BROKEN/DEAD_MONEY context, Event Risk <7d, Sizing warning
+- State loaded from `risk_monitor_state.json`
+- 33 tests in `tests/test_phase6_context_export.py`
 
 ---
 
