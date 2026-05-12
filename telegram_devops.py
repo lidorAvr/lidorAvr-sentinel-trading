@@ -17,11 +17,13 @@ import glob as _glob
 import xml.etree.ElementTree as ET
 from datetime import datetime
 
-from bot_core import bot, RTL
+import telebot
+from bot_core import bot, supabase, RTL
 from bot_helpers import _bot_log
 from telegram_menus import get_developer_menu
 from ibkr_sync_runner import (run_ibkr_sync, MANUAL_RESULT_FILE,
                                _REPORTS_DIR, _REPORTS_TO_KEEP, _CONFIG_PATH)
+import ibkr_trade_importer as _importer
 
 # ── Developer-menu constants ─────────────────────────────────────────────────
 _DEV_STATE_FILE      = "/app/ibkr_dev_state.json"
@@ -72,6 +74,54 @@ def _dev_sync_record(state: dict):
         pass
 
 
+def _latest_report_xml() -> str:
+    """Read the most recent ibkr_*.xml in _REPORTS_DIR. Returns '' if none."""
+    try:
+        reports = sorted(_glob.glob(os.path.join(_REPORTS_DIR, "ibkr_*.xml")))
+        if not reports:
+            return ""
+        with open(reports[-1], "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+
+def _notify_new_trades(chat_id: int, n_new: int):
+    """Send a Hebrew Telegram message with an inline button to open the backlog flow."""
+    if n_new <= 0:
+        return
+    markup = telebot.types.InlineKeyboardMarkup()
+    markup.add(telebot.types.InlineKeyboardButton(
+        text=f"📚 פתח סריקת יומן ({n_new} חדשים)",
+        callback_data="open_backlog",
+    ))
+    bot.send_message(
+        chat_id,
+        f"{RTL}🆕 *נמצאו {n_new} טריידים חדשים בדוח*\n"
+        f"{RTL}לחץ למטה כדי להשלים פרטים (Setup, Quality, Stop):",
+        reply_markup=markup, parse_mode="Markdown",
+    )
+
+
+def _import_and_notify(chat_id: int, xml_text: str):
+    """Parse XML, insert new trades to Supabase, notify user if any new."""
+    if not xml_text:
+        return
+    try:
+        result = _importer.import_new_trades(supabase, xml_text)
+    except Exception as e:
+        _bot_log(f"Trade importer error: {e}")
+        return
+    n_new = result.get("new_count", 0)
+    total = result.get("total_in_xml", 0)
+    _bot_log(f"Trade import: {n_new}/{total} new trades inserted")
+    if n_new > 0:
+        try:
+            _notify_new_trades(chat_id, n_new)
+        except Exception as e:
+            _bot_log(f"Notify-new-trades error: {e}")
+
+
 def _run_manual_sync_thread(chat_id: int):
     """Background thread: runs IBKR sync and reports back to Telegram."""
     _bot_log(f"Manual IBKR sync started by chat_id={chat_id}")
@@ -96,6 +146,10 @@ def _run_manual_sync_thread(chat_id: int):
             reply_markup=get_developer_menu(), parse_mode="Markdown",
         )
         _bot_log(f"Manual IBKR sync result: {status} — {message}")
+
+        # Import new trades to Supabase + notify if any
+        if status == "success":
+            _import_and_notify(chat_id, _latest_report_xml())
     except Exception as e:
         bot.send_message(chat_id, f"❌ שגיאה בסנכרון ידני: {e}",
                          reply_markup=get_developer_menu(), parse_mode="Markdown")
@@ -179,6 +233,9 @@ def _process_uploaded_ibkr_xml(chat_id: int, message):
             f"{RTL}קובץ: `{os.path.basename(report_path)}`",
             reply_markup=get_developer_menu(), parse_mode="Markdown",
         )
+
+        # Import new trades to Supabase + notify if any
+        _import_and_notify(chat_id, xml_text)
 
     except ET.ParseError as e:
         bot.send_message(chat_id, f"{RTL}❌ XML לא תקין: {e}",

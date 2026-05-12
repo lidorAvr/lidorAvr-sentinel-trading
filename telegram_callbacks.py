@@ -46,6 +46,11 @@ def handle_queries(call):
         _tb.handle_drilldown(chat_id, symbol)
         return
 
+    if data == "open_backlog":
+        bot.answer_callback_query(call.id)
+        _tb.get_next_missing(chat_id)
+        return
+
     if data == "start_trail_flow":
         if chat_id in user_state and 'temp_positions' in user_state[chat_id]:
             count = len(user_state[chat_id]['temp_positions'])
