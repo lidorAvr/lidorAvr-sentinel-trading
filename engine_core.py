@@ -1304,6 +1304,71 @@ def compute_algo_risk_oversight_score(
     return {"score": score, "label": label, "details": details}
 
 
+# ── Phase 4: ALGO Oversight Summary ───────────────────────────────────────────
+
+def compute_algo_oversight_summary(algo_positions: list, acc_size: float) -> dict:
+    """
+    Aggregate ALGO oversight metrics across all open ALGO positions.
+
+    algo_positions: list of dicts with keys:
+        symbol, pos_value, oversight_score, open_r, campaign_id
+    acc_size: account NAV
+
+    Returns:
+        n_positions            int
+        total_exposure_usd     float
+        total_exposure_pct     float
+        visibility_avg         float  (avg oversight_score, 0-100)
+        visibility_below_threshold bool  (avg < 60)
+        symbol_cap_breaches    list of {symbol, exposure_pct, cap_pct}
+        deep_loss_positions    list of {symbol, open_r, campaign_id}  (open_r <= -2.0)
+    """
+    if not algo_positions:
+        return {
+            "n_positions": 0,
+            "total_exposure_usd": 0.0,
+            "total_exposure_pct": 0.0,
+            "visibility_avg": 100.0,
+            "visibility_below_threshold": False,
+            "symbol_cap_breaches": [],
+            "deep_loss_positions": [],
+        }
+
+    total_exp = sum(p["pos_value"] for p in algo_positions)
+    total_exp_pct = (total_exp / acc_size * 100) if acc_size > 0 else 0.0
+    vis_avg = sum(p["oversight_score"] for p in algo_positions) / len(algo_positions)
+
+    # Aggregate per-symbol exposure across campaigns for the same symbol
+    sym_exposure: dict = {}
+    for p in algo_positions:
+        sym = str(p["symbol"]).upper()
+        sym_exposure[sym] = sym_exposure.get(sym, 0.0) + p["pos_value"]
+
+    cap_breaches = []
+    for sym, val in sym_exposure.items():
+        exp_pct = (val / acc_size * 100) if acc_size > 0 else 0.0
+        cap = ALGO_SYMBOL_LIMITS.get(sym, 100.0)
+        if exp_pct > cap:
+            cap_breaches.append({"symbol": sym,
+                                  "exposure_pct": round(exp_pct, 1),
+                                  "cap_pct": cap})
+
+    deep_loss = [
+        {"symbol": p["symbol"], "open_r": p["open_r"], "campaign_id": p["campaign_id"]}
+        for p in algo_positions if p["open_r"] <= -2.0
+    ]
+
+    return {
+        "n_positions": len(algo_positions),
+        "total_exposure_usd": round(total_exp, 2),
+        "total_exposure_pct": round(total_exp_pct, 2),
+        "visibility_avg": round(vis_avg, 1),
+        "visibility_below_threshold": vis_avg < 60.0,
+        "symbol_cap_breaches": cap_breaches,
+        "deep_loss_positions": deep_loss,
+    }
+
+
 # ── Earnings Risk Module ───────────────────────────────────────────────────────
 _EARNINGS_CACHE_TTL = 6 * 3600  # 6 hours — earnings dates change rarely
 

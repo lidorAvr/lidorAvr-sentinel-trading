@@ -226,6 +226,48 @@ def _breakeven_protocol_alert(sym, open_r, capital_at_risk_usd):
     )
 
 
+# ── Phase 4 — ALGO Oversight alert templates ─────────────────────────────────
+
+def _algo_deep_loss_alert(sym, open_r):
+    RTL_M = "‏"
+    return (
+        f"{RTL_M}🔴 *ALGO Oversight — הפסד עמוק*\n"
+        f"{RTL_M}סימול: *{sym}* | Open R: `{open_r:.2f}R`\n"
+        f"{RTL_M}הפוזיציה חצתה ─2R — מגבלת הפסד גבוהה.\n"
+        f"{RTL_M}─────────────────\n"
+        f"{RTL_M}פיקוח: Sentinel לא תציע מכירה ולא תציע שינוי סטופ.\n"
+        f"{RTL_M}ℹ️ לוודא שהאלגו עדיין פעיל ועובד לפי הגדרות."
+    )
+
+
+def _algo_loss_streak_alert(sym, open_r, streak_runs, level):
+    RTL_M = "‏"
+    duration_min = streak_runs * 5
+    if level == "orange":
+        heading = f"🔴 *ALGO Oversight — ירידה ממושכת*"
+    else:
+        heading = f"⚠️ *ALGO Oversight — מגמת ירידה*"
+    return (
+        f"{RTL_M}{heading}\n"
+        f"{RTL_M}סימול: *{sym}* | Open R: `{open_r:.2f}R`\n"
+        f"{RTL_M}הפוזיציה בהפסד במשך ~{duration_min} דקות ברצף ({streak_runs} ריצות).\n"
+        f"{RTL_M}─────────────────\n"
+        f"{RTL_M}פיקוח: Sentinel לא מתערבת בניהול אלגו.\n"
+        f"{RTL_M}ℹ️ לוודא שהאלגו מחובר ופועל תקין."
+    )
+
+
+def _algo_visibility_alert(visibility_avg, n_positions):
+    RTL_M = "‏"
+    return (
+        f"{RTL_M}⚠️ *ALGO Oversight — שקיפות נמוכה*\n"
+        f"{RTL_M}ממוצע ניקוד שקיפות: `{visibility_avg:.0f}/100` ({n_positions} פוזיציות)\n"
+        f"{RTL_M}Sentinel לא רואה מספיק נתונים לפיקוח תקין.\n"
+        f"{RTL_M}─────────────────\n"
+        f"{RTL_M}ℹ️ לבדוק: הוזנו target_risk_usd? entry quality? חיבור IBKR?"
+    )
+
+
 def check_position_risk_thresholds(sym, setup, open_r, open_pnl_usd, target_risk_usd,
                                     is_algo, prev_state, now_ts):
     """
@@ -362,6 +404,7 @@ def main():
     
     spy_hist = ec.get_cached_history("SPY", "1y", "1d")
     total_algo_exposure = 0.0
+    algo_oversight_positions = []
     new_position_state = {}
     now_ts = datetime.utcnow().timestamp()
 
@@ -444,7 +487,9 @@ def main():
         if prev:
             for carry_key in ("peak_open_r", "last_deviation_class", "last_deviation_ts",
                               "last_giveback_class", "last_giveback_ts", "checkpoints_hit",
-                              "position_state", "state_label", "breakeven_alerted"):
+                              "position_state", "state_label", "breakeven_alerted",
+                              "algo_loss_streak", "algo_streak_alerted_yellow",
+                              "algo_streak_alerted_orange", "algo_deep_loss_alerted"):
                 if carry_key in prev:
                     new_pos_entry[carry_key] = prev[carry_key]
 
@@ -532,8 +577,57 @@ def main():
         new_pos_entry["state_label"]    = _state_result["label"]
         # ─────────────────────────────────────────────────────────────────────
 
+        # ── Phase 4: ALGO Oversight per-position ─────────────────────────────
+        if _mgt_mode == "algo_observed":
+            # Consecutive loss streak (one run = ~5 min)
+            _prev_streak = new_pos_entry.get("algo_loss_streak", 0)
+            _new_streak = _prev_streak + 1 if open_r < 0 else 0
+            new_pos_entry["algo_loss_streak"] = _new_streak
+
+            _alerted_yellow = new_pos_entry.get("algo_streak_alerted_yellow", False)
+            _alerted_orange = new_pos_entry.get("algo_streak_alerted_orange", False)
+
+            if _new_streak >= 5 and not _alerted_orange:
+                send_telegram(_algo_loss_streak_alert(sym, open_r, _new_streak, "orange"))
+                new_pos_entry["algo_streak_alerted_orange"] = True
+            elif _new_streak >= 3 and not _alerted_yellow:
+                send_telegram(_algo_loss_streak_alert(sym, open_r, _new_streak, "yellow"))
+                new_pos_entry["algo_streak_alerted_yellow"] = True
+
+            if _new_streak == 0:  # Position recovered — reset streak flags
+                new_pos_entry["algo_streak_alerted_yellow"] = False
+                new_pos_entry["algo_streak_alerted_orange"] = False
+
+            # Single deep-loss alert (open_r ≤ −2R)
+            if open_r <= -2.0 and not new_pos_entry.get("algo_deep_loss_alerted", False):
+                send_telegram(_algo_deep_loss_alert(sym, open_r))
+                new_pos_entry["algo_deep_loss_alerted"] = True
+            if open_r > -1.0:  # Significant recovery — allow re-alert if it dips again
+                new_pos_entry["algo_deep_loss_alerted"] = False
+
+            # Collect for portfolio-level summary check
+            _oversight_score = engine.get("risk_visibility_score", 0)
+            algo_oversight_positions.append({
+                "symbol": sym, "pos_value": pos_value,
+                "oversight_score": _oversight_score, "open_r": open_r,
+                "campaign_id": campaign_id,
+            })
+        # ─────────────────────────────────────────────────────────────────────
+
         new_position_state[campaign_id] = new_pos_entry
         
+    # ── Phase 4: ALGO Oversight — portfolio-level visibility check ───────────
+    if algo_oversight_positions:
+        _algo_summary = ec.compute_algo_oversight_summary(algo_oversight_positions, acc_size)
+        if _algo_summary["visibility_below_threshold"]:
+            _prev_vis_ts = state.get("algo_visibility_alerted_ts", 0)
+            if (now_ts - _prev_vis_ts) > 24 * 3600:
+                send_telegram(_algo_visibility_alert(
+                    _algo_summary["visibility_avg"],
+                    _algo_summary["n_positions"],
+                ))
+                state["algo_visibility_alerted_ts"] = now_ts
+
     algo_cluster_pct = (total_algo_exposure / acc_size) * 100 if acc_size > 0 else 0
     prev_cluster = state.get("cluster", {})
     prev_cluster_status = prev_cluster.get("status", "green")
