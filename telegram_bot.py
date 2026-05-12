@@ -8,6 +8,7 @@ import xml.etree.ElementTree as ET
 import engine_core as ec
 import telegram_formatters as tf
 import adaptive_risk_engine as are
+import supabase_repository as repo
 from ibkr_sync_runner import (run_ibkr_sync, MANUAL_RESULT_FILE,
                                _REPORTS_DIR, _REPORTS_TO_KEEP, _CONFIG_PATH)
 
@@ -493,24 +494,22 @@ def send_long_message(chat_id, text, reply_markup=None):
 
 def get_next_missing(chat_id):
     try:
-        query_or = "setup_type.is.null,quality.is.null,and(side.eq.BUY,initial_stop.is.null),and(side.eq.BUY,initial_stop.eq.0),and(side.eq.SELL,score.is.null),and(side.eq.SELL,image_url.is.null),and(side.eq.SELL,management_notes.is.null)"
-        res = supabase.table("trades").select("*").or_(query_or).order("trade_date", desc=False).order("trade_id", desc=False).limit(100).execute()
         t = None
-        for row in res.data:
+        for row in repo.get_incomplete_trades(supabase):
             if str(row.get('setup_type')) == 'Legacy': continue
             if row.get('side', '').upper() == 'BUY':
                 cid = row.get('campaign_id')
                 if cid:
-                    older_buys = supabase.table("trades").select("*").eq("campaign_id", cid).eq("side", "BUY").lt("trade_date", row["trade_date"]).execute()
-                    if older_buys.data:
-                        first_b = older_buys.data[0]
+                    older_buys_data = repo.get_earlier_buys_for_campaign(supabase, cid, row["trade_date"])
+                    if older_buys_data:
+                        first_b = older_buys_data[0]
                         upd = {"setup_type": first_b.get("setup_type"), "quality": first_b.get("quality"), "initial_stop": first_b.get("initial_stop"), "stop_loss": first_b.get("stop_loss")}
-                        supabase.table("trades").update(upd).eq("trade_id", row["trade_id"]).execute()
+                        repo.update_trade(supabase, row["trade_id"], upd)
                         continue
                 if str(row.get('setup_type')).upper() == 'ALGO':
                     init_sl = row.get('initial_stop')
                     if init_sl is None or init_sl == 0:
-                        supabase.table("trades").update({"initial_stop": -1, "stop_loss": -1}).eq("trade_id", row["trade_id"]).execute()
+                        repo.update_trade(supabase, row["trade_id"], {"initial_stop": -1, "stop_loss": -1})
                         continue 
             t = row
             break
@@ -569,8 +568,7 @@ def get_next_missing(chat_id):
 def handle_drilldown(chat_id, symbol):
     msg_id = bot.send_message(chat_id, f"⏳ שואב נתוני רנטגן (Drill-down) עבור {symbol}...", parse_mode="Markdown").message_id
     try:
-        res = supabase.table("trades").select("*").eq("symbol", symbol).execute()
-        df = pd.DataFrame(res.data)
+        df = pd.DataFrame(repo.get_trades_by_symbol(supabase, symbol))
         pos_res = ec.get_open_positions_campaign(df)
         if not pos_res["ok"] or pos_res["data"].empty:
             bot.edit_message_text(f"❌ לא נמצאו פוזיציות פתוחות או קמפיינים פעילים עבור {symbol}.", chat_id, msg_id)
@@ -731,7 +729,7 @@ def handle_queries(call):
             if cid:
                 try:
                     ts_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-                    supabase.table("trades").update({"management_notes": f"Runner: להחזיק ({ts_str})"}).eq("campaign_id", cid).eq("side", "BUY").execute()
+                    repo.update_management_notes(supabase, cid, f"Runner: להחזיק ({ts_str})")
                 except Exception: pass
             bot.send_message(chat_id, f"{RTL}✅ *{sym} — להחזיק*\nההחלטה נרשמה. Sentinel לא ישלח התראות Runner ל-24 שעות.", parse_mode="Markdown")
 
@@ -745,7 +743,7 @@ def handle_queries(call):
             if cid:
                 try:
                     ts_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-                    supabase.table("trades").update({"management_notes": f"Runner: כוונת מימוש חלקי ({ts_str})"}).eq("campaign_id", cid).eq("side", "BUY").execute()
+                    repo.update_management_notes(supabase, cid, f"Runner: כוונת מימוש חלקי ({ts_str})")
                 except Exception: pass
             bot.send_message(chat_id, f"{RTL}📊 *{sym} — מימוש חלקי*\nהכוונה נרשמה. בצע את הפקודה ב-IBKR ועדכן במערכת לאחר ביצוע.", parse_mode="Markdown")
 
@@ -755,14 +753,14 @@ def handle_queries(call):
         try:
             t_id, field, val = parts[1], parts[2], parts[3]
             if field in ['quality', 'score']:
-                supabase.table("trades").update({field: int(val)}).eq("trade_id", t_id).execute()
+                repo.update_trade(supabase, t_id, {field: int(val)})
             elif field == 'initial_stop':
-                supabase.table("trades").update({"initial_stop": float(val), "stop_loss": float(val)}).eq("trade_id", t_id).execute()
+                repo.update_trade(supabase, t_id, {"initial_stop": float(val), "stop_loss": float(val)})
             elif field == 'stop_loss':
-                supabase.table("trades").update({field: float(val)}).eq("trade_id", t_id).execute()
+                repo.update_trade(supabase, t_id, {field: float(val)})
             else:
                 save_val = "Skipped" if val == 'Skipped' else val
-                supabase.table("trades").update({field: save_val}).eq("trade_id", t_id).execute()
+                repo.update_trade(supabase, t_id, {field: save_val})
 
             bot.delete_message(chat_id, call.message.message_id)
             get_next_missing(chat_id)
@@ -1046,9 +1044,8 @@ def handle_all_messages(message):
         bot.send_message(chat_id, "🧹 *מבצע ניקוי היסטוריה (עסקאות מעל 30 יום בלבד)...*", parse_mode="Markdown")
         try:
             thirty_days_ago = (datetime.now() - pd.Timedelta(days=30)).strftime('%Y-%m-%d')
-            res = supabase.table("trades").select("*").lt("trade_date", thirty_days_ago).execute()
             count = 0
-            for t in res.data:
+            for t in repo.get_old_trades(supabase, thirty_days_ago):
                 needs_update = False
                 upd = {}
                 if t.get('setup_type') is None: upd['setup_type'] = "Legacy"; needs_update = True
@@ -1060,7 +1057,7 @@ def handle_all_messages(message):
                     if t.get('image_url') is None: upd['image_url'] = "Skipped"; needs_update = True
                     if t.get('management_notes') is None: upd['management_notes'] = "Skipped"; needs_update = True
                 if needs_update:
-                    supabase.table("trades").update(upd).eq("trade_id", t['trade_id']).execute()
+                    repo.update_trade(supabase, t['trade_id'], upd)
                     count += 1
             bot.send_message(chat_id, f"✅ ארכיון נקי! {count} עסקאות ישנות טופלו בהצלחה.", parse_mode="Markdown")
         except Exception as e:
@@ -1076,8 +1073,7 @@ def handle_all_messages(message):
             spy_hist = ec.get_cached_history("SPY", "1y", "1d")
             qqq_hist = ec.get_cached_history("QQQ", "1y", "1d")
             regime = ec.compute_market_regime(spy_hist, qqq_hist)
-            res = supabase.table("trades").select("*").execute()
-            df = pd.DataFrame(res.data)
+            df = pd.DataFrame(repo.get_all_trades(supabase))
             pos_res = ec.get_open_positions_campaign(df)
             open_pos = pos_res["data"] if pos_res["ok"] else pd.DataFrame()
             account_settings = get_account_settings()
@@ -1111,8 +1107,7 @@ def handle_all_messages(message):
     if text in ["📊 חדר מצב (פוזיציות)", "/portfolio"]:
         loading_msg = bot.send_message(chat_id, "⏳ *שואב נתונים ומרכיב דו\"ח...*", parse_mode="Markdown")
         try:
-            res = supabase.table("trades").select("*").execute()
-            df = pd.DataFrame(res.data)
+            df = pd.DataFrame(repo.get_all_trades(supabase))
             pos_res = ec.get_open_positions_campaign(df)
             if not pos_res["ok"]:
                 try: bot.delete_message(chat_id, loading_msg.message_id)
@@ -1270,8 +1265,7 @@ def handle_all_messages(message):
             regime_for_coaching = ec.compute_market_regime(spy_hist_caching)
             regime_status_str = regime_for_coaching.get('data', {}).get('status', '') if regime_for_coaching.get('ok') else ''
             try:
-                all_res = supabase.table("trades").select("campaign_id,pnl_usd,trade_date").execute()
-                camp_all = pd.DataFrame(all_res.data)
+                camp_all = pd.DataFrame(repo.get_campaigns_pnl(supabase))
                 if not camp_all.empty and 'campaign_id' in camp_all.columns:
                     closed_cids = camp_all.groupby('campaign_id')['pnl_usd'].sum()
                     wins_c = (closed_cids > 0).sum()
@@ -1365,7 +1359,7 @@ def handle_all_messages(message):
                 sym_ts  = state.get('sym', '')
                 cid_ts  = state.get('campaign_id', '')
                 if cid_ts:
-                    supabase.table("trades").update({"stop_loss": new_sl}).eq("campaign_id", cid_ts).eq("side", "BUY").execute()
+                    repo.update_stop_for_campaign(supabase, cid_ts, new_sl)
                     bot.send_message(chat_id, f"{RTL}🔒 *סטופ עודכן — {sym_ts}*\nסטופ חדש: `${new_sl:.2f}`", reply_markup=get_main_menu(), parse_mode="Markdown")
                 else:
                     bot.send_message(chat_id, "❌ תקלת מערכת: לא נמצא campaign_id.")
@@ -1378,7 +1372,7 @@ def handle_all_messages(message):
                 new_sl = float(text)
                 trade_id = state.get('t_id')
                 if trade_id:
-                    supabase.table("trades").update({"initial_stop": new_sl, "stop_loss": new_sl}).eq("trade_id", trade_id).execute()
+                    repo.update_trade(supabase, trade_id, {"initial_stop": new_sl, "stop_loss": new_sl})
                     bot.send_message(chat_id, f"🚀 *הסטופ ההתחלתי נשמר במערכת: ${new_sl:.2f}*", parse_mode="Markdown")
                 del user_state[chat_id]
                 get_next_missing(chat_id)
@@ -1391,7 +1385,7 @@ def handle_all_messages(message):
                 trade = state['selected_trade']
                 cid = trade.get('campaign_id')
                 if cid:
-                    supabase.table("trades").update({"stop_loss": new_sl}).eq("campaign_id", cid).eq("side", "BUY").execute()
+                    repo.update_stop_for_campaign(supabase, cid, new_sl)
                     bot.send_message(chat_id, f"🚀 *הסטופ עודכן בהצלחה!*\nנכס: `{trade['symbol']}`\nסטופ מעודכן ל: `${new_sl:.2f}`\nפקודות הקנייה בקמפיין עודכנו.", reply_markup=get_main_menu(), parse_mode="Markdown")
                 else: bot.send_message(chat_id, "❌ תקלת מערכת: לא נמצא מזהה קמפיין לעסקה זו.")
                 del user_state[chat_id]
@@ -1403,7 +1397,7 @@ def handle_all_messages(message):
             if message.content_type == 'photo':
                 bot.send_message(chat_id, "🚨 *שגיאה:* יש לשלוח לינק מ-TradingView, לא העלאת תמונה.", parse_mode="Markdown")
                 return
-            supabase.table("trades").update({"image_url": text.strip()}).eq("trade_id", t_id).execute()
+            repo.update_trade(supabase, t_id, {"image_url": text.strip()})
             bot.send_message(chat_id, "✅ תמונה נשמרה.", parse_mode="Markdown")
             del user_state[chat_id]
             get_next_missing(chat_id)
@@ -1413,7 +1407,7 @@ def handle_all_messages(message):
             if message.content_type != 'text':
                 bot.send_message(chat_id, "🚨 שגיאה: יש לשלוח הערת טקסט בלבד.", parse_mode="Markdown")
                 return
-            supabase.table("trades").update({"management_notes": text.strip()}).eq("trade_id", t_id).execute()
+            repo.update_trade(supabase, t_id, {"management_notes": text.strip()})
             bot.send_message(chat_id, "✅ תובנות הניהול נשמרו ביומן המערכת.", parse_mode="Markdown")
             del user_state[chat_id]
             get_next_missing(chat_id)
