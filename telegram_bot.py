@@ -88,6 +88,28 @@ def _dev_sync_record(state: dict):
         pass
 
 
+_RM_STATE_FILE = "risk_monitor_state.json"
+
+def _write_runner_decision(campaign_id: str, decision: str) -> None:
+    """Write runner_decision + runner_decision_ts into risk_monitor_state.json for the given campaign."""
+    try:
+        try:
+            with open(_RM_STATE_FILE, "r", encoding="utf-8") as f:
+                rm_state = json.load(f)
+        except Exception:
+            rm_state = {"positions": {}, "cluster": {}}
+        pos_entry = rm_state.setdefault("positions", {}).get(campaign_id)
+        if pos_entry is None:
+            rm_state["positions"][campaign_id] = {}
+            pos_entry = rm_state["positions"][campaign_id]
+        pos_entry["runner_decision"] = decision
+        pos_entry["runner_decision_ts"] = datetime.now().timestamp()
+        with open(_RM_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(rm_state, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
 def _read_last_log_lines(path: str, n: int = 50) -> str:
     try:
         if not os.path.exists(path):
@@ -694,6 +716,38 @@ def handle_queries(call):
                 )
             except Exception:
                 bot.send_message(chat_id, f"{RTL}📝 *הסבר מדוע דחית:*", parse_mode="Markdown")
+
+    elif data.startswith("runner_decision|"):
+        bot.answer_callback_query(call.id)
+        parts = data.split("|")
+        action   = parts[1] if len(parts) > 1 else ""
+        sym      = parts[2] if len(parts) > 2 else ""
+        cid      = parts[3] if len(parts) > 3 else ""
+        try: bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=None)
+        except Exception: pass
+
+        if action == "hold":
+            _write_runner_decision(cid, "hold")
+            if cid:
+                try:
+                    ts_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    supabase.table("trades").update({"management_notes": f"Runner: להחזיק ({ts_str})"}).eq("campaign_id", cid).eq("side", "BUY").execute()
+                except Exception: pass
+            bot.send_message(chat_id, f"{RTL}✅ *{sym} — להחזיק*\nההחלטה נרשמה. Sentinel לא ישלח התראות Runner ל-24 שעות.", parse_mode="Markdown")
+
+        elif action == "tighten":
+            user_state[chat_id] = {"action": "tighten_stop", "sym": sym, "campaign_id": cid}
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("❌ ביטול", callback_data="cancel_action"))
+            bot.send_message(chat_id, f"{RTL}🔒 *{sym} — הדקת סטופ*\nהזן את מחיר הסטופ החדש:", reply_markup=markup, parse_mode="Markdown")
+
+        elif action == "partial":
+            if cid:
+                try:
+                    ts_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    supabase.table("trades").update({"management_notes": f"Runner: כוונת מימוש חלקי ({ts_str})"}).eq("campaign_id", cid).eq("side", "BUY").execute()
+                except Exception: pass
+            bot.send_message(chat_id, f"{RTL}📊 *{sym} — מימוש חלקי*\nהכוונה נרשמה. בצע את הפקודה ב-IBKR ועדכן במערכת לאחר ביצוע.", parse_mode="Markdown")
 
     elif data.startswith("v|"):
         bot.answer_callback_query(call.id)
@@ -1303,6 +1357,20 @@ def handle_all_messages(message):
                     bot.send_message(chat_id, f"✅ בחרת ב-*{selected['symbol']}*.\nמחיר כניסה: `${selected['price']:.2f}`\nסטופ נוכחי: `${selected['stop_loss']:.2f}`\n\n*הקלד את מחיר הסטופ החדש:*", reply_markup=markup, parse_mode="Markdown")
                 else: bot.send_message(chat_id, f"❌ מספר לא תקין. בחר בין 1 ל-{len(positions)}.")
             except: bot.send_message(chat_id, "❌ נא להזין מספר בלבד.")
+            return
+
+        elif action == 'tighten_stop':
+            try:
+                new_sl = float(text)
+                sym_ts  = state.get('sym', '')
+                cid_ts  = state.get('campaign_id', '')
+                if cid_ts:
+                    supabase.table("trades").update({"stop_loss": new_sl}).eq("campaign_id", cid_ts).eq("side", "BUY").execute()
+                    bot.send_message(chat_id, f"{RTL}🔒 *סטופ עודכן — {sym_ts}*\nסטופ חדש: `${new_sl:.2f}`", reply_markup=get_main_menu(), parse_mode="Markdown")
+                else:
+                    bot.send_message(chat_id, "❌ תקלת מערכת: לא נמצא campaign_id.")
+                del user_state[chat_id]
+            except: bot.send_message(chat_id, "❌ מחיר לא תקין. נא להזין מספר (למשל 150.50).")
             return
 
         elif action == 'initial_stop':
