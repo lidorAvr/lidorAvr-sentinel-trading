@@ -28,6 +28,60 @@ PROFIT_CHECKPOINTS = [2.0, 3.0]  # Fire alert when open_r crosses these threshol
 DEVIATION_COOLDOWN_SEC  = 3 * 3600   # 3h cooldown for same deviation class
 GIVEBACK_COOLDOWN_SEC   = 6 * 3600   # 6h cooldown for same giveback class
 
+# Phase 5 — Anti-Spam: state-transition cooldowns (prevents oscillation re-alerts)
+STATE_ALERT_COOLDOWN = {
+    "RUNNER":     4 * 3600,   # 4h — price can oscillate around 5R threshold
+    "BROKEN":     4 * 3600,   # 4h — price can bounce around stop
+    "DEAD_MONEY": 12 * 3600,  # 12h — informational; state is stable but low urgency
+}
+
+# Alert priority tiers (reference; governs routing and cooldown expectations)
+ALERT_PRIORITY = {
+    # P0 — Critical: always fire immediately, no suppression
+    "stop_breach":            "P0",
+    "algo_cluster_red":       "P0",
+    "algo_deep_loss":         "P0",
+    "risk_deviation_system":  "P0",
+    # P1 — High: fire on transition; re-entry cooldown 4h
+    "broken_state":           "P1",
+    "runner_state":           "P1",
+    "breakeven_protocol":     "P1",
+    "risk_deviation_severe":  "P1",
+    "algo_loss_streak_orange": "P1",
+    # P2 — Medium: 6h standard cooldown
+    "profit_checkpoint":         "P2",
+    "risk_deviation_moderate":   "P2",
+    "giveback_tighten":          "P2",
+    "algo_cluster_yellow":       "P2",
+    "algo_loss_streak_yellow":   "P2",
+    # P3 — Low: market-hours gated, 12–24h cooldown
+    "dead_money_state":  "P3",
+    "algo_visibility":   "P3",
+    "adaptive_risk":     "P3",
+    "giveback_watch":    "P3",
+}
+
+def _should_fire_state_alert(new_state: str, prev_alerted_type: str,
+                              prev_alerted_ts: float, now_ts: float) -> bool:
+    """
+    Return True if a state-change alert should fire.
+
+    Logic:
+      - Always fire if transitioning to a state not seen before in this cycle.
+      - For states in STATE_ALERT_COOLDOWN, suppress re-entry alerts for the
+        cooldown period to prevent oscillation spam (e.g. price bouncing around
+        the RUNNER or BROKEN threshold multiple times per day).
+    """
+    cooldown = STATE_ALERT_COOLDOWN.get(new_state, 0)
+    if cooldown == 0:
+        return True
+    # Same state re-entered: only fire if cooldown has elapsed
+    if new_state == prev_alerted_type:
+        return (now_ts - prev_alerted_ts) >= cooldown
+    # Different state: always fire (state genuinely changed)
+    return True
+
+
 def load_state():
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f: return json.load(f)
@@ -489,7 +543,8 @@ def main():
                               "last_giveback_class", "last_giveback_ts", "checkpoints_hit",
                               "position_state", "state_label", "breakeven_alerted",
                               "algo_loss_streak", "algo_streak_alerted_yellow",
-                              "algo_streak_alerted_orange", "algo_deep_loss_alerted"):
+                              "algo_streak_alerted_orange", "algo_deep_loss_alerted",
+                              "last_state_alert_ts", "last_state_alert_type"):
                 if carry_key in prev:
                     new_pos_entry[carry_key] = prev[carry_key]
 
@@ -551,19 +606,29 @@ def main():
         _new_state  = _state_result["state"]
         _prev_state = new_pos_entry.get("position_state", "")
 
-        # State-change alerts (push only for high-priority transitions)
+        # Phase 5: state-change alerts with oscillation-safe cooldown
         if _new_state != _prev_state and _mgt_mode != "algo_observed":
-            if _new_state == ec.POSITION_STATE_RUNNER:
-                send_telegram(_runner_state_alert(
-                    sym, setup, open_r,
-                    _protected_profit, _giveback_usd, _giveback_pct,
-                    sl, _days_to_earnings,
-                ))
-            elif _new_state == ec.POSITION_STATE_BROKEN:
-                send_telegram(_broken_state_alert(sym, setup, open_r,
-                                                   _state_result["reason"]))
-            elif _new_state == ec.POSITION_STATE_DEAD_MONEY:
-                send_telegram(_dead_money_alert(sym, setup, _age_days, open_r))
+            _last_sa_type = new_pos_entry.get("last_state_alert_type", "")
+            _last_sa_ts   = new_pos_entry.get("last_state_alert_ts", 0.0)
+            _fire = _should_fire_state_alert(_new_state, _last_sa_type,
+                                             _last_sa_ts, now_ts)
+            if _fire:
+                if _new_state == ec.POSITION_STATE_RUNNER:
+                    send_telegram(_runner_state_alert(
+                        sym, setup, open_r,
+                        _protected_profit, _giveback_usd, _giveback_pct,
+                        sl, _days_to_earnings,
+                    ))
+                elif _new_state == ec.POSITION_STATE_BROKEN:
+                    send_telegram(_broken_state_alert(sym, setup, open_r,
+                                                       _state_result["reason"]))
+                elif _new_state == ec.POSITION_STATE_DEAD_MONEY:
+                    send_telegram(_dead_money_alert(sym, setup, _age_days, open_r))
+                else:
+                    _fire = False  # no alert for this state — don't update ts
+            if _fire:
+                new_pos_entry["last_state_alert_type"] = _new_state
+                new_pos_entry["last_state_alert_ts"]   = now_ts
 
         # Break-even Protocol: 3R+ but capital still at risk (one-time alert)
         if (open_r >= 3.0
