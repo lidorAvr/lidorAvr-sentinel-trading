@@ -372,28 +372,13 @@ def handle_portfolio_room(chat_id):
         spy_hist_caching = ec.get_cached_history("SPY", "1y", "1d")
         regime_for_coaching = ec.compute_market_regime(spy_hist_caching)
         regime_status_str = regime_for_coaching.get('data', {}).get('status', '') if regime_for_coaching.get('ok') else ''
-        # Compute win rate from closed discretionary campaigns only (matches dashboard logic).
-        # Using get_all_trades df (already loaded) avoids counting open campaigns as losses.
+        # Win rate from countable closed campaigns (matches dashboard: excludes ALGO + DATA_INCOMPLETE).
         try:
             wr_c = 0
-            if not df.empty and "campaign_id" in df.columns:
-                closed_wins = 0
-                closed_total = 0
-                for cid, grp in df.groupby("campaign_id"):
-                    if pd.isna(cid):
-                        continue
-                    setup_t = str(grp["setup_type"].iloc[0] if "setup_type" in grp.columns else "").upper()
-                    if setup_t == "ALGO":
-                        continue
-                    buys_q = grp[grp["quantity"] > 0]["quantity"].sum()
-                    sells_q = grp[grp["quantity"] < 0]["quantity"].abs().sum()
-                    if buys_q <= 0 or (buys_q - sells_q) / buys_q > 0.01:
-                        continue  # not fully closed
-                    total_pnl_c = grp[grp["quantity"] < 0]["pnl_usd"].sum()
-                    closed_total += 1
-                    if total_pnl_c > 0:
-                        closed_wins += 1
-                wr_c = closed_wins / closed_total if closed_total > 0 else 0
+            countable = [c for c in are.compute_closed_campaigns(df)
+                         if ec.is_stat_countable(c.get("stat_bucket", ""))]
+            if countable:
+                wr_c = sum(1 for c in countable if c.get("is_win")) / len(countable)
         except Exception:
             wr_c = 0
         coaching_insights = ec.generate_minervini_coaching(

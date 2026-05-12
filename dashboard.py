@@ -10,6 +10,7 @@ import numpy as np
 import json
 import xml.etree.ElementTree as ET
 import engine_core as ec
+import adaptive_risk_engine as are
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
@@ -384,10 +385,85 @@ else:
     st.sidebar.subheader("⚖️ Data Reconciliation")
     st.sidebar.write(f"Broker NAV: **${current_acc_size:,.2f}**")
     st.sidebar.write(f"Expected DB Equity: **${db_equity_expected:,.2f}**")
-    if abs(reconciliation_gap) > 10: 
+    if abs(reconciliation_gap) > 10:
         st.sidebar.warning(f"Unrecorded Legacy PnL: **${reconciliation_gap:,.2f}**\n\n*(הפרש נובע מעסקאות/הפקדות ישנות שאינן ב-DB)*")
-    else: 
+    else:
         st.sidebar.success(f"System completely synced. (Gap: ${reconciliation_gap:,.2f})")
+
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🎯 Adaptive Risk")
+
+    try:
+        _closed_for_rec = are.compute_closed_campaigns(raw_df) if not raw_df.empty else []
+        _risk_rec = are.compute_adaptive_risk(_closed_for_rec, risk_pct_input, current_acc_size)
+    except Exception:
+        _risk_rec = {"ok": False, "error": "compute_failed"}
+
+    if _risk_rec.get("ok"):
+        _rec_pct = _risk_rec["recommended_risk_pct"]
+        _rec_usd = _risk_rec["recommended_risk_usd"]
+        _dir = _risk_rec.get("direction", "hold")
+        _dir_emoji = {"up": "⬆️", "down_fast": "⬇️", "hold": "➡️"}.get(_dir, "➡️")
+        st.sidebar.write(
+            f"{_dir_emoji} **המלצה:** `{_rec_pct:.2f}%` (${_rec_usd:,.0f}) — "
+            f"_{_risk_rec.get('step_type', '')}_"
+        )
+
+        _delta_pct = risk_pct_input - _rec_pct
+        if abs(_delta_pct) < 0.01:
+            st.sidebar.success(f"🟢 מוגדר תואם המלצה ({risk_pct_input:.2f}%)")
+        elif _delta_pct > 0:
+            st.sidebar.warning(
+                f"⚠️ חורג לחיוב — מוגדר {risk_pct_input:.2f}% > מומלץ {_rec_pct:.2f}% "
+                f"(+{_delta_pct:.2f}% יותר אגרסיבי)"
+            )
+        else:
+            st.sidebar.info(
+                f"💡 חורג לשלילה — מוגדר {risk_pct_input:.2f}% < מומלץ {_rec_pct:.2f}% "
+                f"({_delta_pct:.2f}% פחות אגרסיבי)"
+            )
+    else:
+        st.sidebar.caption(_risk_rec.get("message", "לא ניתן לחשב המלצה"))
+
+    if not live_df.empty and 'OriginalRisk' in live_df.columns and target_risk_usd > 0:
+        _disc_open = live_df[live_df['Setup'].astype(str).str.upper() != 'ALGO']
+        _disc_open = _disc_open[_disc_open['OriginalRisk'] > 0]
+        if not _disc_open.empty:
+            _avg_sizing = (_disc_open['OriginalRisk'] / target_risk_usd).mean()
+            _n_open = len(_disc_open)
+            _dev_pct = (_avg_sizing - 1.0) * 100
+            if 0.95 <= _avg_sizing <= 1.15:
+                st.sidebar.success(
+                    f"🟢 פוזיציות פתוחות ({_n_open}): {_avg_sizing:.2f}x — Ideal"
+                )
+            elif _avg_sizing < 0.95:
+                st.sidebar.info(
+                    f"🟡 פוזיציות פתוחות ({_n_open}): {_avg_sizing:.2f}x — "
+                    f"חורג לשלילה ({_dev_pct:+.0f}% Undersized)"
+                )
+            else:
+                st.sidebar.warning(
+                    f"🔴 פוזיציות פתוחות ({_n_open}): {_avg_sizing:.2f}x — "
+                    f"חורג לחיוב ({_dev_pct:+.0f}% Oversized)"
+                )
+
+    _target_wr = 0.50
+    _actual_wr = disc_stats.get('win_rate', 0)
+    _wr_n = disc_stats.get('count', 0)
+    if _wr_n > 0:
+        _wr_delta = (_actual_wr - _target_wr) * 100
+        if abs(_wr_delta) < 2:
+            st.sidebar.success(f"🟢 Win Rate {_actual_wr*100:.1f}% (N={_wr_n}) — תואם יעד 50%")
+        elif _wr_delta > 0:
+            st.sidebar.success(
+                f"🟢 Win Rate {_actual_wr*100:.1f}% (N={_wr_n}) — "
+                f"חורג {_wr_delta:+.1f}% לחיוב מיעד 50%"
+            )
+        else:
+            st.sidebar.warning(
+                f"🟡 Win Rate {_actual_wr*100:.1f}% (N={_wr_n}) — "
+                f"חורג {_wr_delta:.1f}% מיעד 50%"
+            )
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("🤖 AI Master Context Export")

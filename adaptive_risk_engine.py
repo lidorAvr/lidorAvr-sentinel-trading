@@ -15,6 +15,7 @@ from __future__ import annotations
 import json, os
 from datetime import datetime
 import pandas as pd
+import engine_core as ec
 
 RISK_LADDER = [0.35, 0.50, 0.75, 1.00, 1.25, 1.50, 2.00, 2.50]
 RECOMMENDATIONS_LOG_FILE = "risk_recommendations.json"
@@ -87,31 +88,55 @@ def compute_closed_campaigns(trades_df: pd.DataFrame) -> list[dict]:
     for cid, group in df.groupby("campaign_id"):
         if pd.isna(cid):
             continue
-        buys_qty = group[group["quantity"] > 0]["quantity"].sum()
-        sells_qty = group[group["quantity"] < 0]["quantity"].abs().sum()
+        buys = group[group["quantity"] > 0]
+        sells = group[group["quantity"] < 0]
+        buys_qty = buys["quantity"].sum()
+        sells_qty = sells["quantity"].abs().sum()
         if buys_qty <= 0:
             continue
         if (buys_qty - sells_qty) / buys_qty > 0.01:
             continue
-
-        total_pnl = group[group["quantity"] < 0]["pnl_usd"].sum()
-        sell_rows = group[group["quantity"] < 0]
-        if sell_rows.empty:
+        if sells.empty:
             continue
 
-        close_date_raw = sell_rows["trade_date"].max()
+        total_pnl = sells["pnl_usd"].sum()
+
+        close_date_raw = sells["trade_date"].max()
         try:
             close_date = pd.to_datetime(close_date_raw)
         except Exception:
             close_date = datetime.now()
 
+        # Original campaign risk from first BUY day (matches dashboard logic).
+        try:
+            first_date = buys["trade_date"].min()
+            first_day = buys[buys["trade_date"] == first_date]
+            base_qty = float(first_day["quantity"].sum())
+            base_price = (
+                float((first_day["price"] * first_day["quantity"]).sum() / base_qty)
+                if base_qty > 0 else 0.0
+            )
+            init_sl_raw = first_day.iloc[0].get("initial_stop", 0)
+            init_sl = float(init_sl_raw) if init_sl_raw and not pd.isna(init_sl_raw) else 0.0
+            if init_sl > 0 and init_sl < base_price:
+                original_campaign_risk = round((base_price - init_sl) * base_qty, 2)
+            else:
+                original_campaign_risk = 0.0
+        except Exception:
+            original_campaign_risk = 0.0
+
+        setup_type = str(group.iloc[0].get("setup_type", "") or "")
+        stat_bucket = ec.classify_stat_bucket(setup_type, original_campaign_risk)
+
         closed.append({
             "campaign_id": cid,
             "symbol": str(group.iloc[0].get("symbol", "")),
-            "setup_type": str(group.iloc[0].get("setup_type", "") or ""),
+            "setup_type": setup_type,
             "total_pnl_usd": round(float(total_pnl), 2),
             "close_date": close_date,
             "is_win": float(total_pnl) > 0,
+            "original_campaign_risk": original_campaign_risk,
+            "stat_bucket": stat_bucket,
         })
 
     closed.sort(key=lambda x: x["close_date"], reverse=True)
@@ -142,8 +167,15 @@ def compute_adaptive_risk(
     recent_50 = closed_campaigns[:50]
     recent_10 = closed_campaigns[:10]
 
-    # Separate ALGO from discretionary — ALGO managed externally, carry less weight
-    disc_camps = [c for c in closed_campaigns if c.get("setup_type", "").upper() != "ALGO"]
+    # Discretionary = countable (excludes ALGO + DATA_INCOMPLETE so WR matches dashboard).
+    # Falls back to setup_type filter on legacy dicts without stat_bucket.
+    def _is_disc(c: dict) -> bool:
+        bucket = c.get("stat_bucket")
+        if bucket:
+            return ec.is_stat_countable(bucket)
+        return c.get("setup_type", "").upper() != "ALGO"
+
+    disc_camps = [c for c in closed_campaigns if _is_disc(c)]
     if disc_camps:
         actual_recent_10 = disc_camps[:10]
         actual_recent_50 = disc_camps[:50]
