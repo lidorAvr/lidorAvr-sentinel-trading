@@ -95,13 +95,14 @@ Completed extractions:
 - `supabase_repository.py` ✅ (dependency-injected repo layer, 24 tests)
 - `telegram_menus.py` ✅ (all menu/keyboard builders, 20 tests)
 - `bot_core.py` ✅ (shared bot/supabase/user_state/RTL instances)
-- `bot_helpers.py` ✅ (pure helpers: _bot_log, _read_last_log_lines, _write_runner_decision, get_account_settings, get_nav_and_risk)
+- `bot_helpers.py` ✅ (pure helpers, 15 tests)
 - `telegram_callbacks.py` ✅ (all @bot.callback_query_handler routes)
+- `telegram_backlog.py` ✅ (get_next_missing journal flow, 16 tests)
+- `telegram_portfolio.py` ✅ (handle_drilldown symbol X-ray, 13 tests)
 
 Remaining module split:
-- `telegram_backlog.py` — get_next_missing, journal scan, legacy cleanup
-- `telegram_portfolio.py` — handle_drilldown, portfolio/regime report builders
 - `telegram_handlers.py` — developer menu, analysis, misc message routing
+- portfolio room / market regime report builders (still inline in handle_all_messages)
 
 Rules:
 
