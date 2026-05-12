@@ -28,6 +28,60 @@ PROFIT_CHECKPOINTS = [2.0, 3.0]  # Fire alert when open_r crosses these threshol
 DEVIATION_COOLDOWN_SEC  = 3 * 3600   # 3h cooldown for same deviation class
 GIVEBACK_COOLDOWN_SEC   = 6 * 3600   # 6h cooldown for same giveback class
 
+# Phase 5 — Anti-Spam: state-transition cooldowns (prevents oscillation re-alerts)
+STATE_ALERT_COOLDOWN = {
+    "RUNNER":     4 * 3600,   # 4h — price can oscillate around 5R threshold
+    "BROKEN":     4 * 3600,   # 4h — price can bounce around stop
+    "DEAD_MONEY": 12 * 3600,  # 12h — informational; state is stable but low urgency
+}
+
+# Alert priority tiers (reference; governs routing and cooldown expectations)
+ALERT_PRIORITY = {
+    # P0 — Critical: always fire immediately, no suppression
+    "stop_breach":            "P0",
+    "algo_cluster_red":       "P0",
+    "algo_deep_loss":         "P0",
+    "risk_deviation_system":  "P0",
+    # P1 — High: fire on transition; re-entry cooldown 4h
+    "broken_state":           "P1",
+    "runner_state":           "P1",
+    "breakeven_protocol":     "P1",
+    "risk_deviation_severe":  "P1",
+    "algo_loss_streak_orange": "P1",
+    # P2 — Medium: 6h standard cooldown
+    "profit_checkpoint":         "P2",
+    "risk_deviation_moderate":   "P2",
+    "giveback_tighten":          "P2",
+    "algo_cluster_yellow":       "P2",
+    "algo_loss_streak_yellow":   "P2",
+    # P3 — Low: market-hours gated, 12–24h cooldown
+    "dead_money_state":  "P3",
+    "algo_visibility":   "P3",
+    "adaptive_risk":     "P3",
+    "giveback_watch":    "P3",
+}
+
+def _should_fire_state_alert(new_state: str, prev_alerted_type: str,
+                              prev_alerted_ts: float, now_ts: float) -> bool:
+    """
+    Return True if a state-change alert should fire.
+
+    Logic:
+      - Always fire if transitioning to a state not seen before in this cycle.
+      - For states in STATE_ALERT_COOLDOWN, suppress re-entry alerts for the
+        cooldown period to prevent oscillation spam (e.g. price bouncing around
+        the RUNNER or BROKEN threshold multiple times per day).
+    """
+    cooldown = STATE_ALERT_COOLDOWN.get(new_state, 0)
+    if cooldown == 0:
+        return True
+    # Same state re-entered: only fire if cooldown has elapsed
+    if new_state == prev_alerted_type:
+        return (now_ts - prev_alerted_ts) >= cooldown
+    # Different state: always fire (state genuinely changed)
+    return True
+
+
 def load_state():
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f: return json.load(f)
@@ -136,7 +190,8 @@ def _giveback_alert_text(sym, setup, peak_r, current_r, gb, is_algo):
     )
 
 
-def _checkpoint_alert_text(sym, setup, checkpoint_r, open_r, is_algo):
+def _checkpoint_alert_text(sym, setup, checkpoint_r, open_r, is_algo,
+                            protected_profit=None, giveback_usd=None, giveback_pct=None):
     RTL_M = "‏"
     mode = "ALGO | מנוהל חיצונית" if is_algo else setup
     if is_algo:
@@ -148,11 +203,122 @@ def _checkpoint_alert_text(sym, setup, checkpoint_r, open_r, is_algo):
         action_line = (
             f"{RTL_M}פעולה לפי מינרביני: לשקול הגנת רווח — העלאת סטופ, מימוש חלקי, או מעבר ל-Runner."
         )
+    extra = ""
+    if protected_profit is not None and giveback_usd is not None:
+        extra = (f"\n{RTL_M}• רווח מוגן: `${protected_profit:.0f}` "
+                 f"| Giveback עד סטופ: `${giveback_usd:.0f}`"
+                 + (f" ({giveback_pct:.0f}%)" if giveback_pct is not None else ""))
     return (
         f"{RTL_M}🏁 *Profit Protection Checkpoint — {checkpoint_r:.0f}R*\n"
         f"{RTL_M}סימול: *{sym}* | מצב: `{mode}`\n"
-        f"{RTL_M}Open R: `{open_r:.2f}R` חצה סף `{checkpoint_r:.0f}R`\n"
+        f"{RTL_M}Open R: `{open_r:.2f}R` חצה סף `{checkpoint_r:.0f}R`{extra}\n"
         f"{RTL_M}{action_line}"
+    )
+
+
+# ── Phase 3 — State-change alert templates ───────────────────────────────────
+
+def _runner_state_alert(sym, setup, open_r, protected_profit, giveback_usd,
+                         giveback_pct, current_stop, days_to_earnings):
+    RTL_M = "‏"
+    earnings_line = ""
+    if days_to_earnings is not None and days_to_earnings <= 30:
+        earnings_line = f"\n{RTL_M}• דוחות בעוד: `{days_to_earnings} ימים`"
+    return (
+        f"{RTL_M}🏃 *Runner Mode — {sym}*\n"
+        f"{RTL_M}הפוזיציה הגיעה ל-`{open_r:.1f}R` — מצב Runner.\n"
+        f"{RTL_M}─────────────────\n"
+        f"{RTL_M}• Open R: `{open_r:.1f}R`\n"
+        f"{RTL_M}• רווח מוגן (לפי סטופ): `${protected_profit:.0f}`\n"
+        f"{RTL_M}• Giveback עד סטופ: `${giveback_usd:.0f}` ({giveback_pct:.0f}%)\n"
+        f"{RTL_M}• סטופ נוכחי: `${current_stop:.2f}`{earnings_line}\n"
+        f"{RTL_M}─────────────────\n"
+        f"{RTL_M}✅ להחזיק אם יש Tennis Ball ומחזור יורד בירידות.\n"
+        f"{RTL_M}⚠️ Giveback > 40%? — שקל הדקת סטופ.\n"
+        f"{RTL_M}🚫 לא להוסיף לפני בסיס חדש."
+    )
+
+
+def _broken_state_alert(sym, setup, open_r, reason):
+    RTL_M = "‏"
+    return (
+        f"{RTL_M}🔴 *טרייד שבור — {sym}*\n"
+        f"{RTL_M}הפוזיציה כבר לא עומדת בתוכנית המקורית.\n"
+        f"{RTL_M}סיבה: `{reason}`\n"
+        f"{RTL_M}Open R: `{open_r:.1f}R`\n"
+        f"{RTL_M}─────────────────\n"
+        f"{RTL_M}• לפעול לפי תוכנית היציאה שהוגדרה מראש.\n"
+        f"{RTL_M}• לתעד: האם הייתה חריגת סיכון? נדרש Re-entry Watch?"
+    )
+
+
+def _dead_money_alert(sym, setup, age_days, open_r):
+    RTL_M = "‏"
+    return (
+        f"{RTL_M}⏳ *Dead Money Risk — {sym}*\n"
+        f"{RTL_M}הפוזיציה לא שבורה, אבל גם לא מתקדמת.\n"
+        f"{RTL_M}• ותק: `{age_days:.0f} ימים` | Open R: `{open_r:.1f}R`\n"
+        f"{RTL_M}─────────────────\n"
+        f"{RTL_M}✅ להחזיק אם יש Tight action ומחזור יורד.\n"
+        f"{RTL_M}↩️ לשקול צמצום אם יש הזדמנות טובה יותר.\n"
+        f"{RTL_M}🚫 לא להוסיף עד פריצה/חוזקה חדשה."
+    )
+
+
+def _breakeven_protocol_alert(sym, open_r, capital_at_risk_usd):
+    RTL_M = "‏"
+    return (
+        f"{RTL_M}🧷 *Breakeven Protection Required — {sym}*\n"
+        f"{RTL_M}הפוזיציה הגיעה ל-`{open_r:.1f}R`, אבל לפי הסטופ הנוכחי\n"
+        f"{RTL_M}עדיין קיים סיכון הון של `${capital_at_risk_usd:.0f}`.\n"
+        f"{RTL_M}זה לא מתאים לניהול Risk First.\n"
+        f"{RTL_M}─────────────────\n"
+        f"{RTL_M}1. לקדם סטופ לפחות לאזור כניסה.\n"
+        f"{RTL_M}2. לממש חלק ולהשאיר Runner.\n"
+        f"{RTL_M}3. להשאיר רק עם סיבה טכנית מתועדת.\n"
+        f"{RTL_M}🚫 לא לתת לפוזיציה של 3R להפוך להפסד מלא."
+    )
+
+
+# ── Phase 4 — ALGO Oversight alert templates ─────────────────────────────────
+
+def _algo_deep_loss_alert(sym, open_r):
+    RTL_M = "‏"
+    return (
+        f"{RTL_M}🔴 *ALGO Oversight — הפסד עמוק*\n"
+        f"{RTL_M}סימול: *{sym}* | Open R: `{open_r:.2f}R`\n"
+        f"{RTL_M}הפוזיציה חצתה ─2R — מגבלת הפסד גבוהה.\n"
+        f"{RTL_M}─────────────────\n"
+        f"{RTL_M}פיקוח: Sentinel לא תציע מכירה ולא תציע שינוי סטופ.\n"
+        f"{RTL_M}ℹ️ לוודא שהאלגו עדיין פעיל ועובד לפי הגדרות."
+    )
+
+
+def _algo_loss_streak_alert(sym, open_r, streak_runs, level):
+    RTL_M = "‏"
+    duration_min = streak_runs * 5
+    if level == "orange":
+        heading = f"🔴 *ALGO Oversight — ירידה ממושכת*"
+    else:
+        heading = f"⚠️ *ALGO Oversight — מגמת ירידה*"
+    return (
+        f"{RTL_M}{heading}\n"
+        f"{RTL_M}סימול: *{sym}* | Open R: `{open_r:.2f}R`\n"
+        f"{RTL_M}הפוזיציה בהפסד במשך ~{duration_min} דקות ברצף ({streak_runs} ריצות).\n"
+        f"{RTL_M}─────────────────\n"
+        f"{RTL_M}פיקוח: Sentinel לא מתערבת בניהול אלגו.\n"
+        f"{RTL_M}ℹ️ לוודא שהאלגו מחובר ופועל תקין."
+    )
+
+
+def _algo_visibility_alert(visibility_avg, n_positions):
+    RTL_M = "‏"
+    return (
+        f"{RTL_M}⚠️ *ALGO Oversight — שקיפות נמוכה*\n"
+        f"{RTL_M}ממוצע ניקוד שקיפות: `{visibility_avg:.0f}/100` ({n_positions} פוזיציות)\n"
+        f"{RTL_M}Sentinel לא רואה מספיק נתונים לפיקוח תקין.\n"
+        f"{RTL_M}─────────────────\n"
+        f"{RTL_M}ℹ️ לבדוק: הוזנו target_risk_usd? entry quality? חיבור IBKR?"
     )
 
 
@@ -292,6 +458,7 @@ def main():
     
     spy_hist = ec.get_cached_history("SPY", "1y", "1d")
     total_algo_exposure = 0.0
+    algo_oversight_positions = []
     new_position_state = {}
     now_ts = datetime.utcnow().timestamp()
 
@@ -373,7 +540,11 @@ def main():
         # Carry over threshold-tracking fields from previous state
         if prev:
             for carry_key in ("peak_open_r", "last_deviation_class", "last_deviation_ts",
-                              "last_giveback_class", "last_giveback_ts", "checkpoints_hit"):
+                              "last_giveback_class", "last_giveback_ts", "checkpoints_hit",
+                              "position_state", "state_label", "breakeven_alerted",
+                              "algo_loss_streak", "algo_streak_alerted_yellow",
+                              "algo_streak_alerted_orange", "algo_deep_loss_alerted",
+                              "last_state_alert_ts", "last_state_alert_type"):
                 if carry_key in prev:
                     new_pos_entry[carry_key] = prev[carry_key]
 
@@ -385,11 +556,143 @@ def main():
             prev_state=new_pos_entry, now_ts=now_ts,
         )
         new_pos_entry.update(threshold_updates)
+
+        # Enrich checkpoint alerts with Phase 1 protected-profit / giveback values
+        _side_pos = "BUY"
+        _open_pnl_at_stop = ec.compute_open_pnl_at_stop(_side_pos, entry, sl, qty)
+        _protected_profit  = ec.compute_protected_profit_usd(realized_pnl, _open_pnl_at_stop)
+        _giveback_usd      = ec.compute_giveback_usd(open_pnl, _open_pnl_at_stop)
+        _giveback_pct      = ec.compute_giveback_pct_of_open_profit(_giveback_usd, open_pnl)
+        _capital_at_risk   = ec.compute_capital_at_risk_usd(_side_pos, entry, sl, qty)
+
         for alert_text in threshold_alerts:
             send_telegram(alert_text)
 
+        # ── Phase 3: Position State Machine ──────────────────────────────────
+        # Age in days since campaign entry
+        try:
+            _entry_dt = pd.to_datetime(entry_date).to_pydatetime().replace(tzinfo=None)
+            _age_days = max(0.0, float((datetime.utcnow() - _entry_dt).days))
+        except Exception:
+            _age_days = 0.0
+
+        # Earnings window (cached, non-blocking)
+        _days_to_earnings = None
+        try:
+            _earn = ec.fetch_next_earnings_date(sym)
+            if _earn.get("ok") and _earn.get("days_to_event") is not None:
+                _days_to_earnings = int(_earn["days_to_event"])
+        except Exception:
+            pass
+
+        _mgt_mode = ec.classify_management_mode(setup, sym)
+
+        _state_result = ec.compute_position_state(
+            side=_side_pos,
+            management_mode=_mgt_mode,
+            age_days=_age_days,
+            open_r=open_r,
+            realized_pnl=realized_pnl,
+            original_campaign_risk=original_campaign_risk,
+            current_price=curr,
+            current_stop=sl,
+            days_to_earnings=_days_to_earnings,
+            follow_through_score=None,
+            violation_score=0,
+            has_new_high_since_entry=True,
+            has_open_quantity=(qty > 0),
+        )
+
+        _new_state  = _state_result["state"]
+        _prev_state = new_pos_entry.get("position_state", "")
+
+        # Phase 5: state-change alerts with oscillation-safe cooldown
+        if _new_state != _prev_state and _mgt_mode != "algo_observed":
+            _last_sa_type = new_pos_entry.get("last_state_alert_type", "")
+            _last_sa_ts   = new_pos_entry.get("last_state_alert_ts", 0.0)
+            _fire = _should_fire_state_alert(_new_state, _last_sa_type,
+                                             _last_sa_ts, now_ts)
+            if _fire:
+                if _new_state == ec.POSITION_STATE_RUNNER:
+                    send_telegram(_runner_state_alert(
+                        sym, setup, open_r,
+                        _protected_profit, _giveback_usd, _giveback_pct,
+                        sl, _days_to_earnings,
+                    ))
+                elif _new_state == ec.POSITION_STATE_BROKEN:
+                    send_telegram(_broken_state_alert(sym, setup, open_r,
+                                                       _state_result["reason"]))
+                elif _new_state == ec.POSITION_STATE_DEAD_MONEY:
+                    send_telegram(_dead_money_alert(sym, setup, _age_days, open_r))
+                else:
+                    _fire = False  # no alert for this state — don't update ts
+            if _fire:
+                new_pos_entry["last_state_alert_type"] = _new_state
+                new_pos_entry["last_state_alert_ts"]   = now_ts
+
+        # Break-even Protocol: 3R+ but capital still at risk (one-time alert)
+        if (open_r >= 3.0
+                and _capital_at_risk > 0
+                and not new_pos_entry.get("breakeven_alerted", False)
+                and _mgt_mode != "algo_observed"):
+            send_telegram(_breakeven_protocol_alert(sym, open_r, _capital_at_risk))
+            new_pos_entry["breakeven_alerted"] = True
+
+        new_pos_entry["position_state"] = _new_state
+        new_pos_entry["state_label"]    = _state_result["label"]
+        # ─────────────────────────────────────────────────────────────────────
+
+        # ── Phase 4: ALGO Oversight per-position ─────────────────────────────
+        if _mgt_mode == "algo_observed":
+            # Consecutive loss streak (one run = ~5 min)
+            _prev_streak = new_pos_entry.get("algo_loss_streak", 0)
+            _new_streak = _prev_streak + 1 if open_r < 0 else 0
+            new_pos_entry["algo_loss_streak"] = _new_streak
+
+            _alerted_yellow = new_pos_entry.get("algo_streak_alerted_yellow", False)
+            _alerted_orange = new_pos_entry.get("algo_streak_alerted_orange", False)
+
+            if _new_streak >= 5 and not _alerted_orange:
+                send_telegram(_algo_loss_streak_alert(sym, open_r, _new_streak, "orange"))
+                new_pos_entry["algo_streak_alerted_orange"] = True
+            elif _new_streak >= 3 and not _alerted_yellow:
+                send_telegram(_algo_loss_streak_alert(sym, open_r, _new_streak, "yellow"))
+                new_pos_entry["algo_streak_alerted_yellow"] = True
+
+            if _new_streak == 0:  # Position recovered — reset streak flags
+                new_pos_entry["algo_streak_alerted_yellow"] = False
+                new_pos_entry["algo_streak_alerted_orange"] = False
+
+            # Single deep-loss alert (open_r ≤ −2R)
+            if open_r <= -2.0 and not new_pos_entry.get("algo_deep_loss_alerted", False):
+                send_telegram(_algo_deep_loss_alert(sym, open_r))
+                new_pos_entry["algo_deep_loss_alerted"] = True
+            if open_r > -1.0:  # Significant recovery — allow re-alert if it dips again
+                new_pos_entry["algo_deep_loss_alerted"] = False
+
+            # Collect for portfolio-level summary check
+            _oversight_score = engine.get("risk_visibility_score", 0)
+            algo_oversight_positions.append({
+                "symbol": sym, "pos_value": pos_value,
+                "oversight_score": _oversight_score, "open_r": open_r,
+                "campaign_id": campaign_id,
+            })
+        # ─────────────────────────────────────────────────────────────────────
+
         new_position_state[campaign_id] = new_pos_entry
         
+    # ── Phase 4: ALGO Oversight — portfolio-level visibility check ───────────
+    if algo_oversight_positions:
+        _algo_summary = ec.compute_algo_oversight_summary(algo_oversight_positions, acc_size)
+        if _algo_summary["visibility_below_threshold"]:
+            _prev_vis_ts = state.get("algo_visibility_alerted_ts", 0)
+            if (now_ts - _prev_vis_ts) > 24 * 3600:
+                send_telegram(_algo_visibility_alert(
+                    _algo_summary["visibility_avg"],
+                    _algo_summary["n_positions"],
+                ))
+                state["algo_visibility_alerted_ts"] = now_ts
+
     algo_cluster_pct = (total_algo_exposure / acc_size) * 100 if acc_size > 0 else 0
     prev_cluster = state.get("cluster", {})
     prev_cluster_status = prev_cluster.get("status", "green")

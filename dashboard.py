@@ -391,6 +391,17 @@ else:
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("🤖 AI Master Context Export")
+
+    # Phase 6: load persisted position states from risk monitor
+    try:
+        with open("risk_monitor_state.json", "r", encoding="utf-8") as _f:
+            _rm_positions = json.load(_f).get("positions", {})
+    except Exception:
+        _rm_positions = {}
+
+    # Phase 6: precompute context data per campaign (used in Section 2 + 4)
+    _pos_context_map: dict = {}
+
     ai_str = f"# 🛡️ Sentinel AI - Master Context Report\n\n"
     ai_str += f"## ⚠️ Sentinel Observer Note\n"
     ai_str += f"- ALGO positions (management_mode=algo_observed) are managed externally. "
@@ -443,9 +454,46 @@ else:
             earnings_str = earnings_info['cushion_verdict']
             if earnings_info.get('date'):
                 earnings_str += f" ({earnings_info['date'].strftime('%d/%m/%Y')})"
+            _days_to_earn = earnings_info.get('days_to_event') if earnings_info.get('ok') else None
+
+            # Phase 6 — enriched context block
+            _campaign_id = row.get('campaign_id', '')
+            _rm_pos = _rm_positions.get(_campaign_id, {})
+            _ctx = ec.build_position_context_data(
+                sym=sym, setup=setup, entry=entry, curr_p=curr_p,
+                qty=qty, sl=sl, init_sl=init_sl,
+                base_price=base_price, base_qty=base_qty,
+                realized_pnl=float(row.get('realized_pnl', 0.0)),
+                target_risk_usd=target_risk_usd,
+                management_mode=mgmt_mode,
+                days_to_earnings=_days_to_earn,
+                position_state=_rm_pos.get('position_state', ''),
+                state_label=_rm_pos.get('state_label', ''),
+                breakeven_alerted=_rm_pos.get('breakeven_alerted', False),
+            )
+            _pos_context_map[_campaign_id] = _ctx
+
+            _sizing = _ctx['sizing']
+            _sizing_known = _sizing.get('classification', 'Unknown') != 'Unknown'
+            _sizing_str = (f"{_sizing['classification']} ({_sizing['sizing_ratio']:.2f}x)"
+                           if _sizing_known else "N/A (missing data)")
+            _ev = _ctx['event_risk']
+            _ev_str = (f"⚠️ Event Risk ({_ev['days']}d, {_ev['severity']})"
+                       if _ev.get('active') else "Clear")
+            _state_str = _ctx['state_label'] or _ctx['position_state'] or "unknown"
+
             ai_str += f"- {sym} [{setup}] | Mode: {mgmt_mode} | RiskBasis: {risk_basis} | Visibility: {risk_vis}/100\n"
             ai_str += f"  Entry: ${entry:.2f} | Curr: ${curr_p:.2f} | InitStop: {init_stop_str} | CurrStop: {stop_display} | OpenPnL: ${open_pnl:.2f} | OpenR: {open_r_str}{risk_dev}\n"
-            ai_str += f"  Earnings: {earnings_str}\n"
+            ai_str += f"  Earnings: {earnings_str} | EventRisk: {_ev_str}\n"
+            ai_str += f"  State: {_state_str} | Sizing: {_sizing_str}\n"
+            if not is_algo_pos and _ctx['has_profit']:
+                ai_str += (f"  Protected Profit: ${_ctx['protected_profit']:.0f}"
+                           f" | Giveback to Stop: ${_ctx['giveback_usd']:.0f}"
+                           f" ({_ctx['giveback_pct']:.0f}%)\n")
+            if not is_algo_pos and _ctx['capital_at_risk'] > 0:
+                _be_str = "✅ Done" if _ctx['breakeven_alerted'] else "⚠️ Pending"
+                ai_str += (f"  Capital at Risk: ${_ctx['capital_at_risk']:.0f}"
+                           f" | Breakeven Protocol: {_be_str}\n")
     else: ai_str += "No open positions.\n"
     
     ai_str += f"\n## 📅 3. Execution Archive (Recent Campaigns)\n"
@@ -486,6 +534,9 @@ else:
         for _, pos in live_df.iterrows():
             decisions = []
             is_algo_pos = str(pos['Setup']).upper() == 'ALGO'
+            _sym_cid = pos.get('campaign_id', '')
+            _pctx = _pos_context_map.get(_sym_cid, {})
+
             if pos['CapitalRisk'] > 0 and not is_algo_pos:
                 decisions.append(f"סטופ מתחת לבסיס — סיכון הון פתוח ${pos['CapitalRisk']:,.0f}")
             if pos['GivebackRisk'] > 0:
@@ -495,6 +546,20 @@ else:
             earnings_info = ec.fetch_next_earnings_date(pos['Symbol'])
             if earnings_info['ok'] and earnings_info.get('days_to_event', 99) <= 14:
                 decisions.append(f"דוח רווחים תוך {earnings_info['days_to_event']} ימים — לקבל החלטה על גודל פוזיציה")
+
+            # Phase 6 — state-machine & sizing context
+            _p_state = _pctx.get('position_state', '')
+            if _p_state == 'BROKEN':
+                decisions.append("מצב BROKEN — לבחון יציאה לפי תוכנית מוגדרת מראש")
+            elif _p_state == 'DEAD_MONEY':
+                decisions.append("מצב Dead Money — לשקול צמצום אם יש הזדמנות טובה יותר")
+            _ev = _pctx.get('event_risk', {})
+            if _ev.get('active') and _ev.get('days') is not None and _ev['days'] <= 7:
+                decisions.append(f"Event Risk קריטי — דוחות בעוד {_ev['days']} ימים ({_ev['severity']})")
+            _sz = _pctx.get('sizing', {})
+            if _sz.get('alert_level') in ('warning', 'danger') and not is_algo_pos:
+                decisions.append(f"Sizing: {_sz.get('label', '')} — לבדוק יחס סיכון")
+
             if decisions:
                 ai_str += f"- **{pos['Symbol']}**: " + " | ".join(decisions) + "\n"
         if not any(True for _ in live_df.iterrows()):

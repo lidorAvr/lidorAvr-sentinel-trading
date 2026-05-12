@@ -897,6 +897,269 @@ def compute_giveback_from_peak(peak_open_r, current_open_r):
     }
 
 
+# ── Phase 1 — Risk Basis Engine ───────────────────────────────────────────────
+# Standalone, pure functions.  No side-effects, no DB/yfinance calls.
+# Every subsequent module (State Machine, Profit Protection, Runner) builds on
+# these primitives.  All monetary values in USD; R values dimensionless ratios.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Data scope constants — attach to every reported metric so consumers know
+# the coverage window of the underlying data.
+DATA_SCOPE_YTD         = "YTD"
+DATA_SCOPE_SINCE_IMPORT = "Since Import"
+DATA_SCOPE_FULL_HISTORY = "Full History"
+DATA_SCOPE_ESTIMATED   = "Estimated"
+DATA_SCOPE_UNKNOWN     = "Unknown"
+
+# ── Sample-size thresholds ────────────────────────────────────────────────────
+_SAMPLE_INITIAL  = 30   # below → stats are preliminary
+_SAMPLE_USABLE   = 30   # >= → useful for risk management
+_SAMPLE_SIGNIFICANT = 100  # >= → can rely on expectancy
+
+
+def compute_original_campaign_risk(
+    side: str,
+    entry_price: float,
+    initial_stop: float,
+    quantity: float,
+    fees: float = 0.0,
+) -> float:
+    """
+    True initial risk = (entry − initial_stop) × qty + fees.
+
+    Returns 0.0 when any value is invalid (no stop, zero quantity, etc.).
+    LONG:  entry_price > initial_stop.
+    SHORT: initial_stop > entry_price.
+    """
+    if entry_price <= 0 or initial_stop <= 0 or quantity <= 0:
+        return 0.0
+    if side.upper() in ("BUY", "LONG"):
+        risk_per_share = entry_price - initial_stop
+    else:
+        risk_per_share = initial_stop - entry_price
+    return round(max(0.0, risk_per_share * quantity + fees), 2)
+
+
+def compute_frozen_target_risk(
+    base_capital: float,
+    nav: float,
+    target_risk_pct: float,
+) -> dict:
+    """
+    Freeze both risk-USD values at the moment of entry.
+
+    Always store BOTH.  Performance stats use target_risk_current_nav;
+    risk-mode transitions use target_risk_base_capital for stability.
+    """
+    return {
+        "target_risk_base_capital": round(base_capital * target_risk_pct, 2),
+        "target_risk_current_nav":  round(nav * target_risk_pct, 2),
+    }
+
+
+def compute_r_true(net_pnl: float, original_campaign_risk: float) -> float:
+    """R using actual initial risk (risk_basis = True)."""
+    if original_campaign_risk <= 0:
+        return 0.0
+    return round(net_pnl / original_campaign_risk, 2)
+
+
+def compute_r_target(net_pnl: float, frozen_target_risk_usd: float) -> float:
+    """R using frozen target risk at entry (risk_basis = Target)."""
+    if frozen_target_risk_usd <= 0:
+        return 0.0
+    return round(net_pnl / frozen_target_risk_usd, 2)
+
+
+def compute_capital_at_risk_usd(
+    side: str,
+    avg_entry_price: float,
+    current_stop: float,
+    open_quantity: float,
+) -> float:
+    """
+    Capital still at risk given current stop.
+
+    Returns 0.0 when stop has moved above entry (long) or below (short) —
+    meaning capital risk is fully protected, only giveback of open profit remains.
+    """
+    if open_quantity <= 0 or avg_entry_price <= 0 or current_stop <= 0:
+        return 0.0
+    if side.upper() in ("BUY", "LONG"):
+        at_risk = (avg_entry_price - current_stop) * open_quantity
+    else:
+        at_risk = (current_stop - avg_entry_price) * open_quantity
+    return round(max(0.0, at_risk), 2)
+
+
+def compute_open_pnl_at_stop(
+    side: str,
+    avg_entry_price: float,
+    current_stop: float,
+    open_quantity: float,
+    estimated_exit_fees: float = 0.0,
+) -> float:
+    """P&L if the remaining open position exits at the current stop right now."""
+    if open_quantity <= 0 or avg_entry_price <= 0 or current_stop <= 0:
+        return 0.0
+    if side.upper() in ("BUY", "LONG"):
+        pnl = (current_stop - avg_entry_price) * open_quantity - estimated_exit_fees
+    else:
+        pnl = (avg_entry_price - current_stop) * open_quantity - estimated_exit_fees
+    return round(pnl, 2)
+
+
+def compute_protected_profit_usd(
+    realized_pnl: float,
+    open_pnl_at_stop: float,
+) -> float:
+    """
+    Profit locked in = realized PnL + what you'd net if you exited at stop now.
+
+    open_pnl_at_stop can be negative (stop is below entry) — that portion is not
+    'protected', so we floor it at 0 for this calculation.
+    """
+    return round(realized_pnl + max(0.0, open_pnl_at_stop), 2)
+
+
+def compute_giveback_usd(open_pnl: float, open_pnl_at_stop: float) -> float:
+    """
+    Open profit that would be surrendered between current price and current stop.
+
+    Only meaningful when open_pnl > 0.  Returns 0 when underwater.
+    """
+    if open_pnl <= 0:
+        return 0.0
+    return round(max(0.0, open_pnl - open_pnl_at_stop), 2)
+
+
+def compute_giveback_pct_of_open_profit(
+    giveback_usd: float, open_pnl: float
+) -> float:
+    """Giveback as % of current open profit.  Returns 0.0 when no open profit."""
+    if open_pnl <= 0:
+        return 0.0
+    return round((giveback_usd / open_pnl) * 100, 1)
+
+
+# Giveback severity buckets used by the anti-spam dedup system.
+GIVEBACK_BUCKET_CONSERVATIVE = 25.0   # 0–25 %
+GIVEBACK_BUCKET_NORMAL       = 40.0   # 25–40 %
+GIVEBACK_BUCKET_WIDE         = 60.0   # 40–60 %
+# > 60 % = Excessive
+
+
+def classify_giveback_severity(giveback_pct_of_open_profit: float) -> str:
+    """Returns 'conservative'|'normal'|'wide'|'excessive'."""
+    g = giveback_pct_of_open_profit
+    if g <= GIVEBACK_BUCKET_CONSERVATIVE:
+        return "conservative"
+    if g <= GIVEBACK_BUCKET_NORMAL:
+        return "normal"
+    if g <= GIVEBACK_BUCKET_WIDE:
+        return "wide"
+    return "excessive"
+
+
+# ── Position Sizing Quality ───────────────────────────────────────────────────
+
+_SIZING_TIERS = [
+    # (upper_bound_exclusive, classification, score, countable, alert_level)
+    (0.35, "Micro Probe",      30,  False, None),
+    (0.60, "Probe",            50,  False, None),
+    (0.85, "Undersized",       70,  True,  None),
+    (1.15, "Ideal",            100, True,  None),
+    (1.30, "Slight Oversize",  80,  True,  "yellow"),
+    (1.50, "Oversized",        55,  True,  "orange"),
+]
+_SIZING_CRITICAL = ("Critical Oversize", 20, True, "red")
+
+
+def compute_sizing_ratio(
+    original_campaign_risk: float,
+    frozen_target_risk_usd: float,
+) -> dict:
+    """
+    sizing_ratio = original_campaign_risk / frozen_target_risk_usd.
+
+    Returns:
+      sizing_ratio          float
+      classification        str  (e.g. "Ideal", "Oversized", "Micro Probe")
+      score                 int  0–100
+      countable_for_main_stats  bool
+      alert_level           str | None  ("yellow"/"orange"/"red")
+    """
+    if frozen_target_risk_usd <= 0 or original_campaign_risk <= 0:
+        return {
+            "sizing_ratio": 0.0,
+            "classification": "Unknown",
+            "score": 0,
+            "countable_for_main_stats": False,
+            "alert_level": None,
+        }
+    ratio = original_campaign_risk / frozen_target_risk_usd
+    for upper, label, score, countable, alert in _SIZING_TIERS:
+        if ratio < upper:
+            return {
+                "sizing_ratio": round(ratio, 2),
+                "classification": label,
+                "score": score,
+                "countable_for_main_stats": countable,
+                "alert_level": alert,
+            }
+    label, score, countable, alert = _SIZING_CRITICAL
+    return {
+        "sizing_ratio": round(ratio, 2),
+        "classification": label,
+        "score": score,
+        "countable_for_main_stats": countable,
+        "alert_level": alert,
+    }
+
+
+# ── Data Scope helpers ────────────────────────────────────────────────────────
+
+def get_sample_size_context(countable_trades: int) -> dict:
+    """
+    Returns context dict for any reported statistic.
+
+    Keys:
+      countable_trades   int
+      warning            bool   True when trades < _SAMPLE_INITIAL (30)
+      usable             bool   True when trades >= 30
+      significant        bool   True when trades >= 100
+      label              str    Hebrew description of the sample state
+    """
+    if countable_trades < _SAMPLE_INITIAL:
+        label = "סטטיסטיקה ראשונית בלבד — אין לאשר הגדלת סיכון אגרסיבית"
+    elif countable_trades < _SAMPLE_SIGNIFICANT:
+        label = "המדגם מתחיל להיות שימושי לניהול סיכון"
+    else:
+        label = "מדגם משמעותי — ניתן להסתמך יותר על מדדי תוחלת"
+    return {
+        "countable_trades": countable_trades,
+        "warning":     countable_trades < _SAMPLE_INITIAL,
+        "usable":      countable_trades >= _SAMPLE_INITIAL,
+        "significant": countable_trades >= _SAMPLE_SIGNIFICANT,
+        "label":       label,
+    }
+
+
+def add_data_scope(value, scope: str, countable_trades: int | None = None) -> dict:
+    """
+    Wrap any metric value with its data scope and optional sample context.
+
+    Usage:
+        win_rate_obj = add_data_scope(0.444, DATA_SCOPE_YTD, countable_trades=9)
+        # → {"value": 0.444, "scope": "YTD", "countable_trades": 9, "sample_warning": True}
+    """
+    result: dict = {"value": value, "scope": scope}
+    if countable_trades is not None:
+        result["countable_trades"] = countable_trades
+        result["sample_warning"] = countable_trades < _SAMPLE_INITIAL
+    return result
+
+
 def compute_data_quality_badge(setup_type, entry_price, quantity, stop, init_sl, target_risk_usd=0):
     """
     Compute a data quality badge for a position.
@@ -1039,6 +1302,71 @@ def compute_algo_risk_oversight_score(
             break
 
     return {"score": score, "label": label, "details": details}
+
+
+# ── Phase 4: ALGO Oversight Summary ───────────────────────────────────────────
+
+def compute_algo_oversight_summary(algo_positions: list, acc_size: float) -> dict:
+    """
+    Aggregate ALGO oversight metrics across all open ALGO positions.
+
+    algo_positions: list of dicts with keys:
+        symbol, pos_value, oversight_score, open_r, campaign_id
+    acc_size: account NAV
+
+    Returns:
+        n_positions            int
+        total_exposure_usd     float
+        total_exposure_pct     float
+        visibility_avg         float  (avg oversight_score, 0-100)
+        visibility_below_threshold bool  (avg < 60)
+        symbol_cap_breaches    list of {symbol, exposure_pct, cap_pct}
+        deep_loss_positions    list of {symbol, open_r, campaign_id}  (open_r <= -2.0)
+    """
+    if not algo_positions:
+        return {
+            "n_positions": 0,
+            "total_exposure_usd": 0.0,
+            "total_exposure_pct": 0.0,
+            "visibility_avg": 100.0,
+            "visibility_below_threshold": False,
+            "symbol_cap_breaches": [],
+            "deep_loss_positions": [],
+        }
+
+    total_exp = sum(p["pos_value"] for p in algo_positions)
+    total_exp_pct = (total_exp / acc_size * 100) if acc_size > 0 else 0.0
+    vis_avg = sum(p["oversight_score"] for p in algo_positions) / len(algo_positions)
+
+    # Aggregate per-symbol exposure across campaigns for the same symbol
+    sym_exposure: dict = {}
+    for p in algo_positions:
+        sym = str(p["symbol"]).upper()
+        sym_exposure[sym] = sym_exposure.get(sym, 0.0) + p["pos_value"]
+
+    cap_breaches = []
+    for sym, val in sym_exposure.items():
+        exp_pct = (val / acc_size * 100) if acc_size > 0 else 0.0
+        cap = ALGO_SYMBOL_LIMITS.get(sym, 100.0)
+        if exp_pct > cap:
+            cap_breaches.append({"symbol": sym,
+                                  "exposure_pct": round(exp_pct, 1),
+                                  "cap_pct": cap})
+
+    deep_loss = [
+        {"symbol": p["symbol"], "open_r": p["open_r"], "campaign_id": p["campaign_id"]}
+        for p in algo_positions if p["open_r"] <= -2.0
+    ]
+
+    return {
+        "n_positions": len(algo_positions),
+        "total_exposure_usd": round(total_exp, 2),
+        "total_exposure_pct": round(total_exp_pct, 2),
+        "visibility_avg": round(vis_avg, 1),
+        "visibility_below_threshold": vis_avg < 60.0,
+        "symbol_cap_breaches": cap_breaches,
+        "deep_loss_positions": deep_loss,
+    }
 
 
 # ── Earnings Risk Module ───────────────────────────────────────────────────────
@@ -1269,3 +1597,321 @@ def classify_mistake(intent: str, stat_bucket: str, pnl_usd: float,
     if any(w in notes for w in ("violated", "no stop", "moved stop", "averaged down", "חריגה")):
         return "bad_loss"
     return "unknown"
+
+
+# ── Phase 2 — Position State Machine ─────────────────────────────────────────
+# Pure classification — no DB, no yfinance, no side-effects.
+# The caller (risk_monitor.py) fetches live prices, earnings dates, and
+# follow-through scores, then passes them here.
+#
+# State priority (highest first):
+#   1. ALGO_OBSERVED  — externally managed, oversight only
+#   2. DATA_INCOMPLETE — missing critical data to compute R
+#   3. BROKEN          — price traded through stop, or violation_score >= 6
+#   4. RUNNER          — open_r >= 5R, or realized >= original_risk with trend
+#   5. PROFIT_PROTECTION — open_r >= 2R
+#   6. WORKING         — open_r >= 1R with acceptable follow-through
+#   7. YELLOW_FLAG     — violation_score 2-5 (minor/major violations)
+#   8. DEAD_MONEY      — age >= 8d, flat R, no new high, weak follow-through
+#   9. PROVING         — age 3-7d, R in early range
+#  10. NEW             — age <= 2d
+#  11. Fallback        — PROVING (catch-all for edge cases)
+#
+# EVENT_RISK is always a secondary flag (can co-exist with any primary state).
+# ─────────────────────────────────────────────────────────────────────────────
+
+POSITION_STATE_NEW               = "NEW"
+POSITION_STATE_PROVING           = "PROVING"
+POSITION_STATE_WORKING           = "WORKING"
+POSITION_STATE_PROFIT_PROTECTION = "PROFIT_PROTECTION"
+POSITION_STATE_RUNNER            = "RUNNER"
+POSITION_STATE_YELLOW_FLAG       = "YELLOW_FLAG"
+POSITION_STATE_BROKEN            = "BROKEN"
+POSITION_STATE_DEAD_MONEY        = "DEAD_MONEY"
+POSITION_STATE_ALGO_OBSERVED     = "ALGO_OBSERVED"
+POSITION_STATE_DATA_INCOMPLETE   = "DATA_INCOMPLETE"
+
+_STATE_LABELS: dict[str, str] = {
+    POSITION_STATE_NEW:               "🆕 חדש",
+    POSITION_STATE_PROVING:           "🔍 מוכיח",
+    POSITION_STATE_WORKING:           "✅ עובד",
+    POSITION_STATE_PROFIT_PROTECTION: "🛡️ הגנת רווח",
+    POSITION_STATE_RUNNER:            "🏃 Runner Mode",
+    POSITION_STATE_YELLOW_FLAG:       "🟡 דגל צהוב",
+    POSITION_STATE_BROKEN:            "🔴 שבור",
+    POSITION_STATE_DEAD_MONEY:        "⏳ Dead Money",
+    POSITION_STATE_ALGO_OBSERVED:     "🤖 ALGO — פיקוח בלבד",
+    POSITION_STATE_DATA_INCOMPLETE:   "⚠️ נתונים חלקיים",
+}
+
+# R thresholds
+_R_RUNNER          = 5.0
+_R_PROFIT_PROTECT  = 2.0
+_R_WORKING         = 1.0
+
+# Runner via realized PnL: realized_pnl >= original_campaign_risk + follow-through OK
+_RUNNER_FOLLOW_THROUGH_MIN = 70.0
+
+# Working: follow-through must be OK (or unknown → benefit of the doubt)
+_WORKING_FOLLOW_THROUGH_MIN = 60.0
+
+# Dead Money
+_DEAD_MONEY_MIN_DAYS          = 8
+_DEAD_MONEY_MIN_R             = -0.5
+_DEAD_MONEY_MAX_R             = 0.75
+_DEAD_MONEY_FOLLOW_MAX        = 50.0   # follow_through_score < this → weak
+
+# Proving window
+_PROVING_MIN_DAYS = 3
+_PROVING_MAX_DAYS = 7
+_NEW_MAX_DAYS     = 2
+
+# Violation score thresholds
+_VIOLATION_YELLOW_FLAG = 2
+_VIOLATION_BROKEN      = 6
+
+# Event Risk windows
+_EVENT_RISK_MAX_DAYS    = 15
+_EVENT_RISK_ORANGE_DAYS = 7
+_EVENT_RISK_RED_DAYS    = 3
+
+
+def compute_event_risk_info(
+    days_to_earnings: "int | None",
+    management_mode: str,
+) -> dict:
+    """
+    Compute event-risk flag and severity.
+
+    Only active for manual_managed positions — ALGO positions carry their own
+    event risk independently of Sentinel.
+
+    Returns:
+      active    bool
+      severity  "yellow" | "orange" | "red" | None
+      days      int | None
+    """
+    if days_to_earnings is None or management_mode == "algo_observed":
+        return {"active": False, "severity": None, "days": days_to_earnings}
+    if days_to_earnings <= _EVENT_RISK_RED_DAYS:
+        severity = "red"
+    elif days_to_earnings <= _EVENT_RISK_ORANGE_DAYS:
+        severity = "orange"
+    elif days_to_earnings <= _EVENT_RISK_MAX_DAYS:
+        severity = "yellow"
+    else:
+        return {"active": False, "severity": None, "days": days_to_earnings}
+    return {"active": True, "severity": severity, "days": days_to_earnings}
+
+
+def _price_through_stop(side: str, current_price: float, current_stop: float) -> bool:
+    """True when price has traded through the stop (position is broken)."""
+    if current_price <= 0 or current_stop <= 0:
+        return False
+    if side.upper() in ("BUY", "LONG"):
+        return current_price <= current_stop
+    return current_price >= current_stop   # SHORT
+
+
+def _make_state(state: str, event_risk: dict, reason: str) -> dict:
+    return {
+        "state":      state,
+        "label":      _STATE_LABELS.get(state, state),
+        "event_risk": event_risk,
+        "reason":     reason,
+    }
+
+
+def compute_position_state(
+    side: str,
+    management_mode: str,
+    age_days: float,
+    open_r: float,
+    realized_pnl: float,
+    original_campaign_risk: float,
+    current_price: float,
+    current_stop: float,
+    days_to_earnings: "int | None",
+    follow_through_score: "float | None" = None,
+    violation_score: int = 0,
+    has_new_high_since_entry: bool = True,
+    has_open_quantity: bool = True,
+) -> dict:
+    """
+    Classify an open campaign into one of the 10 position states.
+
+    Parameters
+    ----------
+    side                      "BUY" / "LONG" or "SELL" / "SHORT"
+    management_mode           "manual_managed" | "algo_observed" | "unknown"
+    age_days                  calendar days since first trade in the campaign
+    open_r                    current open R (from Phase 1 compute_r_true/target)
+    realized_pnl              total realized P&L in USD (partial-close profits)
+    original_campaign_risk    Phase 1 result; 0 = data unavailable
+    current_price             live market price (0 = unavailable)
+    current_stop              current stop level (0 = unknown / ALGO)
+    days_to_earnings          None = unknown; int = calendar days until event
+    follow_through_score      0–100; None = not yet computed (treated as neutral)
+    violation_score           cumulative violation points (Violation Engine)
+    has_new_high_since_entry  False = price never made new high after entry
+    has_open_quantity         False = position fully closed (caller should not call)
+
+    Returns
+    -------
+    dict:
+      state       str  — primary state constant
+      label       str  — Hebrew/emoji display label
+      event_risk  dict — compute_event_risk_info() result
+      reason      str  — human-readable reason for logging
+    """
+    er = compute_event_risk_info(days_to_earnings, management_mode)
+
+    # ── 1. ALGO_OBSERVED ─────────────────────────────────────────────────────
+    if management_mode == "algo_observed":
+        return _make_state(POSITION_STATE_ALGO_OBSERVED, er,
+                           "פוזיציית אלגו — פיקוח בלבד")
+
+    # ── 2. DATA_INCOMPLETE ───────────────────────────────────────────────────
+    if management_mode == "unknown" or original_campaign_risk <= 0:
+        return _make_state(POSITION_STATE_DATA_INCOMPLETE, er,
+                           "נתוני סיכון חסרים — לא ניתן לחשב R")
+
+    # ── 3. BROKEN ────────────────────────────────────────────────────────────
+    if _price_through_stop(side, current_price, current_stop):
+        return _make_state(POSITION_STATE_BROKEN, er, "מחיר עבר את הסטופ")
+    if violation_score >= _VIOLATION_BROKEN:
+        return _make_state(POSITION_STATE_BROKEN, er,
+                           f"ניקוד חריגות {violation_score} — שבור")
+
+    # ── 4. RUNNER ────────────────────────────────────────────────────────────
+    runner_by_r = open_r >= _R_RUNNER
+    runner_by_realized = (
+        original_campaign_risk > 0
+        and realized_pnl >= original_campaign_risk
+        and has_open_quantity
+        and (follow_through_score is None or follow_through_score >= _RUNNER_FOLLOW_THROUGH_MIN)
+    )
+    if runner_by_r or runner_by_realized:
+        reason = (f"Runner: {open_r:.1f}R" if runner_by_r
+                  else "רווח ממומש ≥ סיכון מקורי + יתרה פתוחה")
+        return _make_state(POSITION_STATE_RUNNER, er, reason)
+
+    # ── 5. PROFIT_PROTECTION ─────────────────────────────────────────────────
+    if open_r >= _R_PROFIT_PROTECT:
+        return _make_state(POSITION_STATE_PROFIT_PROTECTION, er,
+                           f"הגנת רווח: {open_r:.1f}R")
+
+    # ── 6. WORKING ───────────────────────────────────────────────────────────
+    good_ft = (follow_through_score is None
+               or follow_through_score >= _WORKING_FOLLOW_THROUGH_MIN)
+    if open_r >= _R_WORKING and good_ft:
+        return _make_state(POSITION_STATE_WORKING, er, f"עובד: {open_r:.1f}R")
+
+    # ── 7. YELLOW_FLAG ───────────────────────────────────────────────────────
+    if violation_score >= _VIOLATION_YELLOW_FLAG:
+        return _make_state(POSITION_STATE_YELLOW_FLAG, er,
+                           f"דגל צהוב: ניקוד חריגות {violation_score}")
+
+    # ── 8. DEAD_MONEY ────────────────────────────────────────────────────────
+    weak_ft = (follow_through_score is not None
+               and follow_through_score < _DEAD_MONEY_FOLLOW_MAX)
+    if (age_days >= _DEAD_MONEY_MIN_DAYS
+            and _DEAD_MONEY_MIN_R <= open_r <= _DEAD_MONEY_MAX_R
+            and weak_ft
+            and not has_new_high_since_entry):
+        return _make_state(POSITION_STATE_DEAD_MONEY, er,
+                           f"הון מת: {age_days:.0f} ימים, {open_r:.1f}R, אין שיא חדש")
+
+    # ── 9. PROVING ───────────────────────────────────────────────────────────
+    if _PROVING_MIN_DAYS <= age_days <= _PROVING_MAX_DAYS and open_r <= _R_WORKING:
+        return _make_state(POSITION_STATE_PROVING, er,
+                           f"מוכיח: יום {age_days:.0f}, {open_r:.1f}R")
+
+    # ── 10. NEW ──────────────────────────────────────────────────────────────
+    if age_days <= _NEW_MAX_DAYS:
+        return _make_state(POSITION_STATE_NEW, er, f"חדש: יום {age_days:.0f}")
+
+    # ── Fallback ─────────────────────────────────────────────────────────────
+    return _make_state(POSITION_STATE_PROVING, er,
+                       f"פוזיציה מתפתחת: {open_r:.1f}R, {age_days:.0f} ימים")
+
+
+def get_position_state_display_label(state_result: dict) -> str:
+    """
+    Build the combined display label for Telegram/dashboard.
+    Merges primary state label with event risk when active.
+    Example: "🏃 Runner Mode + 📅 Event Risk (7 ימים)"
+    """
+    label = state_result.get("label", "")
+    er = state_result.get("event_risk", {})
+    if er.get("active") and er.get("days") is not None:
+        label = f"{label} + 📅 Event Risk ({er['days']} ימים)"
+    return label
+
+
+# ── Phase 6: Master Context Export helper ─────────────────────────────────────
+
+def build_position_context_data(
+    sym: str,
+    setup: str,
+    entry: float,
+    curr_p: float,
+    qty: float,
+    sl: float,
+    init_sl: float,
+    base_price: float,
+    base_qty: float,
+    realized_pnl: float,
+    target_risk_usd: float,
+    management_mode: str,
+    days_to_earnings,
+    position_state: str = "",
+    state_label: str = "",
+    breakeven_alerted: bool = False,
+) -> dict:
+    """
+    Compute all Phase 1–4 context fields for a single open position.
+    Used by the Master Context Export in dashboard.py and by tests.
+
+    Returns a flat dict ready for string formatting:
+        open_pnl, original_campaign_risk, open_pnl_at_stop,
+        protected_profit, giveback_usd, giveback_pct, capital_at_risk,
+        sizing (dict), event_risk (dict),
+        position_state, state_label, breakeven_alerted,
+        has_profit (bool), is_algo (bool)
+    """
+    side = "BUY"
+    open_pnl = (curr_p - entry) * qty
+
+    init_sl_clean = init_sl if (init_sl > 0 and init_sl < base_price) else 0.0
+    original_campaign_risk = (
+        (base_price - init_sl_clean) * base_qty if init_sl_clean > 0 else 0.0
+    )
+
+    open_pnl_at_stop = compute_open_pnl_at_stop(side, entry, sl, qty)
+    protected_profit = compute_protected_profit_usd(realized_pnl, open_pnl_at_stop)
+    giveback_usd = compute_giveback_usd(open_pnl, open_pnl_at_stop)
+    giveback_pct = compute_giveback_pct_of_open_profit(giveback_usd, open_pnl)
+    capital_at_risk = compute_capital_at_risk_usd(side, entry, sl, qty)
+
+    sizing = compute_sizing_ratio(original_campaign_risk, target_risk_usd)
+    event_risk = compute_event_risk_info(days_to_earnings, management_mode)
+
+    return {
+        "sym":                    sym,
+        "setup":                  setup,
+        "open_pnl":               open_pnl,
+        "original_campaign_risk": original_campaign_risk,
+        "open_pnl_at_stop":       open_pnl_at_stop,
+        "protected_profit":       protected_profit,
+        "giveback_usd":           giveback_usd,
+        "giveback_pct":           giveback_pct,
+        "capital_at_risk":        capital_at_risk,
+        "sizing":                 sizing,
+        "event_risk":             event_risk,
+        "position_state":         position_state,
+        "state_label":            state_label,
+        "breakeven_alerted":      breakeven_alerted,
+        "has_profit":             open_pnl > 0,
+        "is_algo":                management_mode == "algo_observed",
+    }

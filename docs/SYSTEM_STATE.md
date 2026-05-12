@@ -1,5 +1,92 @@
 # Current System State
 
+## Changes — 2026-05-12 (session 8: 24-module spec — Phases 1–6)
+
+### New features (branch `claude/review-dev-roadmap-6K19V` → merged to main)
+
+**Phase 1 — Risk Basis Engine** (`engine_core.py`)
+- `compute_original_campaign_risk()`, `compute_frozen_target_risk()`, `compute_r_true/target()`
+- `compute_capital_at_risk_usd()`, `compute_open_pnl_at_stop()`, `compute_protected_profit_usd()`
+- `compute_giveback_usd/pct()`, `classify_giveback_severity()`
+- `compute_sizing_ratio()` — 7 tiers (Micro Probe → Critical Oversize)
+- `get_sample_size_context()`, `add_data_scope()`, data scope constants
+- 75 new tests in `tests/test_risk_basis_engine.py`
+
+**Phase 2 — Position State Machine** (`engine_core.py`)
+- 10 state constants (NEW / PROVING / WORKING / PROFIT_PROTECTION / RUNNER / YELLOW_FLAG / BROKEN / DEAD_MONEY / ALGO_OBSERVED / DATA_INCOMPLETE)
+- `compute_event_risk_info()` — earnings window risk (RED/ORANGE/YELLOW, manual only)
+- `compute_position_state()` — priority-ordered state classifier
+- `get_position_state_display_label()` — merges state + event risk label
+- 100 new tests in `tests/test_position_state_machine.py`
+
+**Phase 3 — State Machine wiring into risk_monitor.py**
+- `_checkpoint_alert_text()` enriched with protected_profit / giveback_usd
+- `_runner_state_alert()`, `_broken_state_alert()`, `_dead_money_alert()`, `_breakeven_protocol_alert()`
+- Main loop: state machine per position, state-change alerts, break-even protocol
+- State persistence: `position_state`, `state_label`, `breakeven_alerted` in `risk_monitor_state.json`
+- 40 new tests in `tests/test_phase3_state_alerts.py`
+
+**Phase 4 — ALGO Oversight** (`engine_core.py` + `risk_monitor.py`)
+- `compute_algo_oversight_summary()` — portfolio visibility, cap breaches, deep loss detection
+- `_algo_deep_loss_alert()` — one-time alert at ≤ −2R (resets at −1R)
+- `_algo_loss_streak_alert()` — yellow at 3 runs, orange at 5 runs of consecutive loss
+- `_algo_visibility_alert()` — avg oversight score < 60 (24h cooldown)
+- All ALGO alerts: oversight language only, no exit/stop instructions
+- 48 new tests in `tests/test_phase4_algo_oversight.py`
+
+**Phase 5 — Anti-Spam / Alert State Table** (`risk_monitor.py`)
+- `STATE_ALERT_COOLDOWN`: RUNNER/BROKEN = 4h, DEAD_MONEY = 12h
+- `ALERT_PRIORITY` dict: explicit P0/P1/P2/P3 classification for all 14 alert types
+- `_should_fire_state_alert()`: oscillation-safe helper — same-state re-entry silenced during cooldown
+- `last_state_alert_ts` / `last_state_alert_type` persisted per position
+- 33 new tests in `tests/test_phase5_anti_spam.py`
+
+**Phase 6 — Master Context Export** (`engine_core.py` + `dashboard.py`)
+- `build_position_context_data()` — compute all Phase 1-4 fields for one position
+- Dashboard Section 2: State / Sizing / EventRisk / Protected Profit / Capital at Risk
+- Dashboard Section 4: BROKEN/DEAD_MONEY context, Event Risk <7d, Sizing warning
+- State loaded from `risk_monitor_state.json` per campaign_id
+- 33 new tests in `tests/test_phase6_context_export.py`
+
+### Test suite
+
+- **925 tests, 0 failures** (was 596 before this session)
+- 329 new tests across 6 new test files
+
+### Deployment status
+
+| Service | State | Notes |
+|---|---|---|
+| risk_monitor | not yet deployed | Phase 3–5 changes to state machine + alerts |
+| dashboard | not yet deployed | Phase 6 enriched export |
+| telegram-bot | unchanged | no Phase 1–6 changes to telegram_bot.py |
+
+---
+
+## Changes — 2026-05-11 (session 7: tracking cleanup + pytest.ini)
+
+### Housekeeping (no production code changed)
+
+**`pytest.ini`** (NEW)
+- Added root-level `pytest.ini` with `testpaths = tests` so `pytest -q` works from repo root without collecting `scripts/archive/` files that depend on missing `dotenv`.
+- Before: `pytest -q` from root crashed on `scripts/archive/test_xml_ibkr.py` and `test_infra.py`. After: 596 passed, 1 warning.
+
+**`docs/AGENT_TASKS.md`**
+- TASK-20260511-001 through TASK-20260511-007 all updated from `todo` → `implemented`.
+- Code audit confirmed all tasks were fully implemented in prior sessions but tracking files were not updated.
+
+**`docs/ROADMAP.md`**
+- Phase 3 updated: `in progress` → `complete`.
+- Phase 3B updated: `planned` → `complete`, all 9 deliverables listed with ✅.
+- Phase 5 updated: `in progress` → `complete`, Portfolio Heat Map + Earnings Risk + Discretionary/ALGO/Combined stats added to done list.
+
+### Test suite
+
+- **596 tests, 0 failures** (unchanged — no production code touched)
+- `pytest -q` now works from repo root (previously required `pytest tests/ -q`)
+
+---
+
 ## Changes — 2026-05-11 (session 6: IBKR pipeline fixes + manual XML upload + NAV key fix)
 
 ### Production bugs fixed (all deployed ✅)
@@ -247,6 +334,7 @@ Docker Compose services:
 | Session 4 (2026-05-10) | Timezone fix + spam fix | ✅ Orange Pi |
 | Session 5 (2026-05-11) | PDF reports + test suite + dev menu | ✅ Orange Pi |
 | Session 6 (2026-05-11) | 6 bug fixes + XML upload + NAV key fix | ✅ Orange Pi |
+| Session 7 (2026-05-11) | pytest.ini + tracking docs cleanup | ✅ docs only |
 
 ## IBKR sync status
 
