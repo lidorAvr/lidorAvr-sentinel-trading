@@ -549,3 +549,124 @@ IBKR imposes per-token throttling after many rapid API requests (as occurred dur
 ### Constraint
 
 The handler only activates when `user_state['action'] == 'awaiting_ibkr_xml'`, set by the button press. An unsolicited document sent to the bot is ignored.
+
+---
+
+## DEC-20260512-001 — `bot_core.py` as the single source of bot/supabase/user_state singletons
+
+Date: 2026-05-12
+Status: implemented
+
+### Decision
+
+Create a tiny `bot_core.py` whose only job is to instantiate `bot = TeleBot(TOKEN)`, the Supabase client, and the shared `user_state: dict`, plus expose `RTL`, `ADMIN_ID`, `TOKEN`. Every other module imports from there.
+
+### Rationale
+
+Before the refactor, `telegram_bot.py` created these objects at import time, and many modules wanting to reuse them faced a circular dependency. Putting them in a leaf module (no internal imports) breaks the cycle and makes the singletons unambiguously identifiable.
+
+### Alternatives considered
+
+- **Dependency injection through function arguments**: too invasive — would touch every call site.
+- **Factory function** (`get_bot()`): adds indirection but doesn't change the underlying coupling.
+- **`__init__.py` package conversion**: bigger structural change for the same outcome.
+
+### Constraint
+
+`bot_core.py` runs `load_dotenv()` and creates the Supabase client at import time. Tests stub `supabase` / `telebot` / `dotenv` in `sys.modules` *before* importing any application module to avoid real network or filesystem use.
+
+---
+
+## DEC-20260512-002 — Lazy import of `telegram_bot` inside `telegram_callbacks.handle_queries`
+
+Date: 2026-05-12
+Status: implemented
+
+### Decision
+
+`telegram_callbacks.py` does not import `telegram_bot` at the top level. Instead, inside `handle_queries(call)`, it does `import telegram_bot as _tb` and then calls `_tb.handle_drilldown` / `_tb.get_next_missing`.
+
+### Rationale
+
+The callback registration `@bot.callback_query_handler` needs to run when `telegram_bot.py` is imported — but `telegram_callbacks` also needs functions defined later in `telegram_bot`. A top-level `import telegram_bot` in `telegram_callbacks` creates a cycle. Lazy import deferred to call time resolves it: by the time any callback fires, both modules are fully initialized in `sys.modules`.
+
+### Alternatives considered
+
+- **Move callback registration to `telegram_bot.py`**: defeats the purpose of the split.
+- **Pass `telegram_bot` module as a parameter**: telebot's decorator API doesn't support this.
+- **Use late-binding attribute lookup** (`getattr(sys.modules['telegram_bot'], 'handle_drilldown')`): identical behavior but uglier.
+
+### Constraint
+
+The lazy import in callbacks only works because callback bodies execute after both modules are loaded. If we ever invoke a callback synchronously during import (we don't), this would break.
+
+---
+
+## DEC-20260512-003 — `quantity` in `trades` table is signed (BUY positive, SELL negative)
+
+Date: 2026-05-12
+Status: implemented
+
+### Decision
+
+The `quantity` column in Supabase `trades` stores signed values: BUY trades positive, SELL trades negative. `ibkr_trade_importer.parse_trades_from_xml` enforces this regardless of what IBKR sends.
+
+### Rationale
+
+`engine_core.get_open_positions_campaign` already computed `net_qty = group["quantity"].sum()` and used `if net_qty <= 0.001: continue` to detect closed campaigns. The entire existing dataset already used signed quantities (production query confirmed: BUY 4, SELL -4 for HOOD). Changing the engine would invalidate historic data and risk math. Aligning the importer is the safer choice.
+
+### Constraint
+
+Any tooling that displays `quantity` to a human should `abs()` before showing the magnitude — or rely on `side` for direction and `abs(quantity)` for size. The dashboard, `/portfolio`, and `fmt_position_card` already handle this correctly.
+
+---
+
+## DEC-20260512-004 — `campaign_id` format: `{SYMBOL}_{tradeID of first BUY}`
+
+Date: 2026-05-12
+Status: implemented
+
+### Decision
+
+When inserting a new trade into Supabase from an IBKR XML, assign `campaign_id = f"{symbol}_{trade_id}"` where `trade_id` is the IBKR `tradeID` of the BUY that opens the campaign. Add-on BUYs and SELLs join the open campaign; the next BUY after `net_qty` returns to 0 starts a fresh campaign.
+
+### Rationale
+
+This format was already in production (e.g. `HOOD_9449697599`, `JPM_9391377860`). UUIDs would have been technically simpler but would diverge from the existing convention and make manual SQL inspection harder. Reusing the format keeps the dataset homogeneous.
+
+### Alternatives considered
+
+- **UUID v4**: independent of trade IDs, but loses the human-readable symbol prefix and the natural link to the opening trade.
+- **Auto-increment from a sequence**: requires DB-side coordination; symbol prefix is more debuggable.
+- **Timestamp-based** (`HOOD_20260511_143300`): too coarse if two BUYs of the same symbol arrive in the same minute.
+
+### Constraint
+
+If two BUYs of the same symbol have the same `tradeID` (impossible — IBKR `tradeID` is globally unique), they'd collide. Not a real risk.
+
+`engine_core.get_open_positions_campaign` filters out rows with NULL `campaign_id`. Any importer that fails to assign one will silently make positions disappear from `/portfolio` and the dashboard — discovered the hard way in this session.
+
+---
+
+## DEC-20260512-005 — Explicit DNS servers in `docker-compose.yml` for every service
+
+Date: 2026-05-12
+Status: implemented
+
+### Decision
+
+Each service in `docker-compose.yml` declares `dns: [8.8.8.8, 1.1.1.1]` so containers resolve external hostnames via Google + Cloudflare public DNS instead of the host's default (Docker's `127.0.0.11` resolver forwarding to the home router at `192.168.50.1`).
+
+### Rationale
+
+The Orange Pi's home router DNS was intermittently failing, causing both `api.telegram.org` and `www.interactivebrokers.com` to fail with `NameResolutionError`. The host itself recovered quickly (local cache), but containers using the router-forwarding resolver did not. Pinning public DNS at the service level removes the dependency on the unreliable hop.
+
+### Alternatives considered
+
+- **Edit `/etc/docker/daemon.json` with `"dns"`**: applies globally to all containers including unrelated ones; not least-surprise.
+- **Run a local DNS cache** (`dnsmasq`, `unbound`) on the host: heavier maintenance.
+- **Switch the router**: not in scope; we don't control the user's network.
+
+### Constraint
+
+If both Google and Cloudflare are unreachable (extremely rare), containers lose DNS regardless of the router. Acceptable — this is the standard graceful-degradation tradeoff for public DNS.

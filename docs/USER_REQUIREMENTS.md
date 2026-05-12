@@ -841,7 +841,7 @@ Related files:
 
 ### REQ-20260512-001 — Telegram alerts must include inline decision buttons
 
-Status: proposed
+Status: validated
 Owner: user
 Area: Telegram / risk_monitor
 Priority: Medium
@@ -854,21 +854,122 @@ User request (2026-05-12):
 - "לא משאירים דברים באוויר" — every alert that requires a decision must lead to one.
 
 Acceptance criteria:
-- [ ] Runner Mode alert includes inline keyboard with ≥ 3 actionable buttons.
-- [ ] Clicking a button sends an acknowledgement and persists the decision.
-- [ ] Decision (+ timestamp) is saved to `management_notes` in Supabase or to state JSON.
-- [ ] Risk monitor reads the stored decision and suppresses duplicate alerts for 24h after "hold" decision.
-- [ ] Multi-step flows (e.g. "הדק סטופ" → ask for price → confirm) work without crashing the bot.
-- [ ] ALGO positions never get decision buttons that imply exit/stop instructions.
+- [x] Runner Mode alert includes inline keyboard with ≥ 3 actionable buttons.
+- [x] Clicking a button sends an acknowledgement and persists the decision.
+- [x] Decision (+ timestamp) is saved to `management_notes` in Supabase or to state JSON.
+- [x] Risk monitor reads the stored decision and suppresses duplicate alerts for 24h after "hold" decision.
+- [x] Multi-step flows (e.g. "הדק סטופ" → ask for price → confirm) work without crashing the bot.
+- [x] ALGO positions never get decision buttons that imply exit/stop instructions.
 
-Implementation notes:
-- See TASK-20260512-008 for full plan.
-- Requires multi-step conversation state in `telegram_bot.py`.
-- Pattern: reuse existing callback_query_handler infrastructure.
+Implementation:
+- See TASK-20260512-008.
+- Production-confirmed: MRVL Runner alert produced buttons, user clicked Hold,
+  follow-up alerts suppressed for 24h.
 
 Related files:
 - `risk_monitor.py`
-- `telegram_bot.py`
+- `telegram_callbacks.py` (post-Phase-4 home of the handler)
+- `bot_helpers.py` (`_write_runner_decision`)
+- `risk_monitor_state.json` (decision persistence)
+
+---
+
+### REQ-20260512-002 — Auto-import IBKR trades into Supabase + notify with backlog button
+
+Status: validated
+Owner: user
+Area: sync / database / Telegram
+Priority: High
+
+User request (2026-05-12):
+- After an IBKR sync (auto or manual), if new trades exist in the XML, the
+  system must insert them into Supabase automatically.
+- The user must receive a Telegram message stating "N new trades found".
+- That message must include an inline button that opens the backlog journal
+  (`get_next_missing`) so missing fields (setup, quality, stop, etc.) can be
+  filled in.
+
+Acceptance criteria:
+- [x] Parse `<Trade>` elements from the saved Flex XML.
+- [x] Skip trades already present in Supabase (deduplicate by `trade_id`).
+- [x] Assign `campaign_id` using the production format
+      `{SYMBOL}_{tradeID of first BUY}`; new BUYs without an open campaign
+      start a fresh one; SELLs join the open campaign; closed campaigns
+      (net qty = 0) do not attract the next BUY.
+- [x] Store `quantity` signed (BUY positive, SELL negative) to remain
+      compatible with `engine_core.get_open_positions_campaign`.
+- [x] Send Hebrew Telegram message with inline "📚 פתח סריקת יומן" button.
+- [x] Hook into manual sync via Telegram developer menu.
+- [x] Hook into manual XML upload via Telegram developer menu.
+- [x] Hook into auto-sync in `main.py` (sentinel-bot container — uses raw
+      Telegram HTTP API since telebot SDK is not present there).
+- [x] Inserted trade appears in `/portfolio` (חדר מצב) and on the dashboard.
+- [ ] First successful auto-sync of the day produces the expected
+      notification — pending observation in the next 07:00–11:00 window
+      (see TASK-20260512-013).
+
+Implementation:
+- See TASK-20260512-010.
+- New module: `ibkr_trade_importer.py`.
+
+Related files:
+- `ibkr_trade_importer.py`
+- `supabase_repository.py` (`get_existing_trade_ids`, `insert_trades`)
+- `telegram_devops.py` (`_import_and_notify`)
+- `main.py` (`import_trades_and_notify`)
+- `telegram_callbacks.py` (`open_backlog` callback)
+
+---
+
+### REQ-20260512-003 — Refactor `telegram_bot.py` for sustainable AI-agent development
+
+Status: validated
+Owner: agent (with user approval)
+Area: code organization / maintainability
+Priority: Medium
+
+User intent (implicit, supports REQ-20260509-003):
+- `telegram_bot.py` had grown to ~2000 lines, making AI-agent edits
+  error-prone and tests hard to scope. Split into focused modules.
+
+Acceptance criteria:
+- [x] Module split preserves all public-facing flows.
+- [x] `telegram_bot_secure_runner.py` continues to work without changes
+      (uses `telegram_bot.bot.infinity_polling()`).
+- [x] Existing tests pass; new modules covered by their own tests.
+- [x] `telegram_bot.py` size reduced significantly.
+
+Outcome:
+- `telegram_bot.py`: ~2000 → 457 lines (−77%).
+- 9 new modules; +113 new tests; 1088/1088 pass.
+
+Implementation:
+- See TASK-20260512-009.
+
+---
+
+### REQ-20260512-004 — Container DNS must not depend on local router
+
+Status: validated
+Owner: agent (operational fix)
+Area: deployment / infra
+Priority: Medium
+
+User-observed problem (2026-05-12):
+- Both auto and manual IBKR syncs were failing intermittently with
+  `NameResolutionError`. Telegram polling was also seeing
+  `Network is unreachable` errors.
+
+Acceptance criteria:
+- [x] Containers resolve DNS via public servers (`8.8.8.8`, `1.1.1.1`),
+      not via the home router.
+- [x] `socket.gethostbyname` for `api.telegram.org` and
+      `www.interactivebrokers.com` succeed from inside the container.
+- [x] Sync that had been failing now completes.
+
+Implementation:
+- See TASK-20260512-011.
+- `docker-compose.yml`: `dns:` block per service.
 
 ---
 

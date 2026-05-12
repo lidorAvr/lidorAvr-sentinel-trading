@@ -63,6 +63,186 @@ Rollback:
 
 ## Active tasks
 
+### TASK-20260512-009 — Phase 4 Telegram refactor (sessions 9)
+
+Status: validated
+Source requirement: REQ-20260509-003 (AI-agent development efficiency)
+Risk: Medium
+Affected services: telegram_bot, telegram-bot container
+
+Goal:
+- Split monolithic `telegram_bot.py` (~2000 lines) into focused modules so future
+  AI-agent edits can reason locally and tests can target a single concern.
+
+Done (8 commits, 9c2c52e → 6c8288c):
+1. `supabase_repository.py` — dependency-injected repo layer (24 tests).
+2. `telegram_menus.py` — all menu/keyboard builders (20 tests).
+3. `bot_core.py` — shared `bot`, `supabase`, `user_state`, `RTL` instances.
+4. `bot_helpers.py` — pure helpers: `_bot_log`, `_read_last_log_lines`,
+   `_write_runner_decision`, `get_account_settings`, `get_nav_and_risk` (15 tests).
+5. `telegram_callbacks.py` — `@bot.callback_query_handler` routes, lazy import
+   pattern to break the circular dependency on `telegram_bot`.
+6. `telegram_backlog.py` — `get_next_missing()` journal flow (16 tests).
+7. `telegram_portfolio.py` — `handle_drilldown` + `handle_market_regime` +
+   `handle_portfolio_room` + `_send_long_message` (23 tests).
+8. `bot_health.py` — `build_health_report()` 13-check system health (15 tests).
+9. `telegram_devops.py` — IBKR sync dev infra: `_dev_sync_check`,
+   `_dev_sync_record`, `_run_manual_sync_thread`, `_process_uploaded_ibkr_xml`,
+   `get_ibkr_nav`, dev menu constants (28+5 existing tests updated to patch
+   `telegram_devops` instead of `telegram_bot`).
+
+Outcome:
+- `telegram_bot.py`: ~2000 → 457 lines (-77%).
+- Public API preserved: all extracted symbols re-exported via `telegram_bot.*`
+  so `telegram_bot_secure_runner.py` (`telegram_bot.bot.infinity_polling()`)
+  and existing tests still work.
+
+Files touched:
+- New: `bot_core.py`, `bot_helpers.py`, `bot_health.py`,
+  `supabase_repository.py`, `telegram_menus.py`, `telegram_callbacks.py`,
+  `telegram_backlog.py`, `telegram_portfolio.py`, `telegram_devops.py`.
+- Modified: `telegram_bot.py`, `docs/ROADMAP.md`,
+  `tests/test_developer_menu.py`, `tests/test_security.py`.
+
+Validation:
+- [x] 1077/1077 tests pass locally (later 1088 after importer feature).
+- [x] Smoke test in production container: `import telegram_bot, telegram_devops,
+      telegram_portfolio, telegram_backlog, bot_health` all succeed.
+- [x] Deployed to Orange Pi via `docker compose up -d --build`.
+- [x] User-facing flows confirmed: `/portfolio`, drill-down, sync, backlog.
+
+Rollback:
+- `git revert <commits>` then `docker compose up -d --build` — safe; refactor
+  introduces no logic changes outside of the new pipeline (TASK-010).
+
+---
+
+### TASK-20260512-010 — Auto-import IBKR trades into Supabase + Telegram notification
+
+Status: validated
+Source requirement: REQ-20260512-002
+Risk: High (touches Supabase write path for the first time from the bot)
+Affected services: telegram-bot, sentinel-bot
+
+Goal:
+- After every IBKR sync (auto or manual) and every manual XML upload, parse
+  new trades from the XML, insert into Supabase, and notify the user via
+  Telegram with an inline "Open backlog" button so missing setup/quality/stop
+  fields can be filled in.
+
+Discovery (during this session):
+- No code path existed to insert trades from XML to Supabase. `run_ibkr_sync`
+  saved XML + updated NAV only. The user had been adding trades manually.
+
+Done (2 commits, ea64e34 + 6c8288c):
+1. `ibkr_trade_importer.py` (NEW)
+   - `parse_trades_from_xml(xml_text) -> list[dict]`: maps Flex XML <Trade> to
+     Supabase trades schema. Quantity is signed (BUY +, SELL −) to match
+     `engine_core.get_open_positions_campaign` net-qty math. Date converted
+     from `YYYYMMDD` to `YYYY-MM-DD`. Malformed rows silently skipped.
+   - `_assign_campaign_ids(new_trades, existing_trades)`: walks chronologically,
+     joins open campaigns or starts new ones using production format
+     `{SYMBOL}_{tradeID of first BUY}`. Closes campaigns when net qty hits 0.
+   - `import_new_trades(sb, xml_text)`: deduplicates against `trade_id`,
+     assigns `campaign_id`, bulk-inserts via `repo.insert_trades`.
+
+2. `supabase_repository.py`
+   - `get_existing_trade_ids(sb) -> set` (initial; later superseded by full
+     `get_all_trades` for campaign-id state).
+   - `insert_trades(sb, trades) -> int`.
+
+3. `telegram_devops.py`
+   - `_latest_report_xml()`, `_notify_new_trades`, `_import_and_notify`.
+   - Hooked into both `_run_manual_sync_thread` (after success) and
+     `_process_uploaded_ibkr_xml` (after parse).
+   - Notification text: `🆕 נמצאו N טריידים חדשים בדוח` + inline button
+     `📚 פתח סריקת יומן (N חדשים)` → callback `open_backlog`.
+
+4. `main.py` (sentinel-bot container)
+   - `import_trades_and_notify(t_token, c_id)` using raw Telegram HTTP API
+     (no telebot SDK in this container). Inline keyboard via `reply_markup`.
+   - Wired into auto-sync success path (07:00–11:00 daily window) and into
+     the dormant `_handle_manual_trigger` for completeness.
+
+5. `telegram_callbacks.py`
+   - `open_backlog` callback → `_tb.get_next_missing(chat_id)`.
+
+Bugs found + fixed in production (commit 6c8288c):
+- `quantity` was stored unsigned. Engine sums signed qty and treats `net_qty
+  <= 0` as a closed campaign — storing SELLs positive made campaigns look
+  perpetually open with double the position size. Fix: BUY positive, SELL
+  negative.
+- `campaign_id` was left NULL. Engine filters NULL out of the open-positions
+  report at `engine_core.py:479` (`valid_df = work[work["campaign_id"]
+  .notnull()]`), so newly imported trades never reached the portfolio room
+  or dashboard. Fix: `_assign_campaign_ids` always assigns a cid using the
+  `{SYMBOL}_{tradeID}` convention.
+
+Production validation (2026-05-12):
+- Sync ran at 14:07 — XML contained 8 trades, 1 truly new (HOOD 9476246095,
+  2026-05-11). Importer inserted it with `campaign_id=NULL` (pre-fix bug).
+- After deploying the fix and patching the orphan trade in-place
+  (`update_trade(..., campaign_id="HOOD_9476246095")`), `/portfolio` showed
+  HOOD as an open position with correct quantity (4), entry, and exposure.
+- Aggregate stats also updated correctly: total exposure 39% → 43%,
+  ALGO cluster 8.9% → 13.0%.
+
+Files touched:
+- New: `ibkr_trade_importer.py`, `tests/test_ibkr_trade_importer.py` (40 tests).
+- Modified: `supabase_repository.py`, `telegram_devops.py`, `main.py`,
+  `telegram_callbacks.py`.
+
+Validation:
+- [x] 1088/1088 tests pass.
+- [x] End-to-end manual sync test on Orange Pi confirmed:
+      Telegram showed `✅ Manual Sync — הצליח` + `🆕 נמצאו 1 חדשים` +
+      inline button, button opened backlog flow.
+- [x] Inserted trade visible in `/portfolio` and dashboard.
+
+Rollback:
+- `git revert 6c8288c ea64e34` and rebuild containers. Safe — only adds a
+  new module + thin hooks; legacy sync paths remain unchanged.
+
+---
+
+### TASK-20260512-011 — Container DNS hardening
+
+Status: validated
+Source requirement: production observation (sync failing intermittently)
+Risk: Low
+Affected services: all docker services
+
+Goal:
+- Stop intermittent `NameResolutionError` / `Network is unreachable` errors
+  caused by the Orange Pi's local router DNS being unreliable.
+
+Problem observed:
+- Containers were using Docker's internal resolver `127.0.0.11` which
+  forwarded to the host's DNS at `192.168.50.1` (the home router). When
+  the router was flaky, both `api.telegram.org` and
+  `www.interactivebrokers.com` failed to resolve, blocking both sync paths.
+
+Done (commit 6c3d627):
+- Added `dns: [8.8.8.8, 1.1.1.1]` to every service in `docker-compose.yml`.
+- Also added `TZ=Asia/Jerusalem` to `telegram-bot` for log timestamp
+  consistency.
+
+Validation:
+- [x] After `docker compose up --build`: `cat /etc/resolv.conf` inside
+      containers shows `ExtServers: [8.8.8.8 1.1.1.1]`.
+- [x] `socket.gethostbyname('api.telegram.org')` and
+      `socket.gethostbyname('www.interactivebrokers.com')` both succeed.
+- [x] Manual sync that had been failing now completes with `✅` and a
+      valid NAV.
+
+Files touched:
+- `docker-compose.yml`.
+
+Rollback:
+- Remove the `dns:` blocks — containers fall back to host DNS.
+
+---
+
 ### TASK-20260512-007 — Fix ALGO visibility alert threshold (always-fires bug)
 
 Status: validated
@@ -101,6 +281,7 @@ Validation:
 ### TASK-20260512-008 — Runner Mode: inline decision buttons + decision tracking
 
 Status: validated
+Source requirement: REQ-20260512-001
 Risk: Medium
 Affected services: risk_monitor, telegram_bot
 
@@ -110,32 +291,118 @@ User request (2026-05-12):
 - Risk monitor reads the stored decision on the next cycle and adjusts monitoring accordingly.
 - "Not leaving things in the air."
 
-Proposed buttons for Runner Mode alert:
-1. ✅ להחזיק — Tennis Ball  → records `runner_decision: hold`
-2. 🔒 הדק סטופ             → prompts user to enter new stop price
-3. 📊 מימוש חלקי           → records `runner_decision: partial_exit` + asks qty
-4. 📝 הערה ידנית           → opens free-text input
+Implemented (commit 7f4d042):
+1. `risk_monitor.py`: `_runner_decision_keyboard(sym, campaign_id)` → 3-button
+   inline markup. Runner state alert now sent via
+   `send_telegram_with_keyboard`.
+2. `telegram_bot.py` → later moved to `telegram_callbacks.py`:
+   `runner_decision|hold|<sym>|<cid>` and `|tighten|...` / `|partial|...`
+   callbacks.
+   - Hold → ACK + write `runner_decision="hold"` to
+     `risk_monitor_state.json` + append `management_notes`.
+   - Tighten stop → opens multi-step flow (`user_state.action="tighten_stop"`),
+     reads next message as price, updates campaign stop.
+   - Partial → records intent in `management_notes`; physical execution
+     stays with the user.
+3. `risk_monitor.py` reads `runner_decision` and skips Runner alerts for
+   24h after a `hold` decision.
 
-Implementation plan:
-1. `risk_monitor.py`: replace `send_telegram(_runner_state_alert(...))` with
-   `send_telegram_with_keyboard(text, _runner_decision_keyboard(sym, campaign_id))`.
-2. `telegram_bot.py`: add `@bot.callback_query_handler` for `runner_decision|*` callbacks.
-   - Hold → ACK message + save to `management_notes` in Supabase.
-   - Tighten stop → reply "הזן מחיר סטופ חדש:" then await next message (multi-step flow).
-   - Partial exit → save intent, next message asks qty.
-3. `risk_monitor_state.json`: add `runner_decision` + `runner_decision_ts` per campaign.
-4. Risk monitor: when `runner_decision = hold` → suppress repeated Runner alerts for 24h.
-
-Files to touch:
+Files touched:
 - `risk_monitor.py`
-- `telegram_bot.py`
-- Tests: `tests/test_phase3_state_alerts.py` (keyboard structure)
+- `telegram_bot.py` → `telegram_callbacks.py` (after Phase 4 split)
+- `bot_helpers.py` (`_write_runner_decision`)
+- `tests/test_phase3_state_alerts.py` (9 new tests for the keyboard)
 
-Blockers:
-- Needs multi-step conversation state in `telegram_bot.py` (user response to bot prompt).
-  Existing pattern: check how tighten-stop flow works elsewhere in the bot.
+Validation:
+- [x] 859 tests passing at time of commit.
+- [x] Production confirmed: Runner alert on MRVL produced buttons; user
+      clicked Hold, follow-up alerts suppressed.
+
+Rollback:
+- `git revert 7f4d042` — keyboard/handler are isolated additions.
 
 ---
+
+---
+
+## Follow-up tasks (deferred — no work in this session)
+
+### TASK-20260512-012 — Remove dead `_MANUAL_TRIGGER_FILE` code path
+
+Status: todo
+Source requirement: cleanup discovered while investigating sync bug
+Risk: Low
+Affected services: main.py
+
+Context (found 2026-05-12):
+- `main.py:13` defines `MANUAL_TRIGGER_FILE = "/app/ibkr_manual_trigger"`
+  and `_handle_manual_trigger` (lines 86–105) watches for it inside the
+  main loop.
+- No code anywhere creates this file. Manual sync via the Telegram developer
+  menu calls `run_ibkr_sync` directly inside the `telegram-bot` container,
+  bypassing this trigger entirely.
+- Result: the `_handle_manual_trigger` branch is dead code.
+
+Resolution options (not chosen yet):
+- **A.** Delete the dead path entirely (~25 lines).
+- **B.** Wire `telegram_devops._run_manual_sync_thread` to write the trigger
+  file, so manual syncs run in `sentinel-bot` (the container that owns sync
+  state) instead of `telegram-bot`. Pros: aligns containers properly. Cons:
+  larger change; current direct-call path is working.
+
+Files to touch (option A):
+- `main.py`
+
+Validation:
+- [ ] Confirm no other producer of `/app/ibkr_manual_trigger` exists.
+- [ ] Local test suite still green.
+
+---
+
+### TASK-20260512-013 — Verify auto-sync end-to-end on next morning window
+
+Status: todo
+Source requirement: production validation
+Risk: Low
+Affected services: sentinel-bot
+
+Context:
+- Auto-sync runs 07:00–11:00 Israel time daily inside `sentinel-bot`.
+- Before this session, no test of the *full pipeline* on the auto-sync path
+  with the new importer wired in (`main.py::import_trades_and_notify`).
+- All other paths confirmed: manual sync, manual XML upload, retroactive
+  campaign_id fix.
+
+Validation needed:
+- [ ] Confirm auto-sync writes `sync_date` to `/app/ibkr_sync_state.json`.
+- [ ] Confirm any new trades from the morning XML appear in `/portfolio`.
+- [ ] Confirm Telegram receives `🆕 N טריידים חדשים` if new trades exist
+      (raw HTTP API path, not telebot SDK).
+
+Rollback:
+- Same as TASK-010 — revert that commit if auto-sync notification fails.
+
+---
+
+### TASK-20260512-014 — Verify Flex Query period covers current trades
+
+Status: todo (user action required)
+Source requirement: REQ-20260512-002 acceptance criteria
+Risk: Low
+Affected services: external — IBKR Account Management
+
+Context:
+- During this session the Flex Query "Sentinel_Trades" was configured as
+  `Period=LastBusinessWeek` which excludes trades from the current week.
+- This is what initially hid the HOOD 2026-05-11 trade until the user
+  updated the Flex Query period.
+
+Action:
+- [ ] Confirm in IBKR Account Management → Reports → Flex Queries that
+      "Sentinel_Trades" period covers at least the last 7 days
+      (recommended: `Last 7 Days` or `Month To Date`).
+- [ ] Run one manual sync to capture a full XML and verify it includes
+      trades from yesterday and today.
 
 ---
 
