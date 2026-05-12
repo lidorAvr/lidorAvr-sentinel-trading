@@ -67,3 +67,19 @@ def update_stop_for_campaign(sb, campaign_id, stop_price):
 
 def update_management_notes(sb, campaign_id, note):
     sb.table("trades").update({"management_notes": note}).eq("campaign_id", campaign_id).eq("side", "BUY").execute()
+
+
+def get_existing_trade_ids(sb) -> set:
+    """Return the set of trade_id values already in Supabase (as strings)."""
+    rows = sb.table("trades").select("trade_id").execute().data or []
+    return {str(r.get("trade_id")) for r in rows if r.get("trade_id") is not None}
+
+
+def insert_trades(sb, trades: list) -> int:
+    """Bulk-insert trade dicts into Supabase. Returns number of rows inserted.
+    Caller is responsible for deduplication."""
+    if not trades:
+        return 0
+    res = sb.table("trades").insert(trades).execute()
+    data = res.data if hasattr(res, "data") else None
+    return len(data) if data else 0
