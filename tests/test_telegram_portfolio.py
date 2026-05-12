@@ -244,3 +244,178 @@ class TestLivePriceFallback:
         # and still complete without raising
         _run(1001, "AAPL", live_price=None)
         _fake_bot.edit_message_text.assert_called()
+
+
+# ── handle_market_regime ───────────────────────────────────────────────────────
+
+_tf_mock  = MagicMock()
+_are_mock = MagicMock()
+
+
+def _run_regime(chat_id, *, open_positions=None, regime=None, nav_stale=None,
+                trades=None):
+    """Run handle_market_regime with all deps patched."""
+    _fake_bot.reset_mock()
+    _setup_send_message()
+    _repo_mock.reset_mock()
+    _ec_mock.reset_mock()
+    _tf_mock.reset_mock()
+    _are_mock.reset_mock()
+
+    _repo_mock.get_all_trades.return_value = trades or []
+    if open_positions is None:
+        open_positions = pd.DataFrame()
+    _ec_mock.get_open_positions_campaign.return_value = {
+        "ok": True, "data": open_positions
+    }
+    _ec_mock.compute_market_regime.return_value = regime or {"ok": True, "data": {"status": "neutral"}}
+    _ec_mock.get_cached_history.return_value = pd.DataFrame()
+    _ec_mock.get_live_price.return_value = 100.0
+    _tf_mock.fmt_regime_report.return_value = "REGIME_REPORT"
+    _tf_mock.fmt_adaptive_risk_block.return_value = ""
+    _are_mock.compute_closed_campaigns.return_value = []
+    _are_mock.compute_adaptive_risk.return_value = {"action": "hold"}
+
+    with patch.object(tp, 'bot', _fake_bot), \
+         patch.object(tp, 'supabase', _fake_sb), \
+         patch.object(tp, 'repo', _repo_mock), \
+         patch.object(tp, 'ec', _ec_mock), \
+         patch.object(tp, 'tf', _tf_mock), \
+         patch.object(tp, 'are', _are_mock), \
+         patch.object(tp, 'get_account_settings',
+                       lambda: {"total_deposited": 10000.0, "risk_pct_input": 0.5}), \
+         patch.object(tp, 'get_nav_and_risk',
+                       lambda s=None: (10000.0, 50.0, nav_stale)):
+        tp.handle_market_regime(chat_id)
+
+
+class TestHandleMarketRegime:
+    def test_sends_loading_message(self):
+        _run_regime(2001)
+        first_call = _fake_bot.send_message.call_args_list[0][0]
+        assert "דופק שוק" in first_call[1]
+
+    def test_calls_compute_market_regime(self):
+        _run_regime(2001)
+        _ec_mock.compute_market_regime.assert_called()
+
+    def test_edits_message_with_regime_report(self):
+        _run_regime(2001)
+        _fake_bot.edit_message_text.assert_called_once()
+        text = _fake_bot.edit_message_text.call_args[0][0]
+        assert "REGIME_REPORT" in text
+
+    def test_nav_stale_label_appended(self):
+        _run_regime(2001, nav_stale="⚠️ NAV ישן")
+        text = _fake_bot.edit_message_text.call_args[0][0]
+        assert "NAV ישן" in text
+
+    def test_exposure_breakdown_passes_to_formatter(self):
+        # _ec_mock.get_live_price returns 100.0 → curr=100 for both rows
+        positions = pd.DataFrame([
+            {"symbol": "AAA", "setup_type": "VCP", "price": 100, "quantity": 10},
+            {"symbol": "BBB", "setup_type": "ALGO", "price": 50, "quantity": 20},
+        ])
+        _run_regime(2001, open_positions=positions)
+        # fmt_regime_report receives (regime, total_pct, algo, vcp, ep, acc_size)
+        args = _tf_mock.fmt_regime_report.call_args[0]
+        assert args[2] == 100 * 20  # ALGO exposure (curr=100, qty=20)
+        assert args[3] == 100 * 10  # VCP exposure (curr=100, qty=10)
+
+
+# ── handle_portfolio_room ──────────────────────────────────────────────────────
+
+def _run_room(chat_id, *, open_positions=None, repo_error=False):
+    """Run handle_portfolio_room with all deps patched."""
+    _fake_bot.reset_mock()
+    _setup_send_message()
+    _repo_mock.reset_mock()
+    _ec_mock.reset_mock()
+    _tf_mock.reset_mock()
+    _are_mock.reset_mock()
+
+    _repo_mock.get_all_trades.return_value = []
+    _repo_mock.get_campaigns_pnl.return_value = []
+
+    if repo_error:
+        _ec_mock.get_open_positions_campaign.return_value = {
+            "ok": False, "data": pd.DataFrame(), "error": "infra-fail"
+        }
+    else:
+        if open_positions is None:
+            open_positions = pd.DataFrame()
+        _ec_mock.get_open_positions_campaign.return_value = {
+            "ok": True, "data": open_positions
+        }
+
+    _ec_mock.get_cached_history.return_value = pd.DataFrame()
+    _ec_mock.get_live_price.return_value = 105.0
+    _ec_mock.compute_market_regime.return_value = {"ok": True, "data": {"status": "neutral"}}
+    _ec_mock.evaluate_position_engine.return_value = {
+        "ok": True, "data": {
+            "status": "✅", "action": "hold", "trigger": "",
+            "sizing_status": "✅ תקין", "issues": [],
+            "score": 80, "stage": "stage2", "suggested_stop": 95.0,
+            "features": {},
+        }
+    }
+    _ec_mock.generate_minervini_coaching.return_value = []
+    _tf_mock.fmt_position_card.return_value = "POSITION_CARD"
+    _tf_mock.fmt_adaptive_risk_block.return_value = ""
+    _are_mock.compute_closed_campaigns.return_value = []
+    _are_mock.compute_adaptive_risk.return_value = {"action": "hold"}
+
+    fake_state = {}
+    with patch.object(tp, 'bot', _fake_bot), \
+         patch.object(tp, 'supabase', _fake_sb), \
+         patch.object(tp, 'user_state', fake_state), \
+         patch.object(tp, 'repo', _repo_mock), \
+         patch.object(tp, 'ec', _ec_mock), \
+         patch.object(tp, 'tf', _tf_mock), \
+         patch.object(tp, 'are', _are_mock), \
+         patch.object(tp, 'get_account_settings',
+                       lambda: {"total_deposited": 10000.0, "risk_pct_input": 0.5}), \
+         patch.object(tp, 'get_nav_and_risk',
+                       lambda s=None: (10000.0, 50.0, None)):
+        tp.handle_portfolio_room(chat_id)
+    return fake_state
+
+
+class TestHandlePortfolioRoom:
+    def test_sends_loading_message(self):
+        _run_room(3001)
+        first_call = _fake_bot.send_message.call_args_list[0][0]
+        assert "שואב" in first_call[1] or "מרכיב" in first_call[1]
+
+    def test_empty_positions_shows_message(self):
+        _run_room(3001, open_positions=pd.DataFrame())
+        last_call = _fake_bot.send_message.call_args_list[-1][0]
+        assert "אין פוזיציות" in last_call[1]
+
+    def test_repo_error_shows_infrastructure_error(self):
+        _run_room(3001, repo_error=True)
+        last_call = _fake_bot.send_message.call_args_list[-1][0]
+        assert "תשתית" in last_call[1] or "שגיאת" in last_call[1]
+
+    def test_stores_positions_in_user_state(self):
+        positions = pd.DataFrame([{
+            "symbol": "AAA", "setup_type": "VCP", "price": 100, "quantity": 10,
+            "stop_loss": 95, "initial_stop": 90, "entry_date": "2025-01-01",
+            "management_state": "full_position",
+        }])
+        state = _run_room(3001, open_positions=positions)
+        assert 3001 in state
+        assert "temp_positions" in state[3001]
+        assert len(state[3001]["temp_positions"]) == 1
+
+    def test_algo_position_uses_oversight_language(self):
+        positions = pd.DataFrame([{
+            "symbol": "ALG", "setup_type": "ALGO", "price": 50, "quantity": 20,
+            "stop_loss": 45, "initial_stop": 40, "entry_date": "2025-01-01",
+            "management_state": "full_position",
+        }])
+        _run_room(3001, open_positions=positions)
+        # Find the long-message send call (last send_message that's not the loading one)
+        all_sends = [c[0][1] for c in _fake_bot.send_message.call_args_list]
+        full_msg = "\n".join(all_sends)
+        assert "מנוהל חיצונית" in full_msg or "Sentinel אינה מנהלת יציאות" in full_msg

@@ -98,11 +98,11 @@ Completed extractions:
 - `bot_helpers.py` ✅ (pure helpers, 15 tests)
 - `telegram_callbacks.py` ✅ (all @bot.callback_query_handler routes)
 - `telegram_backlog.py` ✅ (get_next_missing journal flow, 16 tests)
-- `telegram_portfolio.py` ✅ (handle_drilldown symbol X-ray, 13 tests)
+- `telegram_portfolio.py` ✅ (handle_drilldown + handle_market_regime + handle_portfolio_room, 23 tests)
 
 Remaining module split:
 - `telegram_handlers.py` — developer menu, analysis, misc message routing
-- portfolio room / market regime report builders (still inline in handle_all_messages)
+  (lower priority — these are short routing blocks, not large extractable handlers)
 
 Rules:
 
