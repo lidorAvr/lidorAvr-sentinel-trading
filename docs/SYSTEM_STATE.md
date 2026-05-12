@@ -57,9 +57,23 @@
 
 | Service | State | Notes |
 |---|---|---|
-| risk_monitor | not yet deployed | Phase 3–5 changes to state machine + alerts |
-| dashboard | not yet deployed | Phase 6 enriched export |
+| risk_monitor | ✅ deployed 2026-05-12 | Phase 3–6 changes live on Orange Pi |
+| dashboard | ✅ deployed 2026-05-12 | Phase 6 enriched export live on Orange Pi |
 | telegram-bot | unchanged | no Phase 1–6 changes to telegram_bot.py |
+
+### Production observations (2026-05-12)
+
+**Runner Mode alert — MRVL**: Fired correctly at 8.6R. Alert text confirmed working. No false positives.
+
+**ALGO visibility alert — BUG (TASK-20260512-007)**:
+- Alert fired with message: `ℹ️ לבדוק: הוזנו targetriskusd? entry quality? חיבור IBKR?` referencing 2 positions.
+- Root cause: `compute_risk_visibility_score()` caps ALGO positions at 40/100 max (they have no real stop). Threshold `vis_avg < 60.0` means *every* ALGO position permanently triggers the alert.
+- Fix needed: change threshold to `< 30.0` (fires only when `target_risk_usd` is missing, score = 20).
+- Status: documented in TASK-20260512-007, not yet fixed.
+
+**"2 positions" mystery**: risk_monitor detected 2 ALGO positions but user has more. Likely causes:
+1. Other positions have `qty = 0` (closed/flat) so they are skipped.
+2. `setup_type` casing mismatch — `is_algo_position()` checks `ALGO_SYMBOLS` by symbol, not by setup type. Needs investigation once TASK-20260512-007 is fixed.
 
 ---
 
@@ -310,7 +324,7 @@ Moved 26 orphaned one-shot fix/debug scripts to `scripts/archive/`. Production c
 
 ## Current date context
 
-Last updated: 2026-05-11 (session 6)
+Last updated: 2026-05-12 (session 8)
 
 ## Production wiring
 
@@ -335,6 +349,7 @@ Docker Compose services:
 | Session 5 (2026-05-11) | PDF reports + test suite + dev menu | ✅ Orange Pi |
 | Session 6 (2026-05-11) | 6 bug fixes + XML upload + NAV key fix | ✅ Orange Pi |
 | Session 7 (2026-05-11) | pytest.ini + tracking docs cleanup | ✅ docs only |
+| Session 8 (2026-05-12) | 24-module spec (Phases 1–6), 925 tests | ✅ Orange Pi |
 
 ## IBKR sync status
 
