@@ -20,6 +20,13 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+# Stub heavy modules before importing telegram_devops (loaded at module level
+# so patch.object(_devops, "_DEV_STATE_FILE", ...) in tests resolves correctly).
+for _mod in ("telebot", "telebot.types", "supabase", "dotenv",
+             "adaptive_risk_engine", "engine_core", "telegram_formatters"):
+    sys.modules.setdefault(_mod, MagicMock())
+import telegram_devops as _devops
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _make_dev_state(count_today=0, last_ts=None, date=None):
@@ -117,7 +124,7 @@ class TestRateLimiting:
         state_path = str(tmp_path / "dev_state.json")
         with open(state_path, "w") as f:
             json.dump(state, f)
-        with patch.object(tb, "_DEV_STATE_FILE", state_path):
+        with patch.object(_devops, "_DEV_STATE_FILE", state_path):
             allowed, reason, _ = tb._dev_sync_check()
         assert allowed is False
         assert "יום" in reason or "limit" in reason.lower() or "2" in reason
@@ -131,7 +138,7 @@ class TestRateLimiting:
         state_path = str(tmp_path / "dev_state.json")
         with open(state_path, "w") as f:
             json.dump(state, f)
-        with patch.object(tb, "_DEV_STATE_FILE", state_path):
+        with patch.object(_devops, "_DEV_STATE_FILE", state_path):
             allowed, reason, _ = tb._dev_sync_check()
         assert allowed is False
         assert "שעות" in reason or "cooldown" in reason.lower() or "3" in reason
@@ -140,7 +147,7 @@ class TestRateLimiting:
         tb = self._import_bot()
         state_path = str(tmp_path / "dev_state.json")
         # No file → fresh
-        with patch.object(tb, "_DEV_STATE_FILE", state_path):
+        with patch.object(_devops, "_DEV_STATE_FILE", state_path):
             allowed, reason, _ = tb._dev_sync_check()
         assert allowed is True
 
@@ -153,7 +160,7 @@ class TestRateLimiting:
         state_path = str(tmp_path / "dev_state.json")
         with open(state_path, "w") as f:
             json.dump(state, f)
-        with patch.object(tb, "_DEV_STATE_FILE", state_path):
+        with patch.object(_devops, "_DEV_STATE_FILE", state_path):
             allowed, _, _ = tb._dev_sync_check()
         assert allowed is True
 
@@ -162,7 +169,7 @@ class TestRateLimiting:
         state_path = str(tmp_path / "dev_state.json")
         with open(state_path, "w") as f:
             json.dump(_make_dev_state(count_today=1), f)
-        with patch.object(tb, "_DEV_STATE_FILE", state_path):
+        with patch.object(_devops, "_DEV_STATE_FILE", state_path):
             state = _make_dev_state(count_today=1)
             tb._dev_sync_record(state)
         with open(state_path) as f:
@@ -176,7 +183,7 @@ class TestRateLimiting:
         state_path = str(tmp_path / "dev_state.json")
         with open(state_path, "w") as f:
             json.dump(state, f)
-        with patch.object(tb, "_DEV_STATE_FILE", state_path):
+        with patch.object(_devops, "_DEV_STATE_FILE", state_path):
             allowed, _, _ = tb._dev_sync_check()
         assert allowed is True
 

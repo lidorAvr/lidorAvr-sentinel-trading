@@ -1,9 +1,8 @@
-import os, telebot, json, traceback, threading, subprocess, glob as _glob
+import os, telebot, json, threading, subprocess
 import pandas as pd
 from telebot import types
 from dotenv import load_dotenv
 from datetime import datetime
-import xml.etree.ElementTree as ET
 import engine_core as ec
 import telegram_formatters as tf
 import adaptive_risk_engine as are
@@ -17,181 +16,11 @@ from telegram_menus import (get_main_menu, get_developer_menu, get_portfolio_men
                              get_rating_keyboard, get_setup_keyboard)
 from ibkr_sync_runner import (run_ibkr_sync, MANUAL_RESULT_FILE,
                                _REPORTS_DIR, _REPORTS_TO_KEEP, _CONFIG_PATH)
-
-# \u2500\u2500 Developer-menu constants \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-_DEV_STATE_FILE      = "/app/ibkr_dev_state.json"
-_MANUAL_TRIGGER_FILE = "/app/ibkr_manual_trigger"
-_DEPLOY_TRIGGER_FILE = "/app/deploy_trigger"
-_DEV_SYNC_MAX_PER_DAY     = 2
-_DEV_SYNC_COOLDOWN_HOURS  = 3
-
-
-def _dev_sync_check() -> tuple:
-    """Returns (allowed: bool, reason: str, state_dict: dict)."""
-    today = datetime.now().strftime("%Y-%m-%d")
-    try:
-        state = json.load(open(_DEV_STATE_FILE)) if os.path.exists(_DEV_STATE_FILE) else {}
-    except Exception:
-        state = {}
-    count_today = state.get("count_today", 0) if state.get("date") == today else 0
-    if count_today >= _DEV_SYNC_MAX_PER_DAY:
-        return False, f"\u05D4\u05D2\u05E2\u05EA \u05DC\u05DE\u05D2\u05D1\u05DC\u05D4 \u05D4\u05D9\u05D5\u05DE\u05D9\u05EA ({_DEV_SYNC_MAX_PER_DAY} \u05E1\u05E0\u05DB\u05E8\u05D5\u05E0\u05D9\u05DD \u05D1\u05D9\u05D5\u05DD). \u05E0\u05E1\u05D4 \u05DE\u05D7\u05E8.", state
-    last_ts_str = state.get("last_ts")
-    if last_ts_str:
-        try:
-            hours_since = (datetime.now() - datetime.fromisoformat(last_ts_str)).total_seconds() / 3600
-            if hours_since < _DEV_SYNC_COOLDOWN_HOURS:
-                remaining = _DEV_SYNC_COOLDOWN_HOURS - hours_since
-                return False, f"Cooldown \u05E4\u05E2\u05D9\u05DC \u2014 \u05D4\u05DE\u05EA\u05DF \u05E2\u05D5\u05D3 `{remaining:.1f}h` (cooldown: {_DEV_SYNC_COOLDOWN_HOURS}h).", state
-        except Exception:
-            pass
-    return True, "", state
-
-
-def _dev_sync_record(state: dict):
-    today = datetime.now().strftime("%Y-%m-%d")
-    count_today = state.get("count_today", 0) if state.get("date") == today else 0
-    state.update({"date": today, "count_today": count_today + 1, "last_ts": datetime.now().isoformat()})
-    try:
-        with open(_DEV_STATE_FILE, "w") as f:
-            json.dump(state, f)
-    except Exception:
-        pass
-
-
-def _run_manual_sync_thread(chat_id: int):
-    """Background thread: runs IBKR sync and reports back to Telegram."""
-    _bot_log(f"Manual IBKR sync started by chat_id={chat_id}")
-    try:
-        result = run_ibkr_sync(log_fn=_bot_log)
-        status  = result["status"]
-        message = result["message"]
-        nav     = result.get("nav")
-        # Persist last result for \uD83D\uDCCA \u05EA\u05D5\u05E6\u05D0\u05D4 button
-        try:
-            result["triggered_at"] = datetime.now().isoformat()
-            with open(MANUAL_RESULT_FILE, "w") as f:
-                json.dump(result, f)
-        except Exception:
-            pass
-        emoji = "\u2705" if status == "success" else ("\uD83D\uDEA8" if status == "fatal" else "\u26A0\uFE0F")
-        status_heb = {"success": "\u05D4\u05E6\u05DC\u05D9\u05D7", "fatal": "\u05E9\u05D2\u05D9\u05D0\u05D4 \u05D7\u05DE\u05D5\u05E8\u05D4",
-                      "rate_limit": "Rate Limit", "temporary": "\u05D6\u05DE\u05E0\u05D9"}.get(status, status)
-        nav_line = f"\n{RTL}NAV \u05DE\u05E2\u05D5\u05D3\u05DB\u05DF: `${nav:,.0f}`" if nav else ""
-        bot.send_message(
-            chat_id,
-            f"{RTL}{emoji} *IBKR Manual Sync \u2014 {status_heb}*\n{RTL}{message}{nav_line}",
-            reply_markup=get_developer_menu(), parse_mode="Markdown",
-        )
-        _bot_log(f"Manual IBKR sync result: {status} \u2014 {message}")
-    except Exception as e:
-        bot.send_message(chat_id, f"\u274C \u05E9\u05D2\u05D9\u05D0\u05D4 \u05D1\u05E1\u05E0\u05DB\u05E8\u05D5\u05DF \u05D9\u05D3\u05E0\u05D9: {e}",
-                         reply_markup=get_developer_menu(), parse_mode="Markdown")
-        _bot_log(f"Manual IBKR sync error: {e}")
-
-
-def _process_uploaded_ibkr_xml(chat_id: int, message):
-    """Download and process a manually-uploaded IBKR Flex XML report."""
-    try:
-        doc = message.document
-        if not (doc.file_name or "").lower().endswith(".xml"):
-            bot.send_message(chat_id, f"{RTL}❌ יש לשלוח קובץ XML בלבד.",
-                             reply_markup=get_developer_menu())
-            return
-
-        bot.send_message(chat_id, f"{RTL}⏳ מעבד דוח...", reply_markup=get_developer_menu())
-        file_info = bot.get_file(doc.file_id)
-        xml_text = bot.download_file(file_info.file_path).decode("utf-8")
-
-        report_root = ET.fromstring(xml_text)
-
-        nav_updated = None
-        nav_node = report_root.find(".//ChangeInNAV")
-        if nav_node is not None:
-            v = nav_node.get("endingValue")
-            if v:
-                nav_updated = float(v)
-
-        trades = report_root.findall(".//Trade")
-
-        if nav_updated is None and not trades:
-            bot.send_message(
-                chat_id,
-                f"{RTL}⚠️ הקובץ לא נראה כדוח IBKR תקין.\n"
-                f"{RTL}לא נמצא ChangeInNAV ולא נמצאו עסקאות.",
-                reply_markup=get_developer_menu(),
-            )
-            return
-
-        # Save to reports directory (same cleanup as auto-sync)
-        os.makedirs(_REPORTS_DIR, exist_ok=True)
-        ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
-        report_path = os.path.join(_REPORTS_DIR, f"ibkr_{ts}.xml")
-        with open(report_path, "w", encoding="utf-8") as f:
-            f.write(xml_text)
-        all_reports = sorted(_glob.glob(os.path.join(_REPORTS_DIR, "ibkr_*.xml")))
-        while len(all_reports) > _REPORTS_TO_KEEP:
-            os.remove(all_reports.pop(0))
-
-        # Update sentinel_config.json NAV
-        if nav_updated is not None:
-            try:
-                cfg = {"total_deposited": 7500.0, "risk_pct_input": 0.5}
-                if os.path.exists(_CONFIG_PATH):
-                    with open(_CONFIG_PATH) as f:
-                        cfg = json.load(f)
-                cfg["nav"] = nav_updated
-                cfg["nav_updated_at"] = datetime.now().isoformat()
-                with open(_CONFIG_PATH, "w") as f:
-                    json.dump(cfg, f)
-            except Exception as e:
-                _bot_log(f"NAV update error in manual upload: {e}")
-
-        # Persist result so "📊 תוצאת Sync אחרון" picks it up
-        try:
-            result = {
-                "status": "success", "code": None,
-                "message": f"{len(trades)} עסקאות נטענו מקובץ ידני",
-                "nav": nav_updated,
-                "triggered_at": datetime.now().isoformat(),
-                "source": "manual_upload",
-            }
-            with open(MANUAL_RESULT_FILE, "w") as f:
-                json.dump(result, f)
-        except Exception:
-            pass
-
-        nav_str = f"\n{RTL}NAV מעודכן: `${nav_updated:,.2f}`" if nav_updated else ""
-        _bot_log(f"Manual XML upload OK: {len(trades)} trades, NAV={nav_updated}")
-        bot.send_message(
-            chat_id,
-            f"{RTL}✅ *דוח IBKR נטען בהצלחה*\n"
-            f"{RTL}עסקאות: `{len(trades)}`{nav_str}\n"
-            f"{RTL}קובץ: `{os.path.basename(report_path)}`",
-            reply_markup=get_developer_menu(), parse_mode="Markdown",
-        )
-
-    except ET.ParseError as e:
-        bot.send_message(chat_id, f"{RTL}❌ XML לא תקין: {e}",
-                         reply_markup=get_developer_menu())
-    except Exception as e:
-        _bot_log(f"Manual XML upload error: {e}")
-        bot.send_message(chat_id, f"{RTL}❌ שגיאה בעיבוד: {e}",
-                         reply_markup=get_developer_menu())
-
-
-def get_ibkr_nav():
-    try:
-        report_path = "ibkr_raw_report.xml"
-        if not os.path.exists(report_path): return None
-        tree = ET.parse(report_path)
-        root = tree.getroot()
-        for elem in root.iter():
-            if elem.tag.lower().endswith("changeinnav"):
-                ending_val = elem.attrib.get('endingValue')
-                if ending_val: return float(ending_val)
-        return None
-    except: return None
+from telegram_devops import (_dev_sync_check, _dev_sync_record,
+                              _run_manual_sync_thread, _process_uploaded_ibkr_xml,
+                              get_ibkr_nav,
+                              _DEV_STATE_FILE, _MANUAL_TRIGGER_FILE, _DEPLOY_TRIGGER_FILE,
+                              _DEV_SYNC_MAX_PER_DAY, _DEV_SYNC_COOLDOWN_HOURS)
 
 from bot_health import build_health_report as _build_health_report  # noqa: E402
 
