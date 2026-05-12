@@ -1847,3 +1847,71 @@ def get_position_state_display_label(state_result: dict) -> str:
     if er.get("active") and er.get("days") is not None:
         label = f"{label} + 📅 Event Risk ({er['days']} ימים)"
     return label
+
+
+# ── Phase 6: Master Context Export helper ─────────────────────────────────────
+
+def build_position_context_data(
+    sym: str,
+    setup: str,
+    entry: float,
+    curr_p: float,
+    qty: float,
+    sl: float,
+    init_sl: float,
+    base_price: float,
+    base_qty: float,
+    realized_pnl: float,
+    target_risk_usd: float,
+    management_mode: str,
+    days_to_earnings,
+    position_state: str = "",
+    state_label: str = "",
+    breakeven_alerted: bool = False,
+) -> dict:
+    """
+    Compute all Phase 1–4 context fields for a single open position.
+    Used by the Master Context Export in dashboard.py and by tests.
+
+    Returns a flat dict ready for string formatting:
+        open_pnl, original_campaign_risk, open_pnl_at_stop,
+        protected_profit, giveback_usd, giveback_pct, capital_at_risk,
+        sizing (dict), event_risk (dict),
+        position_state, state_label, breakeven_alerted,
+        has_profit (bool), is_algo (bool)
+    """
+    side = "BUY"
+    open_pnl = (curr_p - entry) * qty
+
+    init_sl_clean = init_sl if (init_sl > 0 and init_sl < base_price) else 0.0
+    original_campaign_risk = (
+        (base_price - init_sl_clean) * base_qty if init_sl_clean > 0 else 0.0
+    )
+
+    open_pnl_at_stop = compute_open_pnl_at_stop(side, entry, sl, qty)
+    protected_profit = compute_protected_profit_usd(realized_pnl, open_pnl_at_stop)
+    giveback_usd = compute_giveback_usd(open_pnl, open_pnl_at_stop)
+    giveback_pct = compute_giveback_pct_of_open_profit(giveback_usd, open_pnl)
+    capital_at_risk = compute_capital_at_risk_usd(side, entry, sl, qty)
+
+    sizing = compute_sizing_ratio(original_campaign_risk, target_risk_usd)
+    event_risk = compute_event_risk_info(days_to_earnings, management_mode)
+
+    return {
+        "sym":                    sym,
+        "setup":                  setup,
+        "open_pnl":               open_pnl,
+        "original_campaign_risk": original_campaign_risk,
+        "open_pnl_at_stop":       open_pnl_at_stop,
+        "protected_profit":       protected_profit,
+        "giveback_usd":           giveback_usd,
+        "giveback_pct":           giveback_pct,
+        "capital_at_risk":        capital_at_risk,
+        "sizing":                 sizing,
+        "event_risk":             event_risk,
+        "position_state":         position_state,
+        "state_label":            state_label,
+        "breakeven_alerted":      breakeven_alerted,
+        "has_profit":             open_pnl > 0,
+        "is_algo":                management_mode == "algo_observed",
+    }
