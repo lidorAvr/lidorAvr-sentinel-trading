@@ -100,7 +100,7 @@ Validation:
 
 ### TASK-20260512-008 — Runner Mode: inline decision buttons + decision tracking
 
-Status: proposed
+Status: validated
 Risk: Medium
 Affected services: risk_monitor, telegram_bot
 

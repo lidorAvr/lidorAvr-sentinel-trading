@@ -239,6 +239,18 @@ def _runner_state_alert(sym, setup, open_r, protected_profit, giveback_usd,
     )
 
 
+def _runner_decision_keyboard(sym, campaign_id):
+    markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        telebot.types.InlineKeyboardButton("✅ להחזיק", callback_data=f"runner_decision|hold|{sym}|{campaign_id}"),
+        telebot.types.InlineKeyboardButton("🔒 הדק סטופ", callback_data=f"runner_decision|tighten|{sym}|{campaign_id}"),
+    )
+    markup.add(
+        telebot.types.InlineKeyboardButton("📊 מימוש חלקי", callback_data=f"runner_decision|partial|{sym}|{campaign_id}"),
+    )
+    return markup
+
+
 def _broken_state_alert(sym, setup, open_r, reason):
     RTL_M = "‏"
     return (
@@ -544,7 +556,8 @@ def main():
                               "position_state", "state_label", "breakeven_alerted",
                               "algo_loss_streak", "algo_streak_alerted_yellow",
                               "algo_streak_alerted_orange", "algo_deep_loss_alerted",
-                              "last_state_alert_ts", "last_state_alert_type"):
+                              "last_state_alert_ts", "last_state_alert_type",
+                              "runner_decision", "runner_decision_ts"):
                 if carry_key in prev:
                     new_pos_entry[carry_key] = prev[carry_key]
 
@@ -614,11 +627,17 @@ def main():
                                              _last_sa_ts, now_ts)
             if _fire:
                 if _new_state == ec.POSITION_STATE_RUNNER:
-                    send_telegram(_runner_state_alert(
-                        sym, setup, open_r,
-                        _protected_profit, _giveback_usd, _giveback_pct,
-                        sl, _days_to_earnings,
-                    ))
+                    _dec     = new_pos_entry.get("runner_decision", "")
+                    _dec_ts  = new_pos_entry.get("runner_decision_ts", 0.0)
+                    if _dec == "hold" and (now_ts - _dec_ts) < 24 * 3600:
+                        _fire = False  # user decided to hold — suppress for 24h
+                    else:
+                        send_telegram_with_keyboard(
+                            _runner_state_alert(sym, setup, open_r,
+                                                _protected_profit, _giveback_usd, _giveback_pct,
+                                                sl, _days_to_earnings),
+                            _runner_decision_keyboard(sym, campaign_id),
+                        )
                 elif _new_state == ec.POSITION_STATE_BROKEN:
                     send_telegram(_broken_state_alert(sym, setup, open_r,
                                                        _state_result["reason"]))

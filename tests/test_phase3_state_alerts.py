@@ -24,10 +24,25 @@ sys.modules["supabase"].create_client = lambda *a, **k: None  # type: ignore
 # dotenv needs load_dotenv
 sys.modules["dotenv"].load_dotenv = lambda *a, **k: None  # type: ignore
 
-# telebot needs TeleBot
+# telebot needs TeleBot + types (InlineKeyboardMarkup/Button)
 class _FakeBot:
     def __init__(self, *a, **k): pass
-sys.modules["telebot"].TeleBot = _FakeBot  # type: ignore
+
+class _FakeMarkup:
+    def __init__(self, *a, **k): self.buttons = []
+    def add(self, *btns): self.buttons.extend(btns)
+
+class _FakeButton:
+    def __init__(self, text, callback_data=None, *a, **k):
+        self.text = text
+        self.callback_data = callback_data or ""
+
+_telebot_mod = sys.modules["telebot"]
+_telebot_mod.TeleBot = _FakeBot  # type: ignore
+_fake_types = types.ModuleType("telebot.types")
+_fake_types.InlineKeyboardMarkup = _FakeMarkup  # type: ignore
+_fake_types.InlineKeyboardButton = _FakeButton  # type: ignore
+_telebot_mod.types = _fake_types  # type: ignore
 
 import risk_monitor as rm
 
@@ -233,3 +248,45 @@ class TestStateTransitionDecisions:
         assert "למכור" not in algo_checkpoint
         assert "לצאת" not in algo_checkpoint
         assert "הכנס" not in algo_checkpoint
+
+
+# ── _runner_decision_keyboard ─────────────────────────────────────────────────
+
+class TestRunnerDecisionKeyboard:
+    def _kb(self, sym="MRVL", cid="C123"):
+        return rm._runner_decision_keyboard(sym, cid)
+
+    def test_returns_markup(self):
+        assert self._kb() is not None
+
+    def test_has_three_buttons(self):
+        assert len(self._kb().buttons) == 3
+
+    def test_hold_callback_data(self):
+        cb = [b.callback_data for b in self._kb().buttons]
+        assert any("runner_decision|hold|MRVL|C123" in s for s in cb)
+
+    def test_tighten_callback_data(self):
+        cb = [b.callback_data for b in self._kb().buttons]
+        assert any("runner_decision|tighten|MRVL|C123" in s for s in cb)
+
+    def test_partial_callback_data(self):
+        cb = [b.callback_data for b in self._kb().buttons]
+        assert any("runner_decision|partial|MRVL|C123" in s for s in cb)
+
+    def test_hold_button_text_hebrew(self):
+        texts = [b.text for b in self._kb().buttons]
+        assert any("להחזיק" in t for t in texts)
+
+    def test_tighten_button_text_hebrew(self):
+        texts = [b.text for b in self._kb().buttons]
+        assert any("הדק" in t for t in texts)
+
+    def test_partial_button_text_hebrew(self):
+        texts = [b.text for b in self._kb().buttons]
+        assert any("מימוש" in t for t in texts)
+
+    def test_campaign_id_embedded_in_callback(self):
+        kb = rm._runner_decision_keyboard("TSLA", "CAMP-999")
+        cb = [b.callback_data for b in kb.buttons]
+        assert all("CAMP-999" in s for s in cb)
