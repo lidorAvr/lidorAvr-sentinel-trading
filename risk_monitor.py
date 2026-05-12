@@ -27,6 +27,7 @@ GIVEBACK_RANK  = {"na": 0, "natural": 1, "watch": 2, "tighten": 3, "protection_f
 PROFIT_CHECKPOINTS = [2.0, 3.0]  # Fire alert when open_r crosses these thresholds
 DEVIATION_COOLDOWN_SEC  = 3 * 3600   # 3h cooldown for same deviation class
 GIVEBACK_COOLDOWN_SEC   = 6 * 3600   # 6h cooldown for same giveback class
+LIVE_ALERT_REPEAT_COOLDOWN = 45 * 60  # 45 min: prevents oscillation spam on non-escalating action/status changes
 
 # Phase 5 — Anti-Spam: state-transition cooldowns (prevents oscillation re-alerts)
 STATE_ALERT_COOLDOWN = {
@@ -109,10 +110,11 @@ def get_account_settings():
     except: return {"total_deposited": 7500.0, "risk_pct_input": 0.5}
 
 def build_position_alert_key(pos, engine_data):
+    # Exclude 'trigger' — it oscillates intra-day (e.g. MA10 vs trend-follow text) and
+    # causes spurious key-change re-alerts without any real state change.
     return json.dumps({
         "status": engine_data["status"],
         "action": engine_data["action"],
-        "trigger": engine_data["trigger"],
         "sizing": engine_data.get("sizing_status", "✅ תקין")
     }, ensure_ascii=False, sort_keys=True)
 
@@ -134,13 +136,20 @@ def should_alert(prev, current_status, current_key):
     prev_key = prev.get("alert_key")
     last_alert_ts = prev.get("last_alert_ts", 0)
 
-    # Escalation: status worsened → always alert immediately
+    # Escalation: status worsened → always alert immediately (e.g. Healthy→Broken)
     if STATUS_RANK.get(current_status, 0) > STATUS_RANK.get(prev_status, 0): return True, now_ts
-    # State change: alert content changed → always alert
-    if prev_key != current_key: return True, now_ts
-    # Repeat cooldown: same status, same content → only during market hours to avoid overnight spam
+
+    # Critical/Broken repeat: re-alert after 6h during market hours only
     if current_status in ["🚨 קריטי", "🔴 Broken", "🚨 חריגת סיכון אלגו"]:
         if (now_ts - last_alert_ts) > (6 * 3600) and is_during_us_market_hours():
+            return True, now_ts
+        return False, last_alert_ts
+
+    # Non-escalating key change (de-escalation or action text oscillation):
+    # Apply LIVE_ALERT_REPEAT_COOLDOWN to prevent oscillation spam.
+    # Example: Power→Weak fires once; Weak→Power is not an escalation and gets the cooldown.
+    if prev_key != current_key:
+        if (now_ts - last_alert_ts) > LIVE_ALERT_REPEAT_COOLDOWN:
             return True, now_ts
 
     return False, last_alert_ts
@@ -375,8 +384,9 @@ def check_position_risk_thresholds(sym, setup, open_r, open_pnl_usd, target_risk
             checkpoints_hit.add(cp)
     updates["checkpoints_hit"] = list(checkpoints_hit)
 
-    # ── Giveback Monitor (only when meaningful profit existed) ────────────
-    if peak_open_r >= 1.5 and open_r < peak_open_r:
+    # ── Giveback Monitor (only when meaningful profit existed, not after BROKEN) ─
+    _pos_state = prev_state.get("position_state", "")
+    if peak_open_r >= 1.5 and open_r < peak_open_r and _pos_state != ec.POSITION_STATE_BROKEN:
         gb = ec.compute_giveback_from_peak(peak_open_r, open_r)
         prev_gb_class = prev_state.get("last_giveback_class", "natural")
         prev_gb_ts = prev_state.get("last_giveback_ts", 0)
