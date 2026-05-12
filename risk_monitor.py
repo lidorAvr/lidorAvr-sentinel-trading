@@ -314,11 +314,11 @@ def _algo_loss_streak_alert(sym, open_r, streak_runs, level):
 def _algo_visibility_alert(visibility_avg, n_positions):
     RTL_M = "‏"
     return (
-        f"{RTL_M}⚠️ *ALGO Oversight — שקיפות נמוכה*\n"
+        f"{RTL_M}⚠️ *ALGO Oversight — נתוני סיכון חסרים*\n"
         f"{RTL_M}ממוצע ניקוד שקיפות: `{visibility_avg:.0f}/100` ({n_positions} פוזיציות)\n"
-        f"{RTL_M}Sentinel לא רואה מספיק נתונים לפיקוח תקין.\n"
+        f"{RTL_M}ציון 40 = תקין לאלגו (אין סטופ ידוע). ציון 20 = אין target_risk_usd.\n"
         f"{RTL_M}─────────────────\n"
-        f"{RTL_M}ℹ️ לבדוק: הוזנו target_risk_usd? entry quality? חיבור IBKR?"
+        f"{RTL_M}ℹ️ לבדוק: הוזנו target_risk_usd בפוזיציות האלגו?"
     )
 
 
