@@ -16,8 +16,20 @@ ISRAEL_TZ   = ZoneInfo("Asia/Jerusalem")
 LOG_FILE    = "/app/logs/sentinel_report.log"
 LOG_MAX_LINES = 2000
 
-STATE_FILE  = "/app/report_state/scheduler_state.json"
-LOOP_SEC    = 60
+STATE_FILE       = "/app/report_state/scheduler_state.json"
+LOOP_SEC         = 60
+_HEARTBEAT_DIR   = "/app/state"
+
+
+def _touch_heartbeat(name: str) -> None:
+    """Write current timestamp to /app/state/{name}_last_cycle so healthchecks can verify liveness."""
+    try:
+        os.makedirs(_HEARTBEAT_DIR, exist_ok=True)
+        path = os.path.join(_HEARTBEAT_DIR, f"{name}_last_cycle")
+        with open(path, "w") as fh:
+            fh.write(str(time.time()))
+    except Exception:
+        pass
 
 # Schedule: (weekday, hour, minute) — weekday 5 = Saturday (Python: Mon=0, Sun=6)
 _WEEKLY_WEEKDAY = 5
@@ -314,12 +326,14 @@ def _monthly_coaching_insights(a: dict) -> list:
             "קרא שוב את כללי ה-Minervini ויישם."
         )
 
-    pf = a.get("profit_factor", 0)
-    if pf >= 2.0:
-        insights.append(f"Profit Factor של {pf:.2f} — המערכת עובדת. אל תשנה setups שעובדים.")
+    import math as _math
+    pf = a.get("profit_factor") or 0  # None (no losses, loaded from snapshot) → 0
+    pf_display = "∞" if isinstance(pf, float) and _math.isinf(pf) else f"{pf:.2f}"
+    if pf >= 2.0:  # True for math.inf; False for 0 or None-coerced-to-0
+        insights.append(f"Profit Factor של {pf_display} — המערכת עובדת. אל תשנה setups שעובדים.")
     elif pf < 1.0 and a.get("campaigns_closed", 0) > 5:
         insights.append(
-            f"Profit Factor מתחת ל-1 ({pf:.2f}) — ה-system במצב הפסד. "
+            f"Profit Factor מתחת ל-1 ({pf_display}) — ה-system במצב הפסד. "
             "שקול הפחתת גודל עד שה-edge יתאושש."
         )
 
@@ -396,6 +410,7 @@ def main():
         except Exception as e:
             log(f"ERROR in main loop: {e}")
 
+        _touch_heartbeat("report_scheduler")
         time.sleep(LOOP_SEC)
 
 

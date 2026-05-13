@@ -140,14 +140,20 @@ class TestAlgoOversightSummaryDeepLoss:
 
 
 class TestAlgoOversightSummaryVisibility:
-    def test_visibility_below_60_flagged(self):
-        r = ec.compute_algo_oversight_summary([_pos(oversight_score=40)], 10000.0)
+    def test_visibility_below_30_flagged(self):
+        # score=20 means no target_risk_usd — truly blind, should alert
+        r = ec.compute_algo_oversight_summary([_pos(oversight_score=20)], 10000.0)
         assert r["visibility_below_threshold"] is True
 
     def test_visibility_avg_calculated(self):
         positions = [_pos(oversight_score=40), _pos(oversight_score=60)]
         r = ec.compute_algo_oversight_summary(positions, 10000.0)
         assert r["visibility_avg"] == 50.0
+
+    def test_visibility_40_is_not_below_threshold(self):
+        # 40 is the normal/healthy ALGO max (no real stop known) — must NOT alert
+        r = ec.compute_algo_oversight_summary([_pos(oversight_score=40)], 10000.0)
+        assert r["visibility_below_threshold"] is False
 
     def test_visibility_60_is_not_below_threshold(self):
         r = ec.compute_algo_oversight_summary([_pos(oversight_score=60)], 10000.0)
@@ -260,7 +266,7 @@ class TestAlgoVisibilityAlert:
 
     def test_oversight_language(self):
         text = self._call()
-        assert "פיקוח" in text or "Sentinel" in text
+        assert "ALGO Oversight" in text or "פיקוח" in text or "Sentinel" in text
 
     def test_returns_string(self):
         assert isinstance(self._call(), str)

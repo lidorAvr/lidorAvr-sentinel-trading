@@ -940,6 +940,43 @@ def compute_original_campaign_risk(
     return round(max(0.0, risk_per_share * quantity + fees), 2)
 
 
+def get_campaign_risk_metrics(row: dict) -> dict:
+    """
+    Single source of truth for original campaign risk from a position row dict.
+
+    Uses base_price/base_qty (campaign-open values) over current price/qty so
+    add-on entries never inflate the original 1R denominator.
+
+    Returns:
+        original_risk (float): USD at risk on campaign open; 0 when data is missing.
+        valid (bool):          True when original_risk > 0.
+        reason (str):          Human-readable explanation when valid=False.
+    """
+    base_price = float(row.get("base_price") or row.get("price") or 0)
+    base_qty   = float(row.get("base_qty")   or row.get("quantity") or 0)
+    init_sl    = float(row.get("initial_stop") or 0)
+    side       = str(row.get("side", "BUY"))
+
+    if base_price <= 0 or base_qty <= 0:
+        return {"original_risk": 0.0, "valid": False,
+                "reason": "base_price or base_qty missing"}
+    is_short = side.upper() in ("SHORT", "SELL")
+    stop_invalid = (
+        init_sl <= 0
+        or (not is_short and init_sl >= base_price)   # LONG: stop must be below entry
+        or (is_short and init_sl <= base_price)        # SHORT: stop must be above entry
+    )
+    if stop_invalid:
+        return {"original_risk": 0.0, "valid": False,
+                "reason": f"initial_stop invalid ({init_sl:.2f} vs base {base_price:.2f})"}
+
+    risk = compute_original_campaign_risk(side, base_price, init_sl, base_qty)
+    if risk <= 0:
+        return {"original_risk": 0.0, "valid": False,
+                "reason": "compute_original_campaign_risk returned 0"}
+    return {"original_risk": risk, "valid": True, "reason": ""}
+
+
 def compute_frozen_target_risk(
     base_capital: float,
     nav: float,
@@ -1319,7 +1356,7 @@ def compute_algo_oversight_summary(algo_positions: list, acc_size: float) -> dic
         total_exposure_usd     float
         total_exposure_pct     float
         visibility_avg         float  (avg oversight_score, 0-100)
-        visibility_below_threshold bool  (avg < 60)
+        visibility_below_threshold bool  (avg < 30 — ALGO max is 40, alert only for score=20: no target_risk_usd)
         symbol_cap_breaches    list of {symbol, exposure_pct, cap_pct}
         deep_loss_positions    list of {symbol, open_r, campaign_id}  (open_r <= -2.0)
     """
@@ -1363,7 +1400,7 @@ def compute_algo_oversight_summary(algo_positions: list, acc_size: float) -> dic
         "total_exposure_usd": round(total_exp, 2),
         "total_exposure_pct": round(total_exp_pct, 2),
         "visibility_avg": round(vis_avg, 1),
-        "visibility_below_threshold": vis_avg < 60.0,
+        "visibility_below_threshold": vis_avg < 30.0,
         "symbol_cap_breaches": cap_breaches,
         "deep_loss_positions": deep_loss,
     }
@@ -1720,6 +1757,177 @@ def _make_state(state: str, event_risk: dict, reason: str) -> dict:
         "event_risk": event_risk,
         "reason":     reason,
     }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Follow-Through Score (Minervini "wizards continue")
+# ──────────────────────────────────────────────────────────────────────────────
+_FT_WINDOW_DAYS         = 10   # trading days after entry to evaluate
+_FT_MIN_DAYS_FOR_SCORE  = 5    # need at least this many bars before scoring
+_FT_PEAK_FULL_PCT       = 7.0  # peak gain ≥ 7% in window = full advance score (Minervini wizard threshold)
+_FT_NEW_HIGH_FULL_PCT   = 5.0  # close ≥ 5% above entry = full new-high score
+_FT_VOL_RATIO_FULL      = 1.5  # up-day vol / down-day vol ≥ 1.5 = full vol score
+
+
+def compute_follow_through(
+    symbol: str,
+    entry_date_str: str,
+    entry_price: float,
+    hist_df: "pd.DataFrame | None" = None,
+    side: str = "BUY",
+) -> "float | None":
+    """
+    Follow-Through Score [0, 100] — measures whether a breakout "follows through"
+    in the first ~10 trading days as Minervini's wizards describe.
+
+    Components:
+      50 pts — peak gain over window (10% = full)
+      25 pts — close distance above entry over window (5% = full)
+      25 pts — up-day vs down-day volume ratio (1.5x = full)
+
+    Returns:
+      float in [0, 100] — score when there is enough data
+      None — position is too young or history is unavailable
+
+    SHORT positions: score reflects downward follow-through (price drop from entry).
+    """
+    if entry_price <= 0:
+        return None
+    try:
+        entry_dt = pd.to_datetime(entry_date_str).tz_localize(None)
+    except Exception:
+        return None
+
+    if hist_df is None or getattr(hist_df, "empty", True):
+        hist_df = get_cached_history(symbol, "6mo", "1d")
+    if hist_df is None or hist_df.empty:
+        return None
+
+    df = hist_df.copy()
+    try:
+        df.index = pd.to_datetime(df.index).tz_localize(None)
+    except (AttributeError, TypeError):
+        try:
+            df.index = pd.to_datetime(df.index)
+        except Exception:
+            return None
+
+    post = df[df.index >= entry_dt].head(_FT_WINDOW_DAYS)
+    if len(post) < _FT_MIN_DAYS_FOR_SCORE:
+        return None
+
+    is_short = side.upper() in ("SHORT", "SELL")
+
+    # ── Peak advance ────────────────────────────────────────────────────────
+    if is_short:
+        # SHORT: success = price drops; "peak" = lowest low
+        peak_price = float(post["Low"].min()) if "Low" in post else float(post["Close"].min())
+        peak_pct = (entry_price - peak_price) / entry_price * 100.0
+    else:
+        peak_price = float(post["High"].max()) if "High" in post else float(post["Close"].max())
+        peak_pct = (peak_price - entry_price) / entry_price * 100.0
+    peak_score = max(0.0, min(50.0, 50.0 * (peak_pct / _FT_PEAK_FULL_PCT)))
+
+    # ── New-high distance (max close above entry) ───────────────────────────
+    if is_short:
+        best_close = float(post["Close"].min())
+        nh_pct = (entry_price - best_close) / entry_price * 100.0
+    else:
+        best_close = float(post["Close"].max())
+        nh_pct = (best_close - entry_price) / entry_price * 100.0
+    nh_score = max(0.0, min(25.0, 25.0 * (nh_pct / _FT_NEW_HIGH_FULL_PCT)))
+
+    # ── Volume confirmation (up-day vs down-day, relative to entry direction) ─
+    vol_score = 12.5  # neutral default if volume data is missing
+    if "Volume" in post and "Close" in post:
+        try:
+            close_diff = post["Close"].diff().fillna(0)
+            if is_short:
+                helpful_vol = float(post.loc[close_diff < 0, "Volume"].sum())
+                adverse_vol = float(post.loc[close_diff > 0, "Volume"].sum())
+            else:
+                helpful_vol = float(post.loc[close_diff > 0, "Volume"].sum())
+                adverse_vol = float(post.loc[close_diff < 0, "Volume"].sum())
+            if adverse_vol > 0:
+                ratio = helpful_vol / adverse_vol
+                vol_score = max(0.0, min(25.0, 25.0 * (ratio / _FT_VOL_RATIO_FULL)))
+            elif helpful_vol > 0:
+                vol_score = 25.0
+        except Exception:
+            pass
+
+    total = peak_score + nh_score + vol_score
+    return round(max(0.0, min(100.0, total)), 1)
+
+
+def get_ma_levels(symbol: str) -> dict:
+    """
+    Return MA21 and MA50 for `symbol` using the cached daily history.
+    Returns {"ma21": float|None, "ma50": float|None}.
+    """
+    hist = get_cached_history(symbol, period="1y", interval="1d")
+    if hist is None or hist.empty or len(hist) < 5:
+        return {"ma21": None, "ma50": None}
+    close = hist["Close"]
+    ma21  = float(close.rolling(21).mean().iloc[-1]) if len(close) >= 21 else None
+    ma50  = float(close.rolling(50).mean().iloc[-1]) if len(close) >= 50 else None
+    if ma21 is not None and not (ma21 > 0):
+        ma21 = None
+    if ma50 is not None and not (ma50 > 0):
+        ma50 = None
+    return {"ma21": ma21, "ma50": ma50}
+
+
+_TRAIL_MA_BUFFER_PCT      = 0.02   # 2% buffer between MA and suggested stop
+_TRAIL_TIGHT_R_THRESHOLD  = 8.0    # open_r >= 8R → trail under MA21 (tight)
+_TRAIL_LOOSE_R_THRESHOLD  = 5.0    # open_r >= 5R → trail under MA50 (loose)
+
+
+def compute_suggested_trail_stop(
+    side: str,
+    current_price: float,
+    ma21: "float | None",
+    ma50: "float | None",
+    open_r: float,
+    entry_price: float = 0.0,
+) -> dict:
+    """
+    Suggest a trailing stop level for a RUNNER position.
+
+    Returns:
+        suggested_stop  float | None
+        basis           "MA21" | "MA50" | "breakeven" | "none"
+        note            str (Hebrew)
+    """
+    is_long = str(side).upper() in ("BUY", "LONG")
+    buf = _TRAIL_MA_BUFFER_PCT
+
+    if is_long:
+        if open_r >= _TRAIL_TIGHT_R_THRESHOLD and ma21 is not None:
+            stop = round(ma21 * (1.0 - buf), 2)
+            return {"suggested_stop": stop, "basis": "MA21",
+                    "note": f"הדק סטופ לאזור MA21 (${stop:.2f}) — {open_r:.1f}R, שמור רווח"}
+        if open_r >= _TRAIL_LOOSE_R_THRESHOLD and ma50 is not None:
+            stop = round(ma50 * (1.0 - buf), 2)
+            return {"suggested_stop": stop, "basis": "MA50",
+                    "note": f"Trailing Stop ב-MA50 (${stop:.2f}) — תן לריצה להמשיך"}
+        if entry_price > 0:
+            return {"suggested_stop": round(entry_price, 2), "basis": "breakeven",
+                    "note": f"העלה סטופ ל-Breakeven (${entry_price:.2f}) — MA לא זמין"}
+    else:  # SHORT
+        if open_r >= _TRAIL_TIGHT_R_THRESHOLD and ma21 is not None:
+            stop = round(ma21 * (1.0 + buf), 2)
+            return {"suggested_stop": stop, "basis": "MA21",
+                    "note": f"Trailing Stop מעל MA21 (${stop:.2f}) — {open_r:.1f}R"}
+        if open_r >= _TRAIL_LOOSE_R_THRESHOLD and ma50 is not None:
+            stop = round(ma50 * (1.0 + buf), 2)
+            return {"suggested_stop": stop, "basis": "MA50",
+                    "note": f"Trailing Stop מעל MA50 (${stop:.2f})"}
+        if entry_price > 0:
+            return {"suggested_stop": round(entry_price, 2), "basis": "breakeven",
+                    "note": f"סטופ ל-Breakeven (${entry_price:.2f})"}
+
+    return {"suggested_stop": None, "basis": "none", "note": "לא ניתן לחשב Trailing Stop"}
 
 
 def compute_position_state(

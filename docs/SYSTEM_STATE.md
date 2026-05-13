@@ -1,5 +1,90 @@
 # Current System State
 
+## Changes — 2026-05-12 (session 9: Phase 4 split + trade auto-import + DNS hardening)
+
+### New modules (branch `claude/review-dev-roadmap-6K19V`)
+
+**Phase 4 Telegram refactor** — `telegram_bot.py` ~2000 → 457 lines (−77%):
+
+| Module | Purpose | Tests |
+|---|---|---|
+| `bot_core.py` | Shared `bot`, `supabase`, `user_state`, `RTL`, `TOKEN`, `ADMIN_ID` singletons | — |
+| `bot_helpers.py` | Pure helpers: `_bot_log`, `_read_last_log_lines`, `_write_runner_decision`, `get_account_settings`, `get_nav_and_risk` + log constants | 15 |
+| `bot_health.py` | `build_health_report()` — 13-check system health, pure RTL Hebrew | 15 |
+| `supabase_repository.py` | Dependency-injected DB access layer | 24 |
+| `telegram_menus.py` | All `ReplyKeyboardMarkup` / `InlineKeyboardMarkup` builders | 20 |
+| `telegram_callbacks.py` | `@bot.callback_query_handler` routes (lazy import of `telegram_bot` to avoid cycle) | — |
+| `telegram_backlog.py` | `get_next_missing()` — journal completion flow | 16 |
+| `telegram_portfolio.py` | `handle_drilldown` + `handle_market_regime` + `handle_portfolio_room` + `_send_long_message` | 23 |
+| `telegram_devops.py` | IBKR sync developer infra: rate limiter, manual-sync thread, XML upload, NAV reader | (existing 28+5 retargeted) |
+
+Public API preserved: every extracted symbol is re-exported from `telegram_bot`
+so `telegram_bot_secure_runner.py` and existing tests still work.
+
+**New feature — IBKR trade auto-import** (`ibkr_trade_importer.py`):
+- `parse_trades_from_xml(xml_text)` — Flex `<Trade>` → Supabase schema.
+  Quantity is signed (BUY +, SELL −) per `engine_core` convention.
+- `_assign_campaign_ids(new, existing)` — production format
+  `{SYMBOL}_{tradeID of first BUY}`; honors open/closed campaign state.
+- `import_new_trades(sb, xml_text)` — dedup by `trade_id`, bulk insert.
+- 40 new tests in `tests/test_ibkr_trade_importer.py`.
+- Wired into manual sync, manual XML upload, and auto-sync.
+- After successful import → Telegram message
+  `🆕 נמצאו N טריידים חדשים` + inline button `📚 פתח סריקת יומן`
+  → routes to `get_next_missing`.
+
+**Container DNS hardening** (`docker-compose.yml`):
+- Every service now declares `dns: [8.8.8.8, 1.1.1.1]`.
+- Resolves intermittent `NameResolutionError` caused by local router DNS.
+
+### Test suite
+
+- **1088 tests, 0 failures** (was 925 before this session).
+- +163 new tests across `test_bot_helpers.py`, `test_bot_health.py`,
+  `test_telegram_menus.py`, `test_telegram_backlog.py`,
+  `test_telegram_portfolio.py`, `test_supabase_repository.py`,
+  `test_ibkr_trade_importer.py`.
+
+### Deployment status
+
+| Service | State | Notes |
+|---|---|---|
+| `telegram-bot` | ✅ deployed 2026-05-12 (rebuilt) | Refactor live, trade importer hooks active |
+| `sentinel-bot` | ✅ deployed 2026-05-12 (rebuilt) | Auto-sync now calls `import_trades_and_notify` |
+| `risk-monitor` | ✅ rebuilt 2026-05-12 | No code change, picked up DNS fix |
+| `dashboard` | ✅ rebuilt 2026-05-12 | Sees new trades imported via the new pipeline |
+| `reporting-service` | ✅ rebuilt 2026-05-12 | No functional change |
+
+### Production observations (2026-05-12, session 9)
+
+**Manual sync — HOOD scenario (end-to-end test):**
+- Sync at 14:07 fetched XML covering Last 7 Days.
+- 1 new trade (HOOD 9476246095, BUY 4 @ ~$78.40, 2026-05-11).
+- Pipeline: `run_ibkr_sync` → save XML + update NAV →
+  `_import_and_notify(chat_id, xml_text)` → parse →
+  dedup against `get_all_trades` → `_assign_campaign_ids` →
+  `insert_trades` → notify via Telegram with inline button.
+- Telegram showed both messages as expected: success status + new-trades
+  notification + button.
+- Button → opened backlog flow asking for `setup_type` for the new trade.
+- After retroactive `campaign_id` patch on the orphan trade inserted by the
+  pre-fix version (commit ea64e34), HOOD appeared in `/portfolio`:
+  total exposure 39% → 43%, ALGO cluster 8.9% → 13.0%.
+
+**Sync URL inconsistency (no longer an issue):**
+- Earlier in the session I suspected the `www.interactivebrokers.com`
+  SendRequest URL had been deprecated. Production logs proved this wrong:
+  IBKR responded to that URL with a valid `<FlexStatementResponse>` once
+  DNS was working. No URL change needed.
+
+**`_MANUAL_TRIGGER_FILE` is dead code:**
+- `main.py` watches for `/app/ibkr_manual_trigger` but no code creates it.
+  Manual sync runs directly inside `telegram-bot` via
+  `_run_manual_sync_thread`. Documented in TASK-20260512-012 for later
+  cleanup.
+
+---
+
 ## Changes — 2026-05-12 (session 8: 24-module spec — Phases 1–6)
 
 ### New features (branch `claude/review-dev-roadmap-6K19V` → merged to main)
@@ -57,9 +142,23 @@
 
 | Service | State | Notes |
 |---|---|---|
-| risk_monitor | not yet deployed | Phase 3–5 changes to state machine + alerts |
-| dashboard | not yet deployed | Phase 6 enriched export |
+| risk_monitor | ✅ deployed 2026-05-12 | Phase 3–6 changes live on Orange Pi |
+| dashboard | ✅ deployed 2026-05-12 | Phase 6 enriched export live on Orange Pi |
 | telegram-bot | unchanged | no Phase 1–6 changes to telegram_bot.py |
+
+### Production observations (2026-05-12)
+
+**Runner Mode alert — MRVL**: Fired correctly at 8.6R. Alert text confirmed working. No false positives.
+
+**ALGO visibility alert — BUG (TASK-20260512-007)**:
+- Alert fired with message: `ℹ️ לבדוק: הוזנו targetriskusd? entry quality? חיבור IBKR?` referencing 2 positions.
+- Root cause: `compute_risk_visibility_score()` caps ALGO positions at 40/100 max (they have no real stop). Threshold `vis_avg < 60.0` means *every* ALGO position permanently triggers the alert.
+- Fix needed: change threshold to `< 30.0` (fires only when `target_risk_usd` is missing, score = 20).
+- Status: documented in TASK-20260512-007, not yet fixed.
+
+**"2 positions" mystery**: risk_monitor detected 2 ALGO positions but user has more. Likely causes:
+1. Other positions have `qty = 0` (closed/flat) so they are skipped.
+2. `setup_type` casing mismatch — `is_algo_position()` checks `ALGO_SYMBOLS` by symbol, not by setup type. Needs investigation once TASK-20260512-007 is fixed.
 
 ---
 
@@ -310,7 +409,7 @@ Moved 26 orphaned one-shot fix/debug scripts to `scripts/archive/`. Production c
 
 ## Current date context
 
-Last updated: 2026-05-11 (session 6)
+Last updated: 2026-05-12 (session 9)
 
 ## Production wiring
 
@@ -335,17 +434,29 @@ Docker Compose services:
 | Session 5 (2026-05-11) | PDF reports + test suite + dev menu | ✅ Orange Pi |
 | Session 6 (2026-05-11) | 6 bug fixes + XML upload + NAV key fix | ✅ Orange Pi |
 | Session 7 (2026-05-11) | pytest.ini + tracking docs cleanup | ✅ docs only |
+| Session 8 (2026-05-12) | 24-module spec (Phases 1–6), 925 tests | ✅ Orange Pi |
+| Session 9 (2026-05-12) | Phase 4 split (9 modules), trade auto-import, DNS hardening, 1088 tests | ✅ Orange Pi |
 
 ## IBKR sync status
 
-- Auto-sync (07:00 Israel): configured, Flex Query 1446152 (Last Business Week, XML) — pending first successful morning run
-- Manual XML upload: ✅ confirmed working — 27 trades, NAV $7,934.27 loaded 2026-05-11
-- Pipeline: SendRequest → `<ReferenceCode>` → wait 15s → GetStatement on `gdcdyn.interactivebrokers.com`
+- Auto-sync (07:00 Israel): configured, runs in `sentinel-bot` container. Period
+  currently `LastBusinessWeek` — user advised to switch to `Last 7 Days` so
+  same-week trades aren't missed (TASK-20260512-014).
+- Manual sync via Telegram developer menu: ✅ confirmed working 2026-05-12 —
+  `$8,034 NAV`, 8 trades, 1 new (HOOD 2026-05-11) imported via the new
+  `ibkr_trade_importer` pipeline.
+- Manual XML upload: ✅ confirmed working — same importer path.
+- Pipeline: `SendRequest` → `<ReferenceCode>` → wait 15s → `GetStatement` on
+  `gdcdyn.interactivebrokers.com` → save XML → update NAV →
+  `_import_and_notify` (parses XML, dedups, assigns `campaign_id`, inserts
+  to Supabase, sends Telegram with backlog button).
 
 Smoke tests:
 - `🛠️ פיתוח` in Telegram developer menu (admin only)
 - `/stats` → adherence report
-- `pytest -q` on server → must show 587 passed
+- `pytest -q` on server → must show 1088 passed
+- `docker compose exec telegram-bot python -c "import telegram_bot, telegram_devops, ibkr_trade_importer; print('OK')"`
+- `docker compose exec sentinel-bot python -c "import socket; print(socket.gethostbyname('www.interactivebrokers.com'))"`
 
 ## Known high-risk areas (unchanged)
 

@@ -21,6 +21,21 @@ Responsibilities:
 - market regime calculation
 - Minervini-style analysis helpers (Trend Template, R/day, MAE/MFE, add-on quality)
 - ALGO Observer Mode gating: `is_algo_position()`, `classify_management_mode()`
+- Stat bucket classification: `classify_stat_bucket()`, `is_stat_countable()`, `is_discretionary_bucket()`
+- Position state machine: `compute_position_state()` → RUNNER / BROKEN / DEAD_MONEY / WORKING / etc.
+- Risk analytics: `compute_giveback_from_peak()`, `compute_risk_deviation()`, `compute_algo_oversight_summary()`
+
+Stat bucket constants:
+- `STAT_BUCKET_ALGO = "ALGO_OBSERVED"`
+- `STAT_BUCKET_DATA_INCOMPLETE = "DATA_INCOMPLETE"`
+- `classify_stat_bucket(setup_type, original_campaign_risk)` → EP_MANUAL / VCP_MANUAL / ALGO_OBSERVED / DATA_INCOMPLETE
+- `is_stat_countable(bucket)` → False for ALGO_OBSERVED and DATA_INCOMPLETE
+- `is_discretionary_bucket(bucket)` → True if bucket ends with `_MANUAL`
+
+Position state constants:
+- `POSITION_STATE_RUNNER`, `POSITION_STATE_BROKEN`, `POSITION_STATE_DEAD_MONEY`
+- `POSITION_STATE_WORKING`, `POSITION_STATE_PROVING`, `POSITION_STATE_PROFIT_PROTECTION`
+- `POSITION_STATE_YELLOW_FLAG`, `POSITION_STATE_ALGO_OBSERVED`, `POSITION_STATE_DATA_INCOMPLETE`
 
 High-risk areas:
 - `get_open_positions_campaign`
@@ -72,11 +87,16 @@ Rules:
 
 ### `adaptive_risk_engine.py`
 
-Adaptive risk recommendation engine.
+Adaptive risk recommendation engine and stat-bucket-aware campaign processor.
 
 Responsibilities:
-- `compute_closed_campaigns(df)` → closed campaigns list.
+- `compute_closed_campaigns(df)` → closed campaigns list. Each dict includes:
+  - `campaign_id`, `symbol`, `setup_type`, `total_pnl_usd`, `close_date`, `is_win`
+  - `original_campaign_risk` (computed from first BUY day price/qty/initial_stop)
+  - `stat_bucket` (via `ec.classify_stat_bucket()`)
 - `compute_adaptive_risk(campaigns, current_risk_pct, nav)` → recommendation dict.
+  - Uses `_is_disc()` helper: `ec.is_stat_countable(bucket)` to exclude ALGO/DATA_INCOMPLETE from WR/streak.
+  - Weighted Win Rate: last-10 weight=2, rest=1, ALGO positions at 0.25× (observer only).
 - `update_risk_pct(new_pct)` → writes to sentinel_config.json.
 - `log_risk_journal(entry)` → appends to risk_journal.json (500 cap).
 - `mark_adherence(rec_pct, actual_pct, followed, reason)` → updates risk_recommendations.json.
@@ -91,6 +111,8 @@ Direction logic:
 
 Rules:
 - `is_win` must be accessed via `.get("is_win")` — never `["is_win"]`.
+- DATA_INCOMPLETE campaigns must never enter Win Rate or Expectancy.
+- `compute_closed_campaigns()` is the single source of truth for closed campaign stats — do not reimplement inline.
 
 ---
 
@@ -123,7 +145,10 @@ Responsibilities:
 - user prompts for setup, quality, stops, images, management notes
 - Supabase reads and writes
 - adaptive risk confirmation callbacks (`risk_confirm|YES/NO`)
+- runner decision callbacks (`runner_decision|hold/tighten/partial|SYM|CID`)
 - developer menu (🛠️ — admin-only, rate-limited)
+
+Win Rate in `/portfolio` uses `are.compute_closed_campaigns(df)` + `ec.is_stat_countable()` to exclude DATA_INCOMPLETE. Never recompute inline.
 
 Risks:
 - very long file
@@ -270,31 +295,96 @@ Rules:
 Streamlit dashboard.
 
 Responsibilities:
-- Visual inspection of trades and portfolio state.
-- Command Center: Trend Template 8 criteria + Add-on quality per position.
-- Minervini Mentor tab: coaching insights and streak analysis.
-- Visual Journal: closed campaign metrics including R/day.
+- Sidebar: Market Regime, Account Settings, Adaptive Risk recommendation + deviation indicators, Data Reconciliation, AI Master Context Export.
+- Command Center tab: live portfolio treemap, heat map, Minervini analysis per position (Trend Template + Add-on quality + MAE/MFE).
+- **Performance Matrix tab**:
+  - **Trader Edge Panel** (top of tab): table of 11 metrics × 4 scopes (ידני/EP/VCP/ALGO):
+    - N, Win Rate, Avg Win R, Avg Loss R, W/L Ratio, Expectancy, Profit Factor, Payoff Consistency, Max Loss R, Sizing Efficiency, Net PnL
+  - Decision Matrix: color-coded callouts for Manual scope — Expectancy, W/L Ratio, Profit Factor, Max Loss, Payoff Consistency, Sizing Efficiency
+  - ALGO Drag shown separately
+  - Legacy bucket stats (disc/ALGO/combined) + equity curve, drawdown, R-distribution
+- Strategy Forensics tab, Visual Journal tab, Minervini Mentor tab, DB Manager tab.
+
+`_bucket_stats(df)` returns:
+- `win_rate`, `adj_rr`, `expectancy_r`, `total_pnl`, `total_r`, `count`
+- `avg_win_r`, `avg_loss_r`, `profit_factor`, `payoff_consistency`, `max_loss_r`
+
+Scope DataFrames computed from `camp_df`:
+- `disc_df` = `stat_bucket.apply(is_discretionary_bucket)` — EP+VCP+other MANUAL
+- `ep_df` = `stat_bucket == 'EP_MANUAL'`
+- `vcp_df` = `stat_bucket == 'VCP_MANUAL'`
+- `algo_df` = `stat_bucket == STAT_BUCKET_ALGO`
+- `countable_df` = `stat_bucket.apply(is_stat_countable)`
+
+Adaptive Risk sidebar deviation indicators:
+1. Direction + recommended risk pct/usd
+2. Configured vs recommended (green/warning/info)
+3. Open positions avg sizing ratio vs ideal (0.85–1.15x)
+4. Win Rate vs 50% target
 
 Rules:
 - Dashboard can be more verbose than Telegram.
 - Must identify fallback/estimated values clearly.
 - Reuse engine functions rather than re-implementing calculations.
+- All stat calculations must go through `_bucket_stats()` — no inline Win Rate loops.
 
 ---
 
 ### `risk_monitor.py`
 
-Automated risk monitoring service (runs every 300s).
+Automated risk monitoring service (runs every 300 seconds).
 
 Responsibilities:
-- periodic position risk monitoring
-- proactive adaptive risk alerts (once/24h per direction)
-- market-hours gate for repeat cooldown alerts
+- Periodic position risk evaluation via `ec.evaluate_position_engine()`
+- Position state machine: RUNNER / BROKEN / DEAD_MONEY / YELLOW_FLAG / WORKING
+- **Live Alert** anti-spam:
+  - `trigger` field excluded from `alert_key` (oscillates intra-day)
+  - Non-escalating key changes throttled by `LIVE_ALERT_REPEAT_COOLDOWN = 45 min`
+  - Status escalation always fires immediately
+  - Critical/Broken re-alert: once per 6h during market hours only
+- **Giveback alerts**: zone-change-only firing. Fires when zone transitions (natural→watch, watch→tighten, tighten→watch, etc). Never re-fires in same zone.
+- Giveback suppressed entirely when `position_state == POSITION_STATE_BROKEN`
+- **Sizing Leak alert**: one-time per campaign when `original_campaign_risk / target_risk_usd < SIZING_LEAK_THRESHOLD (0.65)`. Stored as `sizing_leak_alerted` in state.
+- **Daily Digest**: once per day at 21:00–22:00 UTC (Mon–Fri). Lists all positions with state emoji, Open R, action. Tracked by `last_digest_date`.
+- Risk deviation alerts: escalation or 3h cooldown
+- Profit Protection Checkpoints: one-time at 2R and 3R
+- Breakeven Protocol: one-time when open_r ≥ 3R but capital still at risk
+- ALGO Oversight: streak alerts, deep loss alerts, cluster alerts, visibility alerts
+- Proactive Adaptive Risk alert (once/24h per direction)
+- Manual risk override detection
+
+Key state keys per position in `risk_monitor_state.json`:
+- `position_state`, `state_label` — current state machine output
+- `last_state_alert_type`, `last_state_alert_ts` — oscillation prevention
+- `peak_open_r`, `checkpoints_hit` — profit protection tracking
+- `last_giveback_class`, `last_giveback_ts` — giveback zone tracking
+- `last_deviation_class`, `last_deviation_ts` — risk deviation tracking
+- `breakeven_alerted` — one-time breakeven protocol flag
+- `sizing_leak_alerted` — one-time sizing leak alert flag
+- `runner_decision`, `runner_decision_ts` — user runner decision tracking
+- `algo_loss_streak`, `algo_streak_alerted_yellow`, `algo_streak_alerted_orange` — ALGO streak tracking
+- `algo_deep_loss_alerted` — single deep-loss alert flag
+
+Top-level state keys:
+- `last_digest_date` — daily digest dedup (YYYY-MM-DD)
+- `last_known_risk_pct` — manual override detection
+- `algo_visibility_alerted_ts` — ALGO visibility alert cooldown
+- `risk_alert` — last adaptive risk alert direction + ts
+
+Constants:
+- `LIVE_ALERT_REPEAT_COOLDOWN = 45 * 60`
+- `DAILY_DIGEST_UTC_HOUR_START = 21`, `DAILY_DIGEST_UTC_HOUR_END = 22`
+- `SIZING_LEAK_THRESHOLD = 0.65`
+- `DEVIATION_COOLDOWN_SEC = 3 * 3600`
+- `GIVEBACK_COOLDOWN_SEC = 6 * 3600` (kept but no longer used for same-zone re-fire)
+- `STATE_ALERT_COOLDOWN`: RUNNER=4h, BROKEN=4h, DEAD_MONEY=12h
 
 Rules:
 - Must not spam Telegram.
 - Must not auto-mutate trade management state.
-- Repeat cooldown alerts only during US market hours (11:00–21:00 UTC Mon–Fri).
+- Every recurring check must have a state-tracked dedup flag or cooldown.
+- Giveback must use zone-change detection, not timer-based re-fire.
+- BROKEN positions must not receive Giveback alerts.
 
 ---
 
@@ -306,11 +396,11 @@ Production wiring.
 
 Active services:
 ```yaml
-sentinel-bot:    python3 main.py                       # IBKR sync
-telegram-bot:    python3 telegram_bot_secure_runner.py # Telegram UI
-dashboard:       streamlit run dashboard.py            # Web dashboard
-risk-monitor:    python risk_monitor.py                # Monitoring
-report-scheduler: python3 report_scheduler.py         # PDF reports
+sentinel-bot:      python3 main.py                       # IBKR sync
+telegram-bot:      python3 telegram_bot_secure_runner.py # Telegram UI
+dashboard:         streamlit run dashboard.py            # Web dashboard
+risk-monitor:      python risk_monitor.py                # Monitoring
+reporting-service: python report_scheduler.py            # PDF reports
 ```
 
 Rules:
@@ -333,13 +423,15 @@ Rules:
 
 ### `tests/`
 
-Test suite (587 tests).
+Test suite (1107 tests as of branch `claude/review-dev-roadmap-6K19V`).
 
 Structure:
 ```
 tests/
   test_account_state.py        # NAV loading, freshness, fallback
-  test_adaptive_risk_engine.py # RISK_LADDER, directions, streaks, adherence
+  test_adaptive_risk_engine.py # RISK_LADDER, directions, streaks, adherence,
+                               # stat_bucket classification in closed campaigns,
+                               # DATA_INCOMPLETE exclusion from adaptive risk
   test_algo_observer.py        # ALGO mode, management_mode, risk_basis
   test_analytics_engine.py     # Period analytics, verdict, comparison
   test_calculations_comprehensive.py  # Math precision tests
@@ -352,7 +444,7 @@ tests/
   test_ibkr_sync_full.py       # Full sync pipeline, all 17 error codes
   test_nav_and_intent.py       # NAV updates, intent classification
   test_report_scheduler.py     # Scheduling, dedup, period calculation
-  test_risk_deviation.py       # Risk deviation classification (placeholder)
+  test_risk_deviation.py       # Risk deviation classification
   test_secure_runner.py        # Secure runner admin/rate protection
   test_security.py             # Token masking, input sanitization
   test_stat_bucket.py          # Stat bucket classification
@@ -366,6 +458,7 @@ Rules:
 - Prefer deterministic unit tests with fixtures.
 - Tests must protect behavior, not implementation details.
 - Add fixtures for trade rows when changing campaign logic.
+- `test_adaptive_risk_engine.py` covers: VCP_MANUAL/EP_MANUAL/DATA_INCOMPLETE classification, _is_disc() filter, win rate exclusion of DATA_INCOMPLETE, streak filter on disc-only.
 
 ---
 

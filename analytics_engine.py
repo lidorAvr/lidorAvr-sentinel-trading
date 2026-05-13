@@ -3,9 +3,11 @@ analytics_engine.py — pure-function KPI computation for weekly/monthly reports
 Takes a trades DataFrame (from Supabase) + period bounds + account state.
 No network calls, no Supabase — fully testable.
 """
+import math
 import pandas as pd
 from datetime import datetime
 from typing import Optional
+import engine_core as ec
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
@@ -49,7 +51,7 @@ def compute_period_analytics(
 
         gross_profit = wins["net_pnl"].sum()   if not wins.empty   else 0.0
         gross_loss   = abs(losses["net_pnl"].sum()) if not losses.empty else 0.0
-        profit_factor = gross_profit / gross_loss if gross_loss > 0 else 99.0
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else (math.inf if gross_profit > 0 else 0.0)
 
         total_r   = float(campaigns["net_r"].sum())
         real_pnl  = float(campaigns["net_pnl"].sum())
@@ -93,7 +95,7 @@ def compute_period_analytics(
                 "net_r":         float(grp["net_r"].sum()),
                 "win_rate":      len(g_wins) / len(grp) if grp.shape[0] else 0,
                 "avg_r":         float(grp["net_r"].mean()),
-                "profit_factor": gw_pnl / gl_pnl if gl_pnl > 0 else 99.0,
+                "profit_factor": gw_pnl / gl_pnl if gl_pnl > 0 else (math.inf if gw_pnl > 0 else 0.0),
             }
 
         return {
@@ -247,7 +249,10 @@ def _aggregate_campaigns(closed: pd.DataFrame, target_risk_usd: float) -> pd.Dat
         setup   = str(fb.get("setup_type", "Unknown"))
         sym     = str(fb.get("symbol", "?"))
 
-        orig_risk = (entry - init_sl) * qty if init_sl > 0 and entry > init_sl else target_risk_usd
+        _risk_row = {"price": entry, "quantity": qty, "initial_stop": init_sl,
+                     "side": str(fb.get("side", "BUY"))}
+        _metrics  = ec.get_campaign_risk_metrics(_risk_row)
+        orig_risk = _metrics["original_risk"] if _metrics["valid"] else target_risk_usd
         net_r     = net_pnl / orig_risk if orig_risk > 0 else 0.0
 
         entry_date     = buys["trade_date"].iloc[0]

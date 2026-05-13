@@ -15,6 +15,8 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
+Current passing test count: **1107 tests**.
+
 ## CI
 
 GitHub Actions workflow:
@@ -47,6 +49,33 @@ Add tests when changing:
 - open campaign aggregation
 - ALGO exposure caps
 - market regime
+- stat_bucket classification (`classify_stat_bucket`, `is_stat_countable`)
+
+### Adaptive risk engine
+
+Add tests when changing:
+
+- `compute_closed_campaigns()` — especially stat_bucket assignment per campaign
+- `_is_disc()` — must filter by `is_stat_countable(bucket)`, not raw setup_type
+- Win rate and expectancy calculations — must exclude DATA_INCOMPLETE and ALGO_OBSERVED
+- Direction change or streak detection
+
+Reference: `tests/test_adaptive_risk_engine.py` covers:
+- VCP_MANUAL / DATA_INCOMPLETE / ALGO_OBSERVED bucket assignment in `compute_closed_campaigns()`
+- Win rate filter for stat_countable campaigns only
+- Streak filter for disc-only campaigns
+- Legacy dict fallback for old state format
+
+### risk_monitor anti-spam
+
+Add tests when changing:
+
+- `build_position_alert_key()` — must NOT include `trigger`
+- `should_alert()` — escalation, cooldown, non-escalating change
+- Giveback zone-change detection — fires on zone change only
+- BROKEN state gate on Giveback
+- `sizing_leak_alerted` one-time flag behavior
+- `last_digest_date` one-per-day gate for Daily Digest
 
 ### Telegram
 
@@ -72,13 +101,20 @@ Add tests or fixtures when changing:
 
 ## Manual deployment on Orange Pi
 
-Typical deploy flow:
+Typical deploy flow for Telegram changes:
 
 ```bash
 cd ~/sentinel_trading
 git pull
 docker compose up -d --build telegram-bot
 docker logs -f telegram-bot
+```
+
+If risk-monitor or dashboard changed:
+
+```bash
+docker compose up -d --build risk-monitor dashboard
+docker logs -f risk-monitor
 ```
 
 If multiple services changed:
@@ -110,6 +146,27 @@ Expected behavior:
 - long reports are split correctly
 - reports include data-source/fallback disclosure when relevant
 
+## Risk monitor smoke tests
+
+After deploying `risk_monitor.py` changes, verify:
+
+1. **No spam on first run** — only one Live Alert per position unless status truly escalated.
+2. **Giveback fires only on zone change** — confirm with two runs where price stays in same zone: no second alert.
+3. **Sizing Leak fires once** — confirm `sizing_leak_alerted = true` in state file after first fire.
+4. **Daily Digest timing** — set system time or confirm logs show digest fires once in the 21:00–22:00 UTC window on a weekday.
+5. **BROKEN gate** — after BROKEN status, confirm no Giveback fires even if price drops further.
+
+State file inspection:
+
+```bash
+cat risk_monitor_state.json | python3 -m json.tool | head -100
+```
+
+Check that:
+- `sizing_leak_alerted` is present for any small-sized position that fired
+- `last_digest_date` updates to today after digest fires
+- `last_giveback_class` reflects most recent zone (even when no alert fired)
+
 ## NAV validation checklist
 
 After changes touching NAV/account settings:
@@ -137,6 +194,9 @@ dashboard:
 
 risk-monitor:
   command: python risk_monitor.py
+
+reporting-service:
+  command: python3 report_scheduler.py
 ```
 
 If the Telegram command is changed back to `telegram_bot.py`, admin/rate-limit protections may be bypassed.
@@ -151,12 +211,14 @@ docker logs -f telegram-bot
 docker logs -f sentinel-bot
 docker logs -f risk-monitor
 docker logs -f dashboard
+docker logs -f reporting-service
 ```
 
 For recent logs only:
 
 ```bash
 docker logs --tail=200 telegram-bot
+docker logs --tail=200 risk-monitor
 ```
 
 ## Rollback examples
@@ -167,6 +229,15 @@ Rollback latest code:
 git log --oneline -5
 git revert <commit_sha>
 docker compose up -d --build telegram-bot
+```
+
+Rollback risk-monitor only:
+
+```bash
+docker compose stop risk-monitor
+git revert <commit_sha>
+docker compose up -d --build risk-monitor
+docker logs -f risk-monitor
 ```
 
 Emergency Telegram rollback only if secure runner itself fails:
@@ -193,6 +264,7 @@ Affected service:
 Tests:
 - pytest -q
 - manual Telegram smoke test
+- risk-monitor smoke test (if risk_monitor.py changed)
 
 Rollback:
 - ...

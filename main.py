@@ -13,6 +13,18 @@ SYNC_STATE_FILE   = "/app/ibkr_sync_state.json"
 MANUAL_TRIGGER_FILE = "/app/ibkr_manual_trigger"   # written by telegram_bot developer menu
 LOG_FILE           = "/app/logs/sentinel_main.log"
 LOG_MAX_LINES      = 2000
+_HEARTBEAT_DIR     = "/app/state"
+
+
+def _touch_heartbeat(name: str) -> None:
+    """Write current timestamp to /app/state/{name}_last_cycle so healthchecks can verify liveness."""
+    try:
+        os.makedirs(_HEARTBEAT_DIR, exist_ok=True)
+        path = os.path.join(_HEARTBEAT_DIR, f"{name}_last_cycle")
+        with open(path, "w") as fh:
+            fh.write(str(time.time()))
+    except Exception:
+        pass
 
 SYNC_START_HOUR       = 7
 SYNC_END_HOUR         = 11
@@ -40,15 +52,50 @@ def log(msg):
         pass
 
 
-def send_telegram(token, chat_id, text):
+def send_telegram(token, chat_id, text, reply_markup=None):
     try:
+        payload = {"chat_id": chat_id, "text": text}
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
         requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": text},
+            json=payload,
             timeout=10,
         )
     except Exception as e:
         log(f"Telegram send error: {e}")
+
+
+def import_trades_and_notify(t_token, c_id):
+    """Auto-import new trades from the latest IBKR XML report into Supabase.
+    Sends a Telegram alert with an inline 'Open backlog' button if any new."""
+    try:
+        from supabase import create_client
+        import glob as _glob
+        import ibkr_trade_importer as _importer
+        sb = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+        reports = sorted(_glob.glob("/app/ibkr_reports/ibkr_*.xml"))
+        if not reports:
+            log("Trade import skipped: no report files")
+            return
+        with open(reports[-1], "r", encoding="utf-8") as f:
+            xml_text = f.read()
+        result = _importer.import_new_trades(sb, xml_text)
+        n_new = result.get("new_count", 0)
+        log(f"Trade import: {n_new}/{result.get('total_in_xml', 0)} new trades inserted")
+        if n_new > 0 and t_token and c_id:
+            kb = {"inline_keyboard": [[{
+                "text": f"📚 פתח סריקת יומן ({n_new} חדשים)",
+                "callback_data": "open_backlog",
+            }]]}
+            send_telegram(
+                t_token, c_id,
+                f"🆕 נמצאו {n_new} טריידים חדשים בדוח.\n"
+                f"לחץ למטה כדי להשלים פרטים (Setup, Quality, Stop):",
+                reply_markup=kb,
+            )
+    except Exception as e:
+        log(f"Trade importer error: {e}")
 
 
 def load_sync_state():
@@ -103,6 +150,9 @@ def _handle_manual_trigger(t_token, c_id):
         )
         send_telegram(t_token, c_id,
                       f"{emoji} IBKR Manual Sync: {result['message']}")
+    # Auto-import new trades from the XML to Supabase (manual-trigger path)
+    if result.get("status") == "success":
+        import_trades_and_notify(t_token, c_id)
 
 
 if __name__ == "__main__":
@@ -118,6 +168,7 @@ if __name__ == "__main__":
         log("Telegram credentials not found in environment!")
 
     while True:
+        _touch_heartbeat("sentinel_bot")
         # ── Manual trigger (developer menu) ────────────────────────────────────
         if os.path.exists(MANUAL_TRIGGER_FILE):
             _handle_manual_trigger(t_token, c_id)
@@ -179,6 +230,8 @@ if __name__ == "__main__":
                 if t_token and c_id:
                     send_telegram(t_token, c_id,
                                   f"✅ דוח IBKR התקבל בהצלחה ({today})\n{message}")
+                # Auto-import new trades from the XML to Supabase
+                import_trades_and_notify(t_token, c_id)
 
             elif status == "fatal":
                 state["fail_date"]      = today

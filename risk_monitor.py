@@ -1,4 +1,4 @@
-import os, json, time, telebot
+import os, json, time, signal, sys, telebot
 import pandas as pd
 from datetime import datetime
 from supabase import create_client
@@ -6,6 +6,18 @@ from dotenv import load_dotenv
 import xml.etree.ElementTree as ET
 import engine_core as ec
 import adaptive_risk_engine as are
+
+_HEARTBEAT_DIR = "/app/state"
+
+def _touch_heartbeat(name: str) -> None:
+    """Write current timestamp to /app/state/{name}_last_cycle so healthchecks can verify liveness."""
+    try:
+        os.makedirs(_HEARTBEAT_DIR, exist_ok=True)
+        path = os.path.join(_HEARTBEAT_DIR, f"{name}_last_cycle")
+        with open(path, "w") as fh:
+            fh.write(str(time.time()))
+    except Exception:
+        pass
 
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -27,6 +39,10 @@ GIVEBACK_RANK  = {"na": 0, "natural": 1, "watch": 2, "tighten": 3, "protection_f
 PROFIT_CHECKPOINTS = [2.0, 3.0]  # Fire alert when open_r crosses these thresholds
 DEVIATION_COOLDOWN_SEC  = 3 * 3600   # 3h cooldown for same deviation class
 GIVEBACK_COOLDOWN_SEC   = 6 * 3600   # 6h cooldown for same giveback class
+LIVE_ALERT_REPEAT_COOLDOWN = 45 * 60  # 45 min: prevents oscillation spam on non-escalating action/status changes
+DAILY_DIGEST_UTC_HOUR_START = 21     # Daily digest window: 21:00 UTC (US market close)
+DAILY_DIGEST_UTC_HOUR_END   = 22     # End of window — fires once in this hour per day
+SIZING_LEAK_THRESHOLD = 0.65         # < 65% of target risk → Sizing Leak alert (one-time)
 
 # Phase 5 — Anti-Spam: state-transition cooldowns (prevents oscillation re-alerts)
 STATE_ALERT_COOLDOWN = {
@@ -109,10 +125,11 @@ def get_account_settings():
     except: return {"total_deposited": 7500.0, "risk_pct_input": 0.5}
 
 def build_position_alert_key(pos, engine_data):
+    # Exclude 'trigger' — it oscillates intra-day (e.g. MA10 vs trend-follow text) and
+    # causes spurious key-change re-alerts without any real state change.
     return json.dumps({
         "status": engine_data["status"],
         "action": engine_data["action"],
-        "trigger": engine_data["trigger"],
         "sizing": engine_data.get("sizing_status", "✅ תקין")
     }, ensure_ascii=False, sort_keys=True)
 
@@ -134,13 +151,20 @@ def should_alert(prev, current_status, current_key):
     prev_key = prev.get("alert_key")
     last_alert_ts = prev.get("last_alert_ts", 0)
 
-    # Escalation: status worsened → always alert immediately
+    # Escalation: status worsened → always alert immediately (e.g. Healthy→Broken)
     if STATUS_RANK.get(current_status, 0) > STATUS_RANK.get(prev_status, 0): return True, now_ts
-    # State change: alert content changed → always alert
-    if prev_key != current_key: return True, now_ts
-    # Repeat cooldown: same status, same content → only during market hours to avoid overnight spam
+
+    # Critical/Broken repeat: re-alert after 6h during market hours only
     if current_status in ["🚨 קריטי", "🔴 Broken", "🚨 חריגת סיכון אלגו"]:
         if (now_ts - last_alert_ts) > (6 * 3600) and is_during_us_market_hours():
+            return True, now_ts
+        return False, last_alert_ts
+
+    # Non-escalating key change (de-escalation or action text oscillation):
+    # Apply LIVE_ALERT_REPEAT_COOLDOWN to prevent oscillation spam.
+    # Example: Power→Weak fires once; Weak→Power is not an escalation and gets the cooldown.
+    if prev_key != current_key:
+        if (now_ts - last_alert_ts) > LIVE_ALERT_REPEAT_COOLDOWN:
             return True, now_ts
 
     return False, last_alert_ts
@@ -219,11 +243,15 @@ def _checkpoint_alert_text(sym, setup, checkpoint_r, open_r, is_algo,
 # ── Phase 3 — State-change alert templates ───────────────────────────────────
 
 def _runner_state_alert(sym, setup, open_r, protected_profit, giveback_usd,
-                         giveback_pct, current_stop, days_to_earnings):
+                         giveback_pct, current_stop, days_to_earnings,
+                         trail_stop: dict | None = None):
     RTL_M = "‏"
     earnings_line = ""
     if days_to_earnings is not None and days_to_earnings <= 30:
         earnings_line = f"\n{RTL_M}• דוחות בעוד: `{days_to_earnings} ימים`"
+    trail_line = ""
+    if trail_stop and trail_stop.get("basis") != "none" and trail_stop.get("suggested_stop"):
+        trail_line = f"\n{RTL_M}• 🎯 *Trailing Stop מוצע:* `${trail_stop['suggested_stop']:.2f}` ({trail_stop['basis']})"
     return (
         f"{RTL_M}🏃 *Runner Mode — {sym}*\n"
         f"{RTL_M}הפוזיציה הגיעה ל-`{open_r:.1f}R` — מצב Runner.\n"
@@ -231,12 +259,24 @@ def _runner_state_alert(sym, setup, open_r, protected_profit, giveback_usd,
         f"{RTL_M}• Open R: `{open_r:.1f}R`\n"
         f"{RTL_M}• רווח מוגן (לפי סטופ): `${protected_profit:.0f}`\n"
         f"{RTL_M}• Giveback עד סטופ: `${giveback_usd:.0f}` ({giveback_pct:.0f}%)\n"
-        f"{RTL_M}• סטופ נוכחי: `${current_stop:.2f}`{earnings_line}\n"
+        f"{RTL_M}• סטופ נוכחי: `${current_stop:.2f}`{trail_line}{earnings_line}\n"
         f"{RTL_M}─────────────────\n"
         f"{RTL_M}✅ להחזיק אם יש Tennis Ball ומחזור יורד בירידות.\n"
         f"{RTL_M}⚠️ Giveback > 40%? — שקל הדקת סטופ.\n"
         f"{RTL_M}🚫 לא להוסיף לפני בסיס חדש."
     )
+
+
+def _runner_decision_keyboard(sym, campaign_id):
+    markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        telebot.types.InlineKeyboardButton("✅ להחזיק", callback_data=f"runner_decision|hold|{sym}|{campaign_id}"),
+        telebot.types.InlineKeyboardButton("🔒 הדק סטופ", callback_data=f"runner_decision|tighten|{sym}|{campaign_id}"),
+    )
+    markup.add(
+        telebot.types.InlineKeyboardButton("📊 מימוש חלקי", callback_data=f"runner_decision|partial|{sym}|{campaign_id}"),
+    )
+    return markup
 
 
 def _broken_state_alert(sym, setup, open_r, reason):
@@ -314,12 +354,82 @@ def _algo_loss_streak_alert(sym, open_r, streak_runs, level):
 def _algo_visibility_alert(visibility_avg, n_positions):
     RTL_M = "‏"
     return (
-        f"{RTL_M}⚠️ *ALGO Oversight — שקיפות נמוכה*\n"
+        f"{RTL_M}⚠️ *ALGO Oversight — נתוני סיכון חסרים*\n"
         f"{RTL_M}ממוצע ניקוד שקיפות: `{visibility_avg:.0f}/100` ({n_positions} פוזיציות)\n"
-        f"{RTL_M}Sentinel לא רואה מספיק נתונים לפיקוח תקין.\n"
+        f"{RTL_M}ציון 40 = תקין לאלגו (אין סטופ ידוע). ציון 20 = אין target_risk_usd.\n"
         f"{RTL_M}─────────────────\n"
-        f"{RTL_M}ℹ️ לבדוק: הוזנו target_risk_usd? entry quality? חיבור IBKR?"
+        f"{RTL_M}ℹ️ לבדוק: הוזנו target_risk_usd בפוזיציות האלגו?"
     )
+
+
+def _sizing_leak_alert(sym, setup, sizing_ratio, target_risk_usd, original_campaign_risk):
+    RTL_M = "‏"
+    return (
+        f"{RTL_M}⚖️ *Sizing Leak — {sym}*\n"
+        f"{RTL_M}סטאפ: `{setup}` | נלקח ב-`{sizing_ratio:.2f}x` סיכון יעד\n"
+        f"{RTL_M}יעד: `${target_risk_usd:.0f}` | בפועל: `${original_campaign_risk:.0f}`\n"
+        f"{RTL_M}─────────────────\n"
+        f"{RTL_M}המשמעות: ה-Edge קיים, אבל ההון לא מנוצל מספיק.\n"
+        f"{RTL_M}לא לפעול עכשיו — לרשום כלקח לטרייד הבא מאותו Setup."
+    )
+
+
+def _daily_digest_text(rows: list, date_str: str) -> str:
+    RTL_M = "‏"
+    _state_emoji = {
+        ec.POSITION_STATE_RUNNER:            "🏃",
+        ec.POSITION_STATE_BROKEN:            "🔴",
+        ec.POSITION_STATE_DEAD_MONEY:        "⏳",
+        ec.POSITION_STATE_YELLOW_FLAG:       "🟡",
+        ec.POSITION_STATE_PROFIT_PROTECTION: "🛡️",
+        ec.POSITION_STATE_WORKING:           "✅",
+        ec.POSITION_STATE_PROVING:           "🔍",
+    }
+    _action_map = {
+        ec.POSITION_STATE_RUNNER:            "הגן על רווח",
+        ec.POSITION_STATE_BROKEN:            "בצע יציאה",
+        ec.POSITION_STATE_DEAD_MONEY:        "שקול צמצום",
+        ec.POSITION_STATE_YELLOW_FLAG:       "מעקב צמוד",
+        ec.POSITION_STATE_PROFIT_PROTECTION: "שקול הדקת סטופ",
+        ec.POSITION_STATE_WORKING:           "עקוב",
+        ec.POSITION_STATE_PROVING:           "בדוק follow-through",
+    }
+    lines = [
+        f"{RTL_M}📋 *Sentinel — סיכום יומי | {date_str}*",
+        f"{RTL_M}───────────────────",
+    ]
+    urgent = []
+    for r in rows:
+        emoji = _state_emoji.get(r["state"], "⚪")
+        action = _action_map.get(r["state"], "עקוב")
+        tag = " `[ALGO]`" if r["is_algo"] else ""
+        r_str = f"`{r['open_r']:+.1f}R`"
+        lines.append(f"{RTL_M}• *{r['sym']}*{tag} {emoji} {r_str} — {action}")
+        if r["state"] in (ec.POSITION_STATE_BROKEN, ec.POSITION_STATE_RUNNER,
+                          ec.POSITION_STATE_PROFIT_PROTECTION):
+            urgent.append(r["sym"])
+    if urgent:
+        lines.append(f"{RTL_M}───────────────────")
+        lines.append(f"{RTL_M}⚡ *נדרשת החלטה:* {', '.join(urgent)}")
+    lines.append(f"{RTL_M}───────────────────")
+    lines.append(f"{RTL_M}_(ללא פעולה נוספת? הדאשבורד עדכני)_")
+    return "\n".join(lines)
+
+
+def _send_daily_digest_if_due(state: dict, rows: list, now_ts: float) -> None:
+    """Send one daily digest at US market close (21:00–22:00 UTC), Mon–Fri only."""
+    now_utc = datetime.utcnow()
+    if now_utc.weekday() >= 5:  # Sat/Sun — market closed
+        return
+    if not (DAILY_DIGEST_UTC_HOUR_START <= now_utc.hour < DAILY_DIGEST_UTC_HOUR_END):
+        return
+    today_str = now_utc.strftime("%Y-%m-%d")
+    if state.get("last_digest_date") == today_str:
+        return
+    if not rows:
+        return
+    send_telegram(_daily_digest_text(rows, now_utc.strftime("%d/%m/%Y")))
+    state["last_digest_date"] = today_str
 
 
 def check_position_risk_thresholds(sym, setup, open_r, open_pnl_usd, target_risk_usd,
@@ -363,23 +473,26 @@ def check_position_risk_thresholds(sym, setup, open_r, open_pnl_usd, target_risk
             checkpoints_hit.add(cp)
     updates["checkpoints_hit"] = list(checkpoints_hit)
 
-    # ── Giveback Monitor (only when meaningful profit existed) ────────────
-    if peak_open_r >= 1.5 and open_r < peak_open_r:
+    # ── Giveback Monitor (only when meaningful profit existed, not after BROKEN) ─
+    _pos_state = prev_state.get("position_state", "")
+    if peak_open_r >= 1.5 and open_r < peak_open_r and _pos_state != ec.POSITION_STATE_BROKEN:
         gb = ec.compute_giveback_from_peak(peak_open_r, open_r)
         prev_gb_class = prev_state.get("last_giveback_class", "natural")
         prev_gb_ts = prev_state.get("last_giveback_ts", 0)
         alert_classes_to_notify = {"watch", "tighten", "protection_failure"}
 
-        escalated = GIVEBACK_RANK.get(gb["classification"], 0) > GIVEBACK_RANK.get(prev_gb_class, 0)
-        cooled_down = (now_ts - prev_gb_ts) > GIVEBACK_COOLDOWN_SEC
-        should_fire = gb["classification"] in alert_classes_to_notify and (escalated or cooled_down)
+        zone_changed = gb["classification"] != prev_gb_class
+        # Fire only on zone transition (entering OR leaving an alert zone).
+        # No repeat-after-cooldown within the same zone — that caused the spam.
+        is_alert_current = gb["classification"] in alert_classes_to_notify
+        is_alert_prev = prev_gb_class in alert_classes_to_notify
+        should_fire = zone_changed and (is_alert_current or is_alert_prev)
 
         if should_fire:
             alerts.append(_giveback_alert_text(sym, setup, peak_open_r, open_r, gb, is_algo))
-            updates["last_giveback_class"] = gb["classification"]
+        updates["last_giveback_class"] = gb["classification"]
+        if should_fire:
             updates["last_giveback_ts"] = now_ts
-        elif gb["classification"] not in ("na", "natural"):
-            updates["last_giveback_class"] = gb["classification"]
 
     return alerts, updates
 
@@ -409,29 +522,34 @@ def check_manual_risk_override(state: dict) -> None:
         last_known = state.get(_KNOWN_RISK_PCT_KEY)
 
         if last_known is not None and abs(current_pct - float(last_known)) > 0.001:
-            delta = current_pct - float(last_known)
-            direction = "⬆️" if delta > 0 else "⬇️"
-            are.mark_adherence(
-                recommended_pct=float(last_known),
-                actual_pct=current_pct,
-                followed=False,
-                reason="Manual override detected by risk monitor",
-            )
-            are.log_risk_journal({
-                "direction": "up" if delta > 0 else "down_fast",
-                "current_risk_pct": float(last_known),
-                "recommended_risk_pct": float(last_known),
-                "action": "manual_override",
-                "actual_pct_set": current_pct,
-                "nav": ec.get_nav_with_freshness()["nav"],
-            })
-            alert = (
-                f"{RTL}⚠️ *זוהתה שינוי ידנית בסיכון*\n"
-                f"{RTL}risk\\_pct שונה מחוץ לטלגרם\n"
-                f"{RTL}{direction} `{float(last_known):.2f}%` → `{current_pct:.2f}%`\n"
-                f"{RTL}נרשם ביומן הסיכון כ-manual override."
-            )
-            send_telegram(alert)
+            # Suppress alert if the change originated from the Telegram bot (within 2 minutes)
+            via_bot_ts = float(cfg.get("risk_changed_ts", 0))
+            is_bot_change = (time.time() - via_bot_ts) < 120
+
+            if not is_bot_change:
+                delta = current_pct - float(last_known)
+                direction = "⬆️" if delta > 0 else "⬇️"
+                are.mark_adherence(
+                    recommended_pct=float(last_known),
+                    actual_pct=current_pct,
+                    followed=False,
+                    reason="Manual override detected by risk monitor",
+                )
+                are.log_risk_journal({
+                    "direction": "up" if delta > 0 else "down_fast",
+                    "current_risk_pct": float(last_known),
+                    "recommended_risk_pct": float(last_known),
+                    "action": "manual_override",
+                    "actual_pct_set": current_pct,
+                    "nav": ec.get_nav_with_freshness()["nav"],
+                })
+                alert = (
+                    f"{RTL}⚠️ *זוהתה שינוי ידנית בסיכון*\n"
+                    f"{RTL}risk\\_pct שונה מחוץ לטלגרם\n"
+                    f"{RTL}{direction} `{float(last_known):.2f}%` → `{current_pct:.2f}%`\n"
+                    f"{RTL}נרשם ביומן הסיכון כ-manual override."
+                )
+                send_telegram(alert)
 
         state[_KNOWN_RISK_PCT_KEY] = current_pct
     except Exception as e:
@@ -447,6 +565,9 @@ def main():
     acc_size = nav_info["nav"] if nav_info["ok"] else float(account_settings.get("total_deposited", 7500.0))
     target_risk_pct = float(account_settings.get("risk_pct_input", 0.5))
     target_risk_usd = acc_size * (target_risk_pct / 100)
+
+    # Settle state — used to suppress Sizing Leak during 48h after a risk raise
+    settle_state = are.get_risk_settle_info()
     
     res = supabase.table("trades").select("*").execute()
     df = pd.DataFrame(res.data)
@@ -460,6 +581,8 @@ def main():
     total_algo_exposure = 0.0
     algo_oversight_positions = []
     new_position_state = {}
+    daily_digest_rows = []
+    open_positions_for_risk = []
     now_ts = datetime.utcnow().timestamp()
 
     for _, row in open_pos.iterrows():
@@ -469,32 +592,52 @@ def main():
         campaign_id, mgt_state = row["campaign_id"], row.get("management_state", "full_position")
         
         curr = ec.get_live_price(sym)
-        if curr is None: curr = entry
-        
+        if curr is None:
+            send_telegram(
+                f"{RTL}⚠️ *Sentinel — מחיר חי חסר*\n"
+                f"{RTL}סימול: *{sym}* | קמפיין: `{campaign_id}`\n"
+                f"{RTL}לא נמצא מחיר חי — משתמש במחיר כניסה `${entry:.2f}` כ-fallback.\n"
+                f"{RTL}_בדוק את החיבור ל-yfinance / market data_"
+            )
+            curr = entry
+
         open_pnl = (curr - entry) * qty
         pos_value = curr * qty
         weight_pct = (pos_value / acc_size) * 100 if acc_size > 0 else 0
         if str(setup).upper() == "ALGO": total_algo_exposure += pos_value
-        
-        base_price = row.get('base_price', entry)
-        base_qty = row.get('base_qty', qty)
-        
-        init_sl_clean = init_sl if (init_sl > 0 and init_sl < base_price) else 0
-        original_campaign_risk = (base_price - init_sl_clean) * base_qty if init_sl_clean > 0 else 0
+
+        # Single source of truth: ec.get_campaign_risk_metrics() via engine_core
+        _risk_metrics = ec.get_campaign_risk_metrics(dict(row))
+        original_campaign_risk = _risk_metrics["original_risk"]
+        if not _risk_metrics["valid"] and str(setup).upper() != "ALGO":
+            send_telegram(
+                f"{RTL}⚠️ *Sentinel — סטופ מקורי חסר*\n"
+                f"{RTL}סימול: *{sym}* | קמפיין: `{campaign_id}`\n"
+                f"{RTL}לא ניתן לחשב 1R: {_risk_metrics['reason']}\n"
+                f"{RTL}_עדכן initial\\_stop בסופאבייס_"
+            )
+
         total_pos_profit = open_pnl + realized_pnl
-        
+
         total_campaign_r = (total_pos_profit / target_risk_usd) if str(setup).upper() == 'ALGO' and target_risk_usd > 0 else ((total_pos_profit / original_campaign_risk) if original_campaign_risk > 0 else 0)
         open_r = (open_pnl / target_risk_usd) if str(setup).upper() == 'ALGO' and target_risk_usd > 0 else ((open_pnl / original_campaign_risk) if original_campaign_risk > 0 else 0)
-        
+
         r_str = f"`{open_r:.1f}R`" + (" *(Target Base)*" if str(setup).upper() == "ALGO" else "")
-        
+
         engine_res = ec.evaluate_position_engine(
             symbol=sym, entry_price=entry, entry_date_str=entry_date, current_stop=sl,
             setup_type=setup, mgt_state=mgt_state, weight_pct=weight_pct, total_r=total_campaign_r,
             target_risk_usd=target_risk_usd, actual_risk_usd=original_campaign_risk, spy_hist=spy_hist
         )
-        
-        if not engine_res["ok"]: continue
+
+        if not engine_res["ok"]:
+            send_telegram(
+                f"{RTL}🚨 *Sentinel — שגיאה בהערכת פוזיציה*\n"
+                f"{RTL}סימול: *{sym}* | קמפיין: `{campaign_id}`\n"
+                f"{RTL}evaluate\\_position\\_engine נכשל: `{engine_res.get('error', 'unknown')}`\n"
+                f"{RTL}_הפוזיציה דולגה בסבב זה_"
+            )
+            continue
         engine = engine_res["data"]
         
         alert_key = build_position_alert_key(row, engine)
@@ -544,12 +687,15 @@ def main():
                               "position_state", "state_label", "breakeven_alerted",
                               "algo_loss_streak", "algo_streak_alerted_yellow",
                               "algo_streak_alerted_orange", "algo_deep_loss_alerted",
-                              "last_state_alert_ts", "last_state_alert_type"):
+                              "last_state_alert_ts", "last_state_alert_type",
+                              "runner_decision", "runner_decision_ts",
+                              "sizing_leak_alerted"):
                 if carry_key in prev:
                     new_pos_entry[carry_key] = prev[carry_key]
 
         # Risk Deviation / Giveback / Profit Protection Checkpoints
         is_algo = ec.is_algo_position(setup, sym)
+        open_positions_for_risk.append({"open_r": open_r, "is_algo": is_algo})
         threshold_alerts, threshold_updates = check_position_risk_thresholds(
             sym=sym, setup=setup, open_r=open_r, open_pnl_usd=open_pnl,
             target_risk_usd=target_risk_usd, is_algo=is_algo,
@@ -587,6 +733,18 @@ def main():
 
         _mgt_mode = ec.classify_management_mode(setup, sym)
 
+        # Follow-through score — None for ALGO (different management) or when
+        # the position is too young / history unavailable.
+        _ft_score = None
+        if _mgt_mode != "algo_observed":
+            try:
+                _ft_score = ec.compute_follow_through(
+                    symbol=sym, entry_date_str=entry_date,
+                    entry_price=entry, side=_side_pos,
+                )
+            except Exception as e:
+                print(f"follow-through error for {sym}: {e}")
+
         _state_result = ec.compute_position_state(
             side=_side_pos,
             management_mode=_mgt_mode,
@@ -597,7 +755,7 @@ def main():
             current_price=curr,
             current_stop=sl,
             days_to_earnings=_days_to_earnings,
-            follow_through_score=None,
+            follow_through_score=_ft_score,
             violation_score=0,
             has_new_high_since_entry=True,
             has_open_quantity=(qty > 0),
@@ -614,11 +772,27 @@ def main():
                                              _last_sa_ts, now_ts)
             if _fire:
                 if _new_state == ec.POSITION_STATE_RUNNER:
-                    send_telegram(_runner_state_alert(
-                        sym, setup, open_r,
-                        _protected_profit, _giveback_usd, _giveback_pct,
-                        sl, _days_to_earnings,
-                    ))
+                    _dec     = new_pos_entry.get("runner_decision", "")
+                    _dec_ts  = new_pos_entry.get("runner_decision_ts", 0.0)
+                    if _dec == "hold" and (now_ts - _dec_ts) < 24 * 3600:
+                        _fire = False  # user decided to hold — suppress for 24h
+                    else:
+                        _ma_lvls = {}
+                        try:
+                            _ma_lvls = ec.get_ma_levels(sym)
+                        except Exception:
+                            pass
+                        _trail = ec.compute_suggested_trail_stop(
+                            side=_side_pos, current_price=curr,
+                            ma21=_ma_lvls.get("ma21"), ma50=_ma_lvls.get("ma50"),
+                            open_r=open_r, entry_price=entry,
+                        )
+                        send_telegram_with_keyboard(
+                            _runner_state_alert(sym, setup, open_r,
+                                                _protected_profit, _giveback_usd, _giveback_pct,
+                                                sl, _days_to_earnings, trail_stop=_trail),
+                            _runner_decision_keyboard(sym, campaign_id),
+                        )
                 elif _new_state == ec.POSITION_STATE_BROKEN:
                     send_telegram(_broken_state_alert(sym, setup, open_r,
                                                        _state_result["reason"]))
@@ -679,6 +853,27 @@ def main():
             })
         # ─────────────────────────────────────────────────────────────────────
 
+        # ── Sizing Leak: one-time alert when position is undersized vs target ─
+        # Suppressed during the 48h settle period after a risk raise — positions
+        # that were correctly sized for the old (lower) target should not be
+        # retroactively flagged because the user raised their risk level.
+        _in_post_raise_settle = settle_state.get("active") and settle_state.get("dir") == "up"
+        if (not is_algo and original_campaign_risk > 0 and target_risk_usd > 0
+                and not new_pos_entry.get("sizing_leak_alerted", False)
+                and not _in_post_raise_settle):
+            _sizing_ratio = original_campaign_risk / target_risk_usd
+            if _sizing_ratio < SIZING_LEAK_THRESHOLD:
+                send_telegram(_sizing_leak_alert(sym, setup, _sizing_ratio,
+                                                 target_risk_usd, original_campaign_risk))
+                new_pos_entry["sizing_leak_alerted"] = True
+
+        # ── Collect row for daily digest ──────────────────────────────────────
+        daily_digest_rows.append({
+            "sym": sym, "setup": setup, "open_r": open_r,
+            "state": new_pos_entry.get("position_state", ""),
+            "is_algo": is_algo,
+        })
+
         new_position_state[campaign_id] = new_pos_entry
         
     # ── Phase 4: ALGO Oversight — portfolio-level visibility check ───────────
@@ -722,13 +917,23 @@ def main():
             
     state["positions"] = new_position_state
     state["cluster"] = {"status": cluster_status, "algo_cluster_pct": round(algo_cluster_pct, 2), "updated_at": datetime.utcnow().isoformat(), "last_alert_ts": last_cluster_alert}
+    # Checkpoint: persist position alerts before the slower global checks run.
+    # A crash in the sections below won't lose per-position alert state.
+    save_state(state)
+
+    # ── Daily Digest (US market close, once per day) ──────────────────────────
+    try:
+        _send_daily_digest_if_due(state, daily_digest_rows, now_ts)
+    except Exception as e:
+        print(f"Daily digest error: {e}")
 
     # --- Adaptive Risk Proactive Alert ---
     try:
         current_risk_pct = float(account_settings.get("risk_pct_input", 0.5))
         nav_for_risk = float(account_settings.get("nav", acc_size))
         closed_camps = are.compute_closed_campaigns(df)
-        risk_rec = are.compute_adaptive_risk(closed_camps, current_risk_pct, nav_for_risk)
+        risk_rec = are.compute_adaptive_risk(closed_camps, current_risk_pct, nav_for_risk,
+                                             open_positions=open_positions_for_risk)
 
         if risk_rec.get("ok") and risk_rec["direction"] != "hold":
             prev_alert = state.get("risk_alert", {})
@@ -740,23 +945,48 @@ def main():
                 and (now_ts - last_risk_ts) < 24 * 3600
             )
 
-            if not same_direction_recently:
+            # Settle gate: skip alert for 48h after user confirmed a risk change
+            settle = are.get_risk_settle_info()
+            in_settle = settle["active"] and settle["dir"] == risk_rec["direction"]
+            if in_settle:
+                print(f"Adaptive risk: in settle period ({settle['hours_remaining']:.1f}h remaining), skipping alert")
+
+            if not same_direction_recently and not in_settle:
                 rec_pct = risk_rec["recommended_risk_pct"]
                 curr_pct = risk_rec["current_risk_pct"]
                 curr_usd = risk_rec["current_risk_usd"]
                 rec_usd = risk_rec["recommended_risk_usd"]
                 arrow = "⬆️" if risk_rec["direction"] == "up" else "⬇️⬇️"
-                heat = risk_rec["heat_score"]
-                step = risk_rec["step_type"]
+                heat  = risk_rec["heat_score"]
+                step  = risk_rec["step_type"]
+                s9_sc  = risk_rec.get("s9_score",  heat)
+                m21_sc = risk_rec.get("m21_score", heat)
+                l50_sc = risk_rec.get("l50_score", heat)
 
                 alert_text = (
                     f"{RTL}🎯 *התראת סיכון אדפטיבי*\n"
                     f"{RTL}───────────────\n"
-                    f"{RTL}חום מסחר: {risk_rec['heat_color']} `{heat:.0f}%` | {step}\n"
-                    f"{RTL}רמה נוכחית: `{curr_pct:.2f}%` (`${curr_usd:,.0f}` לעסקה)\n"
-                    f"{RTL}{arrow} המלצה: `{rec_pct:.2f}%` (`${rec_usd:,.0f}` לעסקה)\n\n"
-                    f"{RTL}האם לאשר שינוי סיכון?"
+                    f"{RTL}חום מסחר: {risk_rec['heat_color']} `{heat:.0f}/100` | {step}\n"
+                    f"{RTL}  ▸ ציון (0-100) לפי טווח: S9(9 עסקאות)=`{s9_sc:.0f}` | M21(21)=`{m21_sc:.0f}` | L50(50)=`{l50_sc:.0f}`\n"
                 )
+                factors = risk_rec.get("heat_factors", [])
+                if factors:
+                    alert_text += f"{RTL}\n{RTL}📊 גורמים מרכזיים:\n"
+                    for f_line in factors[:3]:
+                        alert_text += f"{RTL}  {f_line}\n"
+                if rec_pct == curr_pct:
+                    alert_text += f"{RTL}\n{RTL}סיכון נוכחי: `{curr_pct:.2f}%` (`${curr_usd:,.0f}` לעסקה) — *ללא שינוי*\n"
+                else:
+                    alert_text += (
+                        f"{RTL}\n{RTL}סיכון נוכחי: `{curr_pct:.2f}%` (`${curr_usd:,.0f}` לעסקה)\n"
+                        f"{RTL}{arrow} *סיכון מוצע:* `{rec_pct:.2f}%` (`${rec_usd:,.0f}` לעסקה)\n"
+                    )
+                improve = risk_rec.get("what_to_improve", [])
+                if improve:
+                    alert_text += f"{RTL}\n{RTL}🔼 לשיפור:\n"
+                    for imp in improve[:3]:
+                        alert_text += f"{RTL}  → {imp}\n"
+                alert_text += f"\n{RTL}האם לאשר שינוי סיכון?"
                 markup = telebot.types.InlineKeyboardMarkup(row_width=2)
                 markup.add(
                     telebot.types.InlineKeyboardButton(
@@ -779,8 +1009,55 @@ def main():
         print(f"Risk alert error: {e}")
 
     save_state(state)
+    _touch_heartbeat("risk_monitor")
+
+
+def _require_env() -> None:
+    """Fail fast at startup when a critical env var is missing."""
+    required = {
+        "TELEGRAM_BOT_TOKEN": TOKEN,
+        "TELEGRAM_ADMIN_ID":  ADMIN_ID,
+        "SUPABASE_URL":       SUPABASE_URL,
+        "SUPABASE_KEY":       SUPABASE_KEY,
+    }
+    missing = [k for k, v in required.items() if not v]
+    if missing:
+        raise EnvironmentError(
+            f"🚨 Risk Monitor cannot start — missing env vars: {', '.join(missing)}"
+        )
+
+
+_SHUTTING_DOWN = False
+
+
+def _graceful_shutdown(signum, frame):
+    """Save last-known state before container/process exit.
+
+    Triggered by docker compose down (SIGTERM) and Ctrl+C (SIGINT).
+    We rely on the most-recent state file written during the main loop; no
+    re-computation here to avoid touching Supabase mid-shutdown.
+    """
+    global _SHUTTING_DOWN
+    if _SHUTTING_DOWN:
+        return
+    _SHUTTING_DOWN = True
+    sig_name = signal.Signals(signum).name if hasattr(signal, "Signals") else str(signum)
+    print(f"🛑 Risk Monitor received {sig_name} — checkpoint and exit")
+    try:
+        if os.path.exists(STATE_FILE):
+            state = load_state()
+            state["shutdown_at"] = datetime.utcnow().isoformat()
+            state["shutdown_signal"] = sig_name
+            save_state(state)
+    except Exception as e:
+        print(f"shutdown checkpoint failed: {e}")
+    sys.exit(0)
+
 
 if __name__ == "__main__":
+    _require_env()
+    signal.signal(signal.SIGTERM, _graceful_shutdown)
+    signal.signal(signal.SIGINT,  _graceful_shutdown)
     print("🛡️ Sentinel Risk Monitor Active")
     while True:
         try: main()

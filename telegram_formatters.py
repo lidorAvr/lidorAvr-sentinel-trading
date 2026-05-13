@@ -155,36 +155,73 @@ def fmt_regime_report(regime: dict, exposure_pct: float,
     return "\n".join(lines)
 
 
-def fmt_adaptive_risk_block(risk_rec: dict) -> str:
+def fmt_adaptive_risk_block(risk_rec: dict, settle_info: dict | None = None) -> str:
     """בלוק המלצת סיכון אדפטיבי — מוצג בדוח משטר שוק ובסיכום תיק."""
     if not risk_rec.get('ok'):
         msg = risk_rec.get('message', 'אין מספיק נתונים')
         return f"\n{RTL}{SEP}\n{RTL}🎯 *סיכון אדפטיבי:* ⚪ {msg}"
     lines = [f"\n{RTL}{SEP}", f"{RTL}🎯 *המלצת סיכון אדפטיבי*",
              fmt_actionability("review_required")]
-    lines.append(f"{RTL}חום מסחר: {risk_rec['heat_color']} *{risk_rec['heat_label']}* (ציון: `{risk_rec['heat_score']:.0f}%`)")
+    lines.append(f"{RTL}חום מסחר: {risk_rec['heat_color']} *{risk_rec['heat_label']}* (ציון: `{risk_rec['heat_score']:.0f}/100`)")
+
+    # Multi-window breakdown (new fields — shown if present)
+    s9_sc  = risk_rec.get("s9_score")
+    m21_sc = risk_rec.get("m21_score")
+    l50_sc = risk_rec.get("l50_score")
+    if s9_sc is not None:
+        lines.append(f"{RTL}  ▸ ציון (0-100) לפי טווח: S9(9)=`{s9_sc:.0f}` | M21(21)=`{m21_sc:.0f}` | L50(50)=`{l50_sc:.0f}`")
+
+    # Win rate per window
+    s9_wr  = risk_rec.get("recent_10_wr", 0)  # backward-compat: mapped from S9
+    l50_wr = risk_rec.get("all_50_wr", 0)
+    n50 = risk_rec.get('n_used_50', risk_rec.get('n_trades', 0))
+    if risk_rec.get("s9_stats") and risk_rec.get("l50_stats"):
+        n9  = risk_rec["s9_stats"]["n"]
+        n50 = risk_rec["l50_stats"]["n"]
+        lines.append(f"{RTL}  ▸ Win Rate — S9 ({n9}): `{s9_wr:.0f}%` | L50 ({n50}): `{l50_wr:.0f}%`")
+    else:
+        n10 = risk_rec.get('n_used_10', min(10, risk_rec.get('n_trades', 10)))
+        lines.append(f"{RTL}  ▸ שיעור הצלחה ({n10} אחרונות): `{s9_wr:.0f}%`")
+
+    # Streak
     if risk_rec['win_streak'] > 0:
         lines.append(f"{RTL}  ▸ רצף רווחים: `{risk_rec['win_streak']}` עסקאות")
     elif risk_rec['loss_streak'] > 0:
         lines.append(f"{RTL}  ▸ ⚠️ רצף הפסדים: `{risk_rec['loss_streak']}` עסקאות")
-    lines.append(f"{RTL}  ▸ שיעור הצלחה (10 אחרונות): `{risk_rec['recent_10_wr']:.0f}%`")
-    lines.append(f"{RTL}  ▸ שיעור הצלחה (50 אחרונות): `{risk_rec['all_50_wr']:.0f}%`")
+
+    # Heat factors — includes open position adjustment if nonzero (no separate display needed)
+    factors = risk_rec.get("heat_factors", [])
+    for f_line in factors[:4]:
+        lines.append(f"{RTL}  ▸ {f_line}")
+
     curr_pct = risk_rec['current_risk_pct']
-    rec_pct = risk_rec['recommended_risk_pct']
+    rec_pct  = risk_rec['recommended_risk_pct']
     curr_usd = risk_rec['current_risk_usd']
-    rec_usd = risk_rec['recommended_risk_usd']
+    rec_usd  = risk_rec['recommended_risk_usd']
     direction = risk_rec['direction']
-    if direction == 'up':
-        arrow = "⬆️"
-    elif direction == 'down_fast':
-        arrow = "⬇️⬇️"
-    else:
-        arrow = "➡️"
+    arrow = "⬆️" if direction == 'up' else ("⬇️⬇️" if direction == 'down_fast' else "➡️")
     lines.append(f"\n{RTL}{arrow} *{risk_rec['step_type']}*")
+    lines.append(f"{RTL}  סיכון נוכחי: `{curr_pct:.2f}%` (`${curr_usd:,.0f}` לעסקה)")
     if rec_pct == curr_pct:
-        lines.append(f"{RTL}  שמור על `{rec_pct:.2f}%` — `${rec_usd:,.0f}` לעסקה")
+        lines.append(f"{RTL}  סיכון מוצע: `{rec_pct:.2f}%` — *ללא שינוי*")
     else:
-        lines.append(f"{RTL}  `{curr_pct:.2f}%` (`${curr_usd:,.0f}`) ← → `{rec_pct:.2f}%` (`${rec_usd:,.0f}`)")
+        lines.append(f"{RTL}  סיכון מוצע: `{rec_pct:.2f}%` (`${rec_usd:,.0f}` לעסקה)")
+
+    # Settle period note — shown when user just confirmed a raise/cut within 48h
+    if settle_info and settle_info.get("active") and settle_info.get("dir") == direction:
+        hrs = settle_info["hours_remaining"]
+        lines.append(
+            f"{RTL}📌 *תקופת התבססות:* שינוי בוצע לאחרונה — "
+            f"עוד `{hrs:.0f}ש` לפני שהמלצה הבאה תישלח"
+        )
+
+    # What to improve (new field)
+    improve = risk_rec.get("what_to_improve", [])
+    if improve:
+        lines.append(f"\n{RTL}🔼 לשיפור:")
+        for imp in improve[:3]:
+            lines.append(f"{RTL}  → {imp}")
+
     return "\n".join(lines)
 
 
@@ -218,4 +255,157 @@ def fmt_minervini_trend_template(symbol: str, tt_result: dict) -> str:
         f"{RTL}ציון: *{passed}/8* {score_emoji}",
         f"{RTL}_{('מניה בטרנד מלא ✅' if passed >= 7 else 'תבנית חלקית' if passed >= 5 else 'לא עומדת בתבנית ❌')}_",
     ]
+    return "\n".join(lines)
+
+
+# ── Add-On Risk Card ──────────────────────────────────────────────────────────
+
+def fmt_addon_card(plan: dict, symbol: str = "") -> str:
+    """
+    Format the Add-On Risk Card for Telegram.
+    Always shows: campaign state, proposed add, result-if-stopped, decision, stop mode.
+    """
+    import addon_risk_engine as are
+
+    if not plan.get("ok"):
+        msg = plan.get("message") or plan.get("error", "שגיאת חישוב")
+        return f"\n{RTL}{SEP}\n{RTL}📌 *חיזוק — {symbol}*\n{RTL}⚠️ {msg}"
+
+    status = plan["status"]
+    status_emoji = {
+        are.APPROVED:      "✅ מאושר",
+        are.WATCH:         "👁 צפייה",
+        are.BLOCKED:       "🚫 חסום",
+        are.MANUAL_REVIEW: "⚠️ בדיקה ידנית",
+    }.get(status, status)
+
+    ls   = plan["lot_state"]
+    lines = [
+        f"\n{RTL}{SEP}",
+        f"{RTL}📌 *Add-On Planner{f': {symbol}' if symbol else ''}*",
+        f"{RTL}סטטוס: *{status_emoji}*",
+        f"\n{RTL}📊 *מצב קמפיין נוכחי:*",
+        f"{RTL}  ▸ Open R: `{ls['open_r']:.1f}R`" if ls.get("open_r") is not None else f"{RTL}  ▸ Open R: לא זמין",
+        f"{RTL}  ▸ סיכון מקורי: `${ls['original_risk_usd']:.0f}`",
+        f"{RTL}  ▸ רווח נעול בסטופ: `${ls['locked_profit_usd']:.0f}`",
+        f"{RTL}  ▸ סיכון פתוח: `${ls['open_risk_usd']:.0f}`",
+        f"{RTL}  ▸ רווח ממומש: `${ls['realized_pnl_usd']:.0f}`",
+        f"{RTL}  ▸ תוצאה אם הסטופ הנוכחי נפגע: `${ls['net_result_if_stop_hit']:.0f}`",
+    ]
+
+    lines += [
+        f"\n{RTL}🔢 *הוספה מוצעת:*",
+        f"{RTL}  ▸ כניסה: `${plan['add_entry']:.2f}` | סטופ: `${plan['add_stop']:.2f}`",
+        f"{RTL}  ▸ סיכון למניה: `${plan['risk_per_share']:.2f}`",
+        f"{RTL}  ▸ כמות מוצעת: `{plan['proposed_qty']}` מניות",
+        f"{RTL}  ▸ סיכון ההוספה: `${plan['addon_risk_usd']:.0f}`",
+        f"{RTL}  ▸ מקסימום מותר: `{plan['max_qty']}` מניות",
+    ]
+
+    # Result if stopped
+    result = plan["result_if_stopped"]
+    result_emoji = "🟢" if result > 0 else ("🟡" if result >= plan["hard_floor_usd"] else "🔴")
+    r_str = f" ({plan['result_r']:.1f}R)" if plan.get("result_r") is not None else ""
+    lines += [
+        f"\n{RTL}📉 *תוצאה אם הסטופ נפגע:*",
+        f"{RTL}  {result_emoji} `${result:.0f}`{r_str}",
+        f"{RTL}  ▸ רצפה: `${plan['hard_floor_usd']:.0f}` (-25% סיכון מקורי)",
+    ]
+
+    # Stop mode
+    lines += [
+        f"\n{RTL}🔒 *מצב סטופ מומלץ:* `{plan['stop_mode']}`",
+        f"{RTL}  ▸ {plan['stop_mode_desc']}",
+    ]
+
+    # Reasons / Blocks / Warnings
+    if plan.get("reasons"):
+        lines.append(f"\n{RTL}✅ *אישורים:*")
+        for r in plan["reasons"][:3]:
+            lines.append(f"{RTL}  {r}")
+    if plan.get("blocks"):
+        lines.append(f"\n{RTL}🚫 *חסימות:*")
+        for b in plan["blocks"][:3]:
+            lines.append(f"{RTL}  {b}")
+    if plan.get("warnings"):
+        lines.append(f"\n{RTL}⚠️ *אזהרות:*")
+        for w in plan["warnings"][:2]:
+            lines.append(f"{RTL}  {w}")
+
+    return "\n".join(lines)
+
+
+# ── Heat Thermometer ──────────────────────────────────────────────────────────
+
+_HEAT_FILLED  = "█"
+_HEAT_EMPTY   = "░"
+_HEAT_BLOCKS  = 10
+
+_HEAT_LABEL_MAP = [
+    (80, "🔥 חם מאוד"),
+    (60, "🟠 חם"),
+    (40, "🟡 מתון"),
+    (20, "🔵 קר"),
+    (0,  "❄️ קר מאוד"),
+]
+
+
+def _score_to_bar(score: float, blocks: int = _HEAT_BLOCKS) -> str:
+    filled = round(max(0, min(score, 100)) / 100 * blocks)
+    return _HEAT_FILLED * filled + _HEAT_EMPTY * (blocks - filled)
+
+
+def _heat_label(score: float) -> str:
+    for threshold, label in _HEAT_LABEL_MAP:
+        if score >= threshold:
+            return label
+    return "❄️ קר מאוד"
+
+
+def fmt_heat_thermometer(risk_rec: dict) -> str:
+    """
+    Visual heat thermometer for Telegram — S9 / M21 / L50 window breakdown.
+
+    Returns a ready-to-send Markdown string.
+    """
+    if not risk_rec.get("ok"):
+        msg = risk_rec.get("message", "אין מספיק נתונים")
+        return f"{RTL}🌡️ *מד החום:* ⚪ {msg}"
+
+    score = risk_rec.get("heat_score", 0)
+    bar   = _score_to_bar(score)
+    label = _heat_label(score)
+
+    lines = [
+        f"{RTL}{SEP}",
+        f"{RTL}🌡️ *מד חום מסחר*",
+        f"{RTL}`[{bar}]` *{score:.0f}/100* — {label}",
+    ]
+
+    s9_sc  = risk_rec.get("s9_score")
+    m21_sc = risk_rec.get("m21_score")
+    l50_sc = risk_rec.get("l50_score")
+
+    if s9_sc is not None and m21_sc is not None and l50_sc is not None:
+        lines += [
+            f"\n{RTL}📊 *פירוט לפי טווח:*",
+            f"{RTL}  S9  `[{_score_to_bar(s9_sc, 5)}]` `{s9_sc:.0f}`",
+            f"{RTL}  M21 `[{_score_to_bar(m21_sc, 5)}]` `{m21_sc:.0f}`",
+            f"{RTL}  L50 `[{_score_to_bar(l50_sc, 5)}]` `{l50_sc:.0f}`",
+        ]
+
+    s9_wr  = risk_rec.get("recent_10_wr", 0)
+    l50_wr = risk_rec.get("all_50_wr", 0)
+    if risk_rec.get("s9_stats") and risk_rec.get("l50_stats"):
+        n9  = risk_rec["s9_stats"]["n"]
+        n50 = risk_rec["l50_stats"]["n"]
+        lines.append(f"{RTL}  Win Rate — S9 ({n9}): `{s9_wr:.0f}%` | L50 ({n50}): `{l50_wr:.0f}%`")
+
+    curr_pct  = risk_rec.get("current_risk_pct", 0)
+    rec_pct   = risk_rec.get("recommended_risk_pct", 0)
+    direction = risk_rec.get("direction", "hold")
+    arrow = "⬆️" if direction == "up" else ("⬇️" if direction in ("down", "down_fast") else "➡️")
+    change = f" (כרגע: `{curr_pct:.2f}%`)" if rec_pct != curr_pct else " ← ללא שינוי"
+    lines.append(f"\n{RTL}{arrow} סיכון מומלץ: `{rec_pct:.2f}%`{change}")
+
     return "\n".join(lines)

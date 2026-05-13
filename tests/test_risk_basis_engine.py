@@ -8,6 +8,7 @@ section.  All tests are pure-math (no DB, no yfinance, no mocking needed).
 import pytest
 from engine_core import (
     # R calculation
+    get_campaign_risk_metrics,
     compute_original_campaign_risk,
     compute_frozen_target_risk,
     compute_r_true,
@@ -453,3 +454,67 @@ class TestSpecScenarios:
         gb_pct = compute_giveback_pct_of_open_profit(500, 1000)
         assert gb_pct == 50.0
         assert classify_giveback_severity(50.0) == "wide"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# get_campaign_risk_metrics — single source of truth wrapper
+# ──────────────────────────────────────────────────────────────────────────────
+class TestGetCampaignRiskMetrics:
+    def _row(self, **overrides):
+        base = {
+            "base_price": 50.0, "base_qty": 100.0,
+            "initial_stop": 47.0, "side": "BUY",
+        }
+        base.update(overrides)
+        return base
+
+    def test_valid_long(self):
+        r = get_campaign_risk_metrics(self._row())
+        assert r["valid"] is True
+        assert r["original_risk"] == 300.0
+        assert r["reason"] == ""
+
+    def test_falls_back_to_price_when_base_price_missing(self):
+        # No base_price — falls back to "price"
+        row = {"price": 50.0, "base_qty": 100.0, "initial_stop": 47.0, "side": "BUY"}
+        r = get_campaign_risk_metrics(row)
+        assert r["valid"] is True
+        assert r["original_risk"] == 300.0
+
+    def test_falls_back_to_quantity_when_base_qty_missing(self):
+        row = {"base_price": 50.0, "quantity": 100.0, "initial_stop": 47.0, "side": "BUY"}
+        r = get_campaign_risk_metrics(row)
+        assert r["valid"] is True
+        assert r["original_risk"] == 300.0
+
+    def test_missing_initial_stop(self):
+        r = get_campaign_risk_metrics(self._row(initial_stop=0))
+        assert r["valid"] is False
+        assert "initial_stop" in r["reason"]
+
+    def test_stop_above_price_invalid(self):
+        r = get_campaign_risk_metrics(self._row(initial_stop=55.0))
+        assert r["valid"] is False
+        assert "initial_stop" in r["reason"]
+
+    def test_missing_base_price(self):
+        r = get_campaign_risk_metrics({"base_qty": 100.0, "initial_stop": 47.0, "side": "BUY"})
+        assert r["valid"] is False
+        assert "base_price" in r["reason"]
+
+    def test_missing_base_qty(self):
+        r = get_campaign_risk_metrics({"base_price": 50.0, "initial_stop": 47.0, "side": "BUY"})
+        assert r["valid"] is False
+
+    def test_short_side(self):
+        # SHORT: stop above entry
+        r = get_campaign_risk_metrics({
+            "base_price": 50.0, "base_qty": 100.0,
+            "initial_stop": 53.0, "side": "SHORT",
+        })
+        assert r["valid"] is True
+        assert r["original_risk"] == 300.0
+
+    def test_none_initial_stop_treated_as_missing(self):
+        r = get_campaign_risk_metrics(self._row(initial_stop=None))
+        assert r["valid"] is False

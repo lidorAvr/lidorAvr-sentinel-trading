@@ -91,12 +91,21 @@ Goals:
 - Move secure runner protections into explicit code once safe.
 - Apply Actionability Layer to all messages — `fmt_actionability()` + `fmt_algo_risk_note()` done ✅ (TASK-006).
 
-Remaining module split:
-- `telegram_handlers.py`
-- `telegram_backlog.py`
-- `telegram_portfolio.py`
-- `telegram_callbacks.py`
-- `supabase_repository.py`
+Completed extractions:
+- `supabase_repository.py` ✅ (dependency-injected repo layer, 24 tests)
+- `telegram_menus.py` ✅ (all menu/keyboard builders, 20 tests)
+- `bot_core.py` ✅ (shared bot/supabase/user_state/RTL instances)
+- `bot_helpers.py` ✅ (pure helpers, 15 tests)
+- `telegram_callbacks.py` ✅ (all @bot.callback_query_handler routes)
+- `telegram_backlog.py` ✅ (get_next_missing journal flow, 16 tests)
+- `telegram_portfolio.py` ✅ (handle_drilldown + handle_market_regime + handle_portfolio_room, 23 tests)
+- `bot_health.py` ✅ (build_health_report — 13-check system health, 15 tests)
+- `telegram_devops.py` ✅ (IBKR sync rate-limiter, manual-sync thread, XML upload — 28+5 tests updated)
+
+Status: **Phase 4 complete** — `telegram_bot.py` reduced from ~2000 → 457 lines (-77%).
+Remaining content is `handle_all_messages` routing (short if/elif blocks) and
+`handle_document_upload` — extracting them further would add abstraction overhead
+without meaningful complexity reduction.
 
 Rules:
 
@@ -163,6 +172,88 @@ Rules (preserved throughout):
 - No automatic trade state mutation without explicit user-approved rules.
 - ALGO positions never receive automated exit instructions.
 - All alerts bounded to avoid noise (dedup + cooldown + market-hours gate).
+
+## Phase 7 — Minervini Team Review Cycle (Meetings 1 + 2)
+
+Status: **complete** — Sprint 1 + Sprint 2 shipped. See `docs/SPRINT_1_2_REPORT.md`.
+
+**Sprint 1 — Production Reliability** (commit `dc1afa5`)
+- `ec.get_campaign_risk_metrics(row)` — single source of truth for 1R
+- 3 silent failures in `risk_monitor.py` now send Telegram alerts
+- `_require_env()` startup validation
+- Mid-loop state checkpoint
+
+**Sprint 2 — Methodology Fidelity** (commit `e319fcb`)
+- `compute_follow_through()` — Minervini "wizards continue" scorer (LONG + SHORT)
+- `follow_through_score` wired into `compute_position_state` (was always `None`)
+- Heat Score: Wizard payoff threshold (≥3.0 → +24), gap fills, sharper streak penalty
+- SIGTERM/SIGINT graceful shutdown
+
+**Merge:** PR #15 merges `claude/review-dev-roadmap-6K19V` → `main`.
+**Tests: 1182 passing** (was 1153).
+
+## Phase 8 — Meeting 3 & New Departments
+
+Status: **complete** — Sprint 3 shipped. See `docs/SPRINT_3_REPORT.md`.
+
+**Sprint 3 — Production Reliability + Calibration** (5 commits on `claude/review-dev-roadmap-6K19V`)
+
+**Calibration:**
+- `_FT_PEAK_FULL_PCT` 10.0 → 7.0 (empirically validated Minervini wizard threshold)
+- payoff < 0.8 penalty -12 → -15 (Mark's red line)
+- RISK_LADDER revised to `[0.25, 0.40, 0.60, 0.85, 1.15, 1.50, 2.00]` (uniform cadence)
+- `profit_factor` sentinel unified to `math.inf` (analytics + adaptive risk + display)
+
+**Production reliability:**
+- `analytics_engine.py:250` → `get_campaign_risk_metrics()` (LONG/SHORT + fallback)
+- `bot_core.py` fail-fast validation (TOKEN, ADMIN_ID int-check, SUPABASE credentials)
+- `docker-compose.yml` hardened (healthcheck, mem_limit 1.5 GB, log rotation, named volume)
+
+**Test infrastructure:**
+- `tests/conftest.py` — 4 shared fixtures (mock_supabase, mock_yfinance, sample positions)
+- `tests/test_integration.py` — 7 cross-module integration tests
+- `pytest.ini` markers (unit / integration / slow)
+- `requirements-dev.txt` pytest-cov added
+
+**Tests: 1191 passing** (was 1182 — +9 new tests).
+
+**Still open for Meeting 4:**
+1. Heat Score visualization in Telegram (S9/M21/L50 thermometer) — Maya's requirement
+2. Add-On Engine Phase 2 (Supabase schema + dashboard + alerts)
+3. 48h Settle Period empirical validation
+4. SSH setup on Orange Pi (user action)
+5. `fmt_heat_thermometer()` in `telegram_formatters.py`
+6. Safe Markdown splitting in `telegram_portfolio.py`
+7. Developer menu PIN gate
+
+## Phase 9 — Meeting 4 & Sprint 4
+
+Status: **complete** — 2026-05-13
+
+Mark's Final Verdict Meeting 4: **8.6/10** → Sprint 4 delivered.
+
+**Sprint 4 — completed:**
+1. ✅ Real Healthchecks — mtime-based liveness probes (4 services + tests)
+2. ✅ GitHub Actions CI — `claude/**` branch coverage added
+3. ✅ `compute_suggested_trail_stop()` — RUNNER trailing stop in engine_core.py + wired into risk_monitor.py
+4. ✅ `fmt_heat_thermometer()` — visual S9/M21/L50 thermometer bar in telegram_formatters.py
+5. ✅ `/addon` inline keyboard [אשר/בטל] — confirmation flow in telegram_bot.py + telegram_callbacks.py
+6. ✅ Developer menu PIN gate (`DEV_PIN` env var, 30-min session) — telegram_devops.py + telegram_bot.py
+7. ✅ `ADMIN_ID > 0` validation — bot_core.py fail-fast
+8. ✅ `docs/DESIGN_SYSTEM.md` — emoji/icon palette, heat labels, position states, healthcheck table
+9. ✅ Tests: 1201/1201 (+6 trailing stop, +4 healthcheck vs Sprint 3's 1195)
+
+**Still open for Meeting 5:**
+- Add-On Engine Phase 2 — Supabase schema + `/addon` dashboard
+- 48h Settle Period — empirical validation (production data needed)
+- SSH setup on Orange Pi — user action
+- Merge PR #15 → main — requires human approval
+- E2E test `test_e2e_risk_monitor.py`
+- Coverage report baseline (≥75% enforced by pytest-cov)
+
+## Phase 10 — Meeting 5 & Sprint 5
+
+Status: **planned** — see `docs/CHATGPT_TEAM_PROMPT_V4.md`.
 
 ## Parking lot
 

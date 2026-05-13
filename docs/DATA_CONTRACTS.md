@@ -61,6 +61,33 @@ One campaign can include:
 
 Campaign-level calculations should not treat every row as a separate independent trade.
 
+## stat_bucket contract
+
+Every campaign is classified into a stat bucket using:
+
+```python
+engine_core.classify_stat_bucket(setup_type, original_campaign_risk) → str
+```
+
+Valid buckets:
+
+| Bucket            | Meaning                                                    |
+|-------------------|------------------------------------------------------------|
+| `EP_MANUAL`       | EP setup with known initial stop                           |
+| `VCP_MANUAL`      | VCP setup with known initial stop                          |
+| `ALGO_OBSERVED`   | ALGO-managed position; Sentinel observes only              |
+| `DATA_INCOMPLETE` | Discretionary setup missing initial stop or risk basis     |
+
+Rules:
+
+- `engine_core.is_stat_countable(bucket)` → True **only** for `_MANUAL` buckets (EP_MANUAL, VCP_MANUAL).
+- `engine_core.is_discretionary_bucket(bucket)` → True if bucket ends with `_MANUAL`.
+- `DATA_INCOMPLETE` and `ALGO_OBSERVED` must **never** appear in Win Rate, Expectancy, Avg Win R, Avg Loss R, or Profit Factor.
+- `ALGO_OBSERVED` campaigns are measured by Net PnL and Net R (Target Base) only.
+- `original_campaign_risk = 0` triggers `DATA_INCOMPLETE` classification even if setup_type is EP or VCP.
+
+The `adaptive_risk_engine.compute_closed_campaigns(df)` function attaches `stat_bucket` to each campaign dict. All downstream stats must read from that field.
+
 ## Initial risk contract
 
 For discretionary trades such as EP/VCP:
@@ -179,6 +206,110 @@ Common position statuses include:
 - Climactic
 
 Do not change status names lightly because user-facing reports and mental models rely on them.
+
+## Alert key contract
+
+`risk_monitor.py` builds a per-position alert key for deduplication via `build_position_alert_key()`.
+
+The alert key includes:
+
+- `status`: current position status string
+- `action`: recommended action string
+- `sizing_status`: sizing label (default "✅ תקין")
+
+The alert key does **NOT** include `trigger` — removing trigger prevents re-fires when the trigger text cycles without a real state change.
+
+`should_alert()` logic:
+
+1. Status escalation (higher `STATUS_RANK`) → always fires immediately.
+2. Critical/Broken status → fires at most once per 6 h during US market hours.
+3. Key change (non-escalating) → fires only if ≥ 45 min since last alert (`LIVE_ALERT_REPEAT_COOLDOWN`).
+4. No change → never fires.
+
+## Giveback zone contract
+
+`risk_monitor.py` fires a Giveback alert only when the zone classification **changes**.
+
+Zone-change logic:
+
+```python
+alert_classes = {"watch", "tighten", "protection_failure"}
+zone_changed = gb["classification"] != prev_gb_class
+is_alert_current = gb["classification"] in alert_classes
+is_alert_prev    = prev_gb_class in alert_classes
+should_fire = zone_changed and (is_alert_current or is_alert_prev)
+```
+
+Rules:
+
+- No cooldown-based re-fire within the same zone.
+- BROKEN position state gates the entire Giveback check — no Giveback alert on an already-broken position.
+- `last_giveback_class` is always updated after each cycle (even if no alert fires) to track zone for next comparison.
+
+## risk_monitor_state.json contract
+
+`risk_monitor_state.json` is the anti-spam / deduplication state store.
+
+Per-position keys (nested under symbol key):
+
+| Key                          | Type      | Purpose                                                   |
+|------------------------------|-----------|-----------------------------------------------------------|
+| `peak_open_r`                | float     | Highest Open R seen; used for Giveback watermark          |
+| `last_deviation_class`       | str       | Last risk-deviation classification seen                   |
+| `last_deviation_ts`          | float     | Timestamp of last deviation alert                         |
+| `last_giveback_class`        | str       | Last Giveback zone classification (for zone-change check) |
+| `last_giveback_ts`           | float     | Timestamp of last Giveback alert fire                     |
+| `checkpoints_hit`            | list[str] | Profit protection checkpoints already fired (2R, 3R)      |
+| `position_state`             | str       | Last known position state (RUNNER, BROKEN, etc.)          |
+| `state_label`                | str       | Display label of position state                           |
+| `breakeven_alerted`          | bool      | True after Breakeven Protocol alert fires (one-time)      |
+| `algo_loss_streak`           | int       | Running ALGO consecutive-loss count                       |
+| `algo_streak_alerted_yellow` | bool      | One-time streak alert at yellow threshold                 |
+| `algo_streak_alerted_orange` | bool      | One-time streak alert at orange threshold                 |
+| `algo_deep_loss_alerted`     | bool      | One-time deep-loss alert for ALGO positions               |
+| `last_state_alert_ts`        | float     | Timestamp of last position-state alert                    |
+| `last_state_alert_type`      | str       | State type of last state alert                            |
+| `runner_decision`            | str       | Runner mode decision recorded                             |
+| `runner_decision_ts`         | float     | Timestamp of runner decision                              |
+| `sizing_leak_alerted`        | bool      | True after Sizing Leak alert fires (one-time per campaign) |
+
+Top-level (global) keys:
+
+| Key                | Type | Purpose                                              |
+|--------------------|------|------------------------------------------------------|
+| `last_digest_date` | str  | ISO date string of last Daily Digest send (YYYY-MM-DD) |
+
+Rules:
+
+- `sizing_leak_alerted` is **one-time per campaign**. Once True, sizing leak never fires again for that position.
+- `last_digest_date` prevents the digest from firing more than once per calendar day.
+- All keys must be carried over between monitor cycles via the carry-over key list.
+- Adding a new one-time alert requires adding its dedup key here and to the carry-over list in `risk_monitor.py`.
+
+## Sizing Leak contract
+
+Sizing Leak fires when:
+
+```
+original_campaign_risk / target_risk_usd < SIZING_LEAK_THRESHOLD (0.65)
+```
+
+Rules:
+
+- Applies only to discretionary (non-ALGO) positions.
+- Fires only once per campaign (`sizing_leak_alerted` flag).
+- Does not repeat in Live Alert cycle.
+- `original_campaign_risk` and `target_risk_usd` must both be > 0 for the check to run.
+
+## Daily Digest contract
+
+Daily Digest sends one summary message per trading day.
+
+Timing: once between `DAILY_DIGEST_UTC_HOUR_START` (21:00) and `DAILY_DIGEST_UTC_HOUR_END` (22:00) UTC, Monday–Friday only.
+
+Content per position row: symbol + setup + state emoji + Open R + action.
+
+Deduplication: checked via `last_digest_date` in `risk_monitor_state.json`. If today's date already matches, digest is skipped.
 
 ## Risk language contract
 
