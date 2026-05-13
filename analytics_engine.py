@@ -7,6 +7,7 @@ import math
 import pandas as pd
 from datetime import datetime
 from typing import Optional
+import engine_core as ec
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
@@ -248,7 +249,10 @@ def _aggregate_campaigns(closed: pd.DataFrame, target_risk_usd: float) -> pd.Dat
         setup   = str(fb.get("setup_type", "Unknown"))
         sym     = str(fb.get("symbol", "?"))
 
-        orig_risk = (entry - init_sl) * qty if init_sl > 0 and entry > init_sl else target_risk_usd
+        _risk_row = {"price": entry, "quantity": qty, "initial_stop": init_sl,
+                     "side": str(fb.get("side", "BUY"))}
+        _metrics  = ec.get_campaign_risk_metrics(_risk_row)
+        orig_risk = _metrics["original_risk"] if _metrics["valid"] else target_risk_usd
         net_r     = net_pnl / orig_risk if orig_risk > 0 else 0.0
 
         entry_date     = buys["trade_date"].iloc[0]

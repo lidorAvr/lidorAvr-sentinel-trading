@@ -223,3 +223,29 @@ class TestComputePeriodComparison:
         result = m.compute_period_comparison({"win_rate": 0.5}, {"expectancy_r": 0.3})
         assert "win_rate" not in result
         assert "expectancy_r" not in result
+
+
+class TestAggregateGetCampaignRiskMetrics:
+    """Verify _aggregate_campaigns uses get_campaign_risk_metrics, not the inline formula."""
+
+    def test_r_calculation_matches_get_campaign_risk_metrics(self):
+        # entry=100, stop=90, qty=10 → orig_risk = 100 USD; pnl=200 → net_r=2.0
+        df = _make_df([
+            _base_trade("c1", "BUY",  "2025-01-07", 100, 10, 0,   90),
+            _base_trade("c1", "SELL", "2025-01-09", 120, 10, 200,  0),
+        ])
+        result = m.compute_period_analytics(df, START, END, _ACCOUNT)
+        assert result["campaigns_closed"] == 1
+        # net_r should be 200 / 100 = 2.0
+        assert result["avg_win_r"] == pytest.approx(2.0)
+
+    def test_fallback_to_target_risk_when_stop_missing(self):
+        # initial_stop=0 → get_campaign_risk_metrics returns valid=False → falls back to target_risk_usd
+        # target_risk_usd = 10000 * 0.01 = $100; pnl=$50 → net_r = 0.5
+        df = _make_df([
+            _base_trade("c1", "BUY",  "2025-01-07", 100, 10, 0,  0),   # no stop
+            _base_trade("c1", "SELL", "2025-01-09", 105, 10, 50, 0),
+        ])
+        result = m.compute_period_analytics(df, START, END, _ACCOUNT)
+        assert result["campaigns_closed"] == 1
+        assert result["avg_win_r"] == pytest.approx(0.5)  # $50 / $100 target_risk
