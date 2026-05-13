@@ -506,29 +506,34 @@ def check_manual_risk_override(state: dict) -> None:
         last_known = state.get(_KNOWN_RISK_PCT_KEY)
 
         if last_known is not None and abs(current_pct - float(last_known)) > 0.001:
-            delta = current_pct - float(last_known)
-            direction = "⬆️" if delta > 0 else "⬇️"
-            are.mark_adherence(
-                recommended_pct=float(last_known),
-                actual_pct=current_pct,
-                followed=False,
-                reason="Manual override detected by risk monitor",
-            )
-            are.log_risk_journal({
-                "direction": "up" if delta > 0 else "down_fast",
-                "current_risk_pct": float(last_known),
-                "recommended_risk_pct": float(last_known),
-                "action": "manual_override",
-                "actual_pct_set": current_pct,
-                "nav": ec.get_nav_with_freshness()["nav"],
-            })
-            alert = (
-                f"{RTL}⚠️ *זוהתה שינוי ידנית בסיכון*\n"
-                f"{RTL}risk\\_pct שונה מחוץ לטלגרם\n"
-                f"{RTL}{direction} `{float(last_known):.2f}%` → `{current_pct:.2f}%`\n"
-                f"{RTL}נרשם ביומן הסיכון כ-manual override."
-            )
-            send_telegram(alert)
+            # Suppress alert if the change originated from the Telegram bot (within 2 minutes)
+            via_bot_ts = float(cfg.get("risk_changed_ts", 0))
+            is_bot_change = (time.time() - via_bot_ts) < 120
+
+            if not is_bot_change:
+                delta = current_pct - float(last_known)
+                direction = "⬆️" if delta > 0 else "⬇️"
+                are.mark_adherence(
+                    recommended_pct=float(last_known),
+                    actual_pct=current_pct,
+                    followed=False,
+                    reason="Manual override detected by risk monitor",
+                )
+                are.log_risk_journal({
+                    "direction": "up" if delta > 0 else "down_fast",
+                    "current_risk_pct": float(last_known),
+                    "recommended_risk_pct": float(last_known),
+                    "action": "manual_override",
+                    "actual_pct_set": current_pct,
+                    "nav": ec.get_nav_with_freshness()["nav"],
+                })
+                alert = (
+                    f"{RTL}⚠️ *זוהתה שינוי ידנית בסיכון*\n"
+                    f"{RTL}risk\\_pct שונה מחוץ לטלגרם\n"
+                    f"{RTL}{direction} `{float(last_known):.2f}%` → `{current_pct:.2f}%`\n"
+                    f"{RTL}נרשם ביומן הסיכון כ-manual override."
+                )
+                send_telegram(alert)
 
         state[_KNOWN_RISK_PCT_KEY] = current_pct
     except Exception as e:
@@ -544,6 +549,9 @@ def main():
     acc_size = nav_info["nav"] if nav_info["ok"] else float(account_settings.get("total_deposited", 7500.0))
     target_risk_pct = float(account_settings.get("risk_pct_input", 0.5))
     target_risk_usd = acc_size * (target_risk_pct / 100)
+
+    # Settle state — used to suppress Sizing Leak during 48h after a risk raise
+    settle_state = are.get_risk_settle_info()
     
     res = supabase.table("trades").select("*").execute()
     df = pd.DataFrame(res.data)
@@ -788,8 +796,13 @@ def main():
         # ─────────────────────────────────────────────────────────────────────
 
         # ── Sizing Leak: one-time alert when position is undersized vs target ─
+        # Suppressed during the 48h settle period after a risk raise — positions
+        # that were correctly sized for the old (lower) target should not be
+        # retroactively flagged because the user raised their risk level.
+        _in_post_raise_settle = settle_state.get("active") and settle_state.get("dir") == "up"
         if (not is_algo and original_campaign_risk > 0 and target_risk_usd > 0
-                and not new_pos_entry.get("sizing_leak_alerted", False)):
+                and not new_pos_entry.get("sizing_leak_alerted", False)
+                and not _in_post_raise_settle):
             _sizing_ratio = original_campaign_risk / target_risk_usd
             if _sizing_ratio < SIZING_LEAK_THRESHOLD:
                 send_telegram(_sizing_leak_alert(sym, setup, _sizing_ratio,
