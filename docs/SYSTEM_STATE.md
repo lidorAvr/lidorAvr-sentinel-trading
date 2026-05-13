@@ -407,9 +407,35 @@ Moved 26 orphaned one-shot fix/debug scripts to `scripts/archive/`. Production c
 
 ---
 
+## Changes — 2026-05-13 (Sprint 5 — Meeting 5 follow-up)
+
+### Sprint 5 deliverables (branch `claude/review-dev-roadmap-6K19V`)
+
+| # | Change | Files |
+|---|---|---|
+| 1 | `get_open_campaign_for_symbol()` — Supabase query bug fix (side=BUY, order DESC, limit 1) | `supabase_repository.py`, `telegram_callbacks.py` |
+| 2 | Silent failure fixed — Telegram alert on Supabase write error | `telegram_callbacks.py` |
+| 3 | autoheal container added; mem_limit 1200m (was 1536m); sentinel-bot max_age 1980s | `docker-compose.yml` |
+| 4 | `hmac.compare_digest` for PIN; rate limit 3/5min; persistent sessions JSON | `telegram_devops.py`, `telegram_bot.py` |
+| 5 | Add-On Phase 2a — `is_addon`, `base_campaign_lot_id`, `addon_sequence` columns + code | `supabase_repository.py`, `telegram_callbacks.py`, `migrations/001_addon_phase2.sql` |
+| 6 | `mock_telegram_bot` fixture; `test_e2e_risk_monitor.py` (9 tests); pytest markers on 6 files | `tests/conftest.py`, `tests/test_e2e_risk_monitor.py` |
+| 7 | CI fix — dummy env vars in GitHub Actions workflow | `.github/workflows/tests.yml` |
+| 8 | Sprint 5 report + Roadmap Phase 11 updated | `docs/SPRINT_5_REPORT.md`, `docs/ROADMAP.md` |
+
+### Test suite
+- **1219 tests, 0 failures** (was 1210 before Sprint 5)
+- CI: `cc01d1a` — GitHub Actions now has dummy env vars, should pass ✅
+
+### User action completed
+- `migrations/001_addon_phase2.sql` executed in Supabase (confirmed 2026-05-13)
+
+### Meeting 5 verdict: **8.9/10**
+
+---
+
 ## Current date context
 
-Last updated: 2026-05-12 (session 9)
+Last updated: 2026-05-13 (Sprint 5 complete)
 
 ## Production wiring
 

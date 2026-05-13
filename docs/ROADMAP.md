@@ -275,14 +275,26 @@ Mark's Final Verdict Meeting 5: **8.9/10** → Sprint 5 delivered in full.
 
 ## Phase 11 — Meeting 6 (next)
 
-Status: **planned** — sprint backlog TBD in Meeting 6.
+Status: **in progress** — Sprint 6 backlog defined. See `docs/CHATGPT_TEAM_PROMPT_V5.md`.
 
-Ideas for Meeting 6:
-- `fmt_heat_thermometer()` wired to weekly Telegram report
-- `test_e2e_risk_monitor.py` expanded (full main() mock cycle)
-- Coverage gate ≥75% enforced in CI
-- Add-On eligibility dashboard (`/addon` Phase 2b)
-- Audit log table + `audit_logger.py`
+**Sprint 6 — Priority 1 (must close):**
+1. `audit_logger.py` + Supabase `audit_log` table — every Supabase write logged
+2. Coverage gate ≥75% enforced in CI (`pytest --cov --cov-fail-under=75`)
+3. `test_e2e_risk_monitor.py` — full `main()` mock cycle (currently 9 partial tests)
+4. Add-On Phase 2b — eligibility dashboard in `/addon` (shows if position qualifies)
+5. `fmt_heat_thermometer()` — wired into weekly Telegram report
+
+**Sprint 6 — Priority 2 (important):**
+6. Dead code `_MANUAL_TRIGGER_FILE` removed from `main.py`
+7. SSH setup on Orange Pi (user action)
+8. IBKR Flex Query period → `Last 7 Days` (user action in IBKR UI)
+9. Auto-sync E2E validation — confirm 07:00 window produces Telegram notification
+10. 48h Settle Period — data collection ongoing (production data required)
+
+**Incentive structure (declared at Meeting 6):**
+- $1,000,000 — first department whose ALL tasks pass, voted unanimously by all 14 departments
+- $5,000/employee — when system is fully live and stable in production
+- +30% lifetime salary — when system is 100% operational with zero failures
 
 ## Parking lot
 
