@@ -940,6 +940,43 @@ def compute_original_campaign_risk(
     return round(max(0.0, risk_per_share * quantity + fees), 2)
 
 
+def get_campaign_risk_metrics(row: dict) -> dict:
+    """
+    Single source of truth for original campaign risk from a position row dict.
+
+    Uses base_price/base_qty (campaign-open values) over current price/qty so
+    add-on entries never inflate the original 1R denominator.
+
+    Returns:
+        original_risk (float): USD at risk on campaign open; 0 when data is missing.
+        valid (bool):          True when original_risk > 0.
+        reason (str):          Human-readable explanation when valid=False.
+    """
+    base_price = float(row.get("base_price") or row.get("price") or 0)
+    base_qty   = float(row.get("base_qty")   or row.get("quantity") or 0)
+    init_sl    = float(row.get("initial_stop") or 0)
+    side       = str(row.get("side", "BUY"))
+
+    if base_price <= 0 or base_qty <= 0:
+        return {"original_risk": 0.0, "valid": False,
+                "reason": "base_price or base_qty missing"}
+    is_short = side.upper() in ("SHORT", "SELL")
+    stop_invalid = (
+        init_sl <= 0
+        or (not is_short and init_sl >= base_price)   # LONG: stop must be below entry
+        or (is_short and init_sl <= base_price)        # SHORT: stop must be above entry
+    )
+    if stop_invalid:
+        return {"original_risk": 0.0, "valid": False,
+                "reason": f"initial_stop invalid ({init_sl:.2f} vs base {base_price:.2f})"}
+
+    risk = compute_original_campaign_risk(side, base_price, init_sl, base_qty)
+    if risk <= 0:
+        return {"original_risk": 0.0, "valid": False,
+                "reason": "compute_original_campaign_risk returned 0"}
+    return {"original_risk": risk, "valid": True, "reason": ""}
+
+
 def compute_frozen_target_risk(
     base_capital: float,
     nav: float,

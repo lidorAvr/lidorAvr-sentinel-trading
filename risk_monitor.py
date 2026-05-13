@@ -576,32 +576,52 @@ def main():
         campaign_id, mgt_state = row["campaign_id"], row.get("management_state", "full_position")
         
         curr = ec.get_live_price(sym)
-        if curr is None: curr = entry
-        
+        if curr is None:
+            send_telegram(
+                f"{RTL}⚠️ *Sentinel — מחיר חי חסר*\n"
+                f"{RTL}סימול: *{sym}* | קמפיין: `{campaign_id}`\n"
+                f"{RTL}לא נמצא מחיר חי — משתמש במחיר כניסה `${entry:.2f}` כ-fallback.\n"
+                f"{RTL}_בדוק את החיבור ל-yfinance / market data_"
+            )
+            curr = entry
+
         open_pnl = (curr - entry) * qty
         pos_value = curr * qty
         weight_pct = (pos_value / acc_size) * 100 if acc_size > 0 else 0
         if str(setup).upper() == "ALGO": total_algo_exposure += pos_value
-        
-        base_price = row.get('base_price', entry)
-        base_qty = row.get('base_qty', qty)
-        
-        init_sl_clean = init_sl if (init_sl > 0 and init_sl < base_price) else 0
-        original_campaign_risk = (base_price - init_sl_clean) * base_qty if init_sl_clean > 0 else 0
+
+        # Single source of truth: ec.get_campaign_risk_metrics() via engine_core
+        _risk_metrics = ec.get_campaign_risk_metrics(dict(row))
+        original_campaign_risk = _risk_metrics["original_risk"]
+        if not _risk_metrics["valid"] and str(setup).upper() != "ALGO":
+            send_telegram(
+                f"{RTL}⚠️ *Sentinel — סטופ מקורי חסר*\n"
+                f"{RTL}סימול: *{sym}* | קמפיין: `{campaign_id}`\n"
+                f"{RTL}לא ניתן לחשב 1R: {_risk_metrics['reason']}\n"
+                f"{RTL}_עדכן initial\\_stop בסופאבייס_"
+            )
+
         total_pos_profit = open_pnl + realized_pnl
-        
+
         total_campaign_r = (total_pos_profit / target_risk_usd) if str(setup).upper() == 'ALGO' and target_risk_usd > 0 else ((total_pos_profit / original_campaign_risk) if original_campaign_risk > 0 else 0)
         open_r = (open_pnl / target_risk_usd) if str(setup).upper() == 'ALGO' and target_risk_usd > 0 else ((open_pnl / original_campaign_risk) if original_campaign_risk > 0 else 0)
-        
+
         r_str = f"`{open_r:.1f}R`" + (" *(Target Base)*" if str(setup).upper() == "ALGO" else "")
-        
+
         engine_res = ec.evaluate_position_engine(
             symbol=sym, entry_price=entry, entry_date_str=entry_date, current_stop=sl,
             setup_type=setup, mgt_state=mgt_state, weight_pct=weight_pct, total_r=total_campaign_r,
             target_risk_usd=target_risk_usd, actual_risk_usd=original_campaign_risk, spy_hist=spy_hist
         )
-        
-        if not engine_res["ok"]: continue
+
+        if not engine_res["ok"]:
+            send_telegram(
+                f"{RTL}🚨 *Sentinel — שגיאה בהערכת פוזיציה*\n"
+                f"{RTL}סימול: *{sym}* | קמפיין: `{campaign_id}`\n"
+                f"{RTL}evaluate\\_position\\_engine נכשל: `{engine_res.get('error', 'unknown')}`\n"
+                f"{RTL}_הפוזיציה דולגה בסבב זה_"
+            )
+            continue
         engine = engine_res["data"]
         
         alert_key = build_position_alert_key(row, engine)
@@ -859,6 +879,9 @@ def main():
             
     state["positions"] = new_position_state
     state["cluster"] = {"status": cluster_status, "algo_cluster_pct": round(algo_cluster_pct, 2), "updated_at": datetime.utcnow().isoformat(), "last_alert_ts": last_cluster_alert}
+    # Checkpoint: persist position alerts before the slower global checks run.
+    # A crash in the sections below won't lose per-position alert state.
+    save_state(state)
 
     # ── Daily Digest (US market close, once per day) ──────────────────────────
     try:
@@ -949,7 +972,23 @@ def main():
 
     save_state(state)
 
+def _require_env() -> None:
+    """Fail fast at startup when a critical env var is missing."""
+    required = {
+        "TELEGRAM_BOT_TOKEN": TOKEN,
+        "TELEGRAM_ADMIN_ID":  ADMIN_ID,
+        "SUPABASE_URL":       SUPABASE_URL,
+        "SUPABASE_KEY":       SUPABASE_KEY,
+    }
+    missing = [k for k, v in required.items() if not v]
+    if missing:
+        raise EnvironmentError(
+            f"🚨 Risk Monitor cannot start — missing env vars: {', '.join(missing)}"
+        )
+
+
 if __name__ == "__main__":
+    _require_env()
     print("🛡️ Sentinel Risk Monitor Active")
     while True:
         try: main()
