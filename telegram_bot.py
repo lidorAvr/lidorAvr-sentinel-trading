@@ -6,6 +6,7 @@ from datetime import datetime
 import engine_core as ec
 import telegram_formatters as tf
 import adaptive_risk_engine as are
+import addon_risk_engine as addon_eng
 import supabase_repository as repo
 from bot_core import bot, supabase, user_state, RTL, ADMIN_ID, TOKEN
 from bot_helpers import (_bot_log, _read_last_log_lines, _write_runner_decision,
@@ -297,6 +298,10 @@ def handle_all_messages(message):
         bot.send_message(chat_id, report, parse_mode="Markdown")
         return
 
+    if text.startswith("/addon"):
+        _handle_addon_command(chat_id, text)
+        return
+
     if text == "🔬 סקירת מניה":
         bot.send_message(chat_id, "📈 *מנתח Trend Template:*\nאנא הקלד את סימול המניה לסריקה (לדוגמה: AAPL):", parse_mode="Markdown")
         user_state[chat_id] = {'action': 'analyze_symbol'}
@@ -439,6 +444,151 @@ def handle_all_messages(message):
             return
 
     bot.send_message(chat_id, "🎯 *Sentinel Standby*\nמערכת מוכנה לפעולה. בחר מהתפריט למטה:", reply_markup=get_main_menu(), parse_mode="Markdown")
+
+
+def _handle_addon_command(chat_id: int, text: str):
+    """
+    /addon SYMBOL [entry] [stop] [qty] [type]
+    Examples:
+      /addon CAT               → interactive: asks for entry/stop
+      /addon CAT 910 895       → auto-sizes, tactical
+      /addon CAT 910 895 3     → specific qty, tactical
+      /addon CAT 910 895 3 campaign → specific qty, campaign add
+    """
+    parts = text.strip().split()
+    if len(parts) < 2:
+        bot.send_message(
+            chat_id,
+            f"{RTL}📌 *Add-On Planner*\n\n"
+            f"{RTL}שימוש: `/addon SYMBOL כניסה סטופ [כמות] [סוג]`\n"
+            f"{RTL}דוגמה: `/addon CAT 910 895 3 tactical`\n\n"
+            f"{RTL}סוגים: `tactical` | `campaign` | `rebuild`\n"
+            f"{RTL}ללא כמות — המערכת תחשב אוטומטית.",
+            parse_mode="Markdown",
+        )
+        return
+
+    symbol = parts[1].upper()
+    loading = bot.send_message(chat_id, f"⏳ בודק נתוני חיזוק עבור *{symbol}*...", parse_mode="Markdown")
+
+    try:
+        # Parse optional args
+        add_entry = float(parts[2]) if len(parts) > 2 else None
+        add_stop  = float(parts[3]) if len(parts) > 3 else None
+        qty_arg   = int(parts[4])   if len(parts) > 4 else None
+        type_arg  = parts[5].lower() if len(parts) > 5 else "tactical"
+
+        add_type_map = {
+            "campaign": addon_eng.ADDON_CAMPAIGN,
+            "tactical":  addon_eng.ADDON_TACTICAL,
+            "rebuild":   addon_eng.ADDON_REBUILD,
+        }
+        add_type = add_type_map.get(type_arg, addon_eng.ADDON_TACTICAL)
+
+        # Load open position for symbol
+        res = supabase.table("trades").select("*").execute()
+        df  = pd.DataFrame(res.data)
+        pos_res = ec.get_open_positions_campaign(df)
+        if not pos_res["ok"] or pos_res["data"].empty:
+            try: bot.delete_message(chat_id, loading.message_id)
+            except: pass
+            bot.send_message(chat_id, f"❌ אין פוזיציה פתוחה עבור {symbol}.")
+            return
+
+        open_pos = pos_res["data"]
+        sym_rows = open_pos[open_pos["symbol"].str.upper() == symbol]
+        if sym_rows.empty:
+            try: bot.delete_message(chat_id, loading.message_id)
+            except: pass
+            bot.send_message(chat_id, f"❌ אין פוזיציה פתוחה עבור {symbol}.")
+            return
+
+        row = sym_rows.iloc[0]
+        curr_price = ec.get_live_price(symbol) or float(row["price"])
+
+        lot_state = addon_eng.compute_campaign_lot_state(
+            base_price       = float(row["base_price"]),
+            base_qty         = float(row["base_qty"]),
+            current_qty      = float(row["quantity"]),
+            stop_loss        = float(row["stop_loss"]) if float(row.get("stop_loss", 0)) > 0 else float(row["base_price"]),
+            initial_stop     = float(row["initial_stop"]) if float(row.get("initial_stop", 0)) > 0 else 0,
+            realized_pnl_usd = float(row.get("realized_pnl", 0)),
+            current_price    = curr_price,
+            setup_type       = str(row.get("setup_type", "EP")),
+        )
+
+        # Gather market features from engine_core
+        market_features = None
+        try:
+            hist = ec.get_cached_history(symbol, "6mo", "1d")
+            feats = ec.evaluate_position_engine(
+                symbol=symbol, entry_price=float(row["base_price"]),
+                entry_date_str=str(row.get("entry_date", "")),
+                current_stop=float(row.get("stop_loss", 0)),
+                setup_type=str(row.get("setup_type", "EP")),
+                mgt_state="full_position", weight_pct=5.0,
+                total_r=lot_state.get("total_r") or 0,
+                target_risk_usd=28, actual_risk_usd=lot_state["original_risk_usd"],
+                spy_hist=ec.get_cached_history("SPY", "6mo", "1d"),
+            )
+            if feats.get("ok"):
+                f = feats["data"].get("features", {})
+                market_features = {
+                    "ext10":          f.get("ext10", 0),
+                    "ext20":          f.get("ext20", 0),
+                    "close_below_ma20": f.get("close_below_ma20", False),
+                    "regime_ok":      True,
+                    "rs_spy_ok":      f.get("rs_pct_spy", 0) > 0,
+                }
+        except Exception:
+            pass
+
+        # If no entry/stop provided, just show eligibility status
+        if add_entry is None or add_stop is None:
+            elig = addon_eng.check_addon_eligibility(lot_state, market_features=market_features)
+            status_emoji = {"APPROVED": "✅ מאושר לתכנון", "WATCH": "👁 צפייה", "BLOCKED": "🚫 חסום", "MANUAL_REVIEW_REQUIRED": "⚠️ בדיקה ידנית"}.get(elig["status"], elig["status"])
+            msg = (
+                f"{RTL}📌 *Add-On Eligibility — {symbol}*\n"
+                f"{RTL}סטטוס: *{status_emoji}*\n\n"
+                f"{RTL}Open R: `{lot_state.get('open_r', 'N/A')}R` | רווח נעול: `${lot_state['locked_profit_usd']:.0f}`\n"
+                f"{RTL}סיכון פתוח: `${lot_state['open_risk_usd']:.0f}` | סיכון מקורי: `${lot_state['original_risk_usd']:.0f}`\n\n"
+            )
+            for r in elig["reasons"][:3]: msg += f"{RTL}  {r}\n"
+            for b in elig["blocks"][:3]:  msg += f"{RTL}  {b}\n"
+            for w in elig["warnings"][:2]: msg += f"{RTL}  {w}\n"
+            msg += f"\n{RTL}לתכנון מלא: `/addon {symbol} כניסה סטופ [כמות]`"
+            try: bot.delete_message(chat_id, loading.message_id)
+            except: pass
+            bot.send_message(chat_id, msg, parse_mode="Markdown")
+            return
+
+        # Full plan
+        plan = addon_eng.compute_addon_plan(
+            lot_state=lot_state,
+            add_entry=add_entry,
+            add_stop=add_stop,
+            add_type=add_type,
+            quantity=qty_arg,
+            market_features=market_features,
+        )
+        card = tf.fmt_addon_card(plan, symbol=symbol)
+        try: bot.delete_message(chat_id, loading.message_id)
+        except: pass
+        bot.send_message(chat_id, card, parse_mode="Markdown")
+
+    except (IndexError, ValueError) as e:
+        try: bot.delete_message(chat_id, loading.message_id)
+        except: pass
+        bot.send_message(
+            chat_id,
+            f"❌ פורמט שגוי: `{e}`\nשימוש: `/addon {symbol} כניסה סטופ [כמות] [סוג]`",
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        try: bot.delete_message(chat_id, loading.message_id)
+        except: pass
+        bot.send_message(chat_id, f"❌ שגיאת מערכת: {e}")
+
 
 import telegram_callbacks  # registers @bot.callback_query_handler
 

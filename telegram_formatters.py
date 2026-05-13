@@ -256,3 +256,80 @@ def fmt_minervini_trend_template(symbol: str, tt_result: dict) -> str:
         f"{RTL}_{('מניה בטרנד מלא ✅' if passed >= 7 else 'תבנית חלקית' if passed >= 5 else 'לא עומדת בתבנית ❌')}_",
     ]
     return "\n".join(lines)
+
+
+# ── Add-On Risk Card ──────────────────────────────────────────────────────────
+
+def fmt_addon_card(plan: dict, symbol: str = "") -> str:
+    """
+    Format the Add-On Risk Card for Telegram.
+    Always shows: campaign state, proposed add, result-if-stopped, decision, stop mode.
+    """
+    import addon_risk_engine as are
+
+    if not plan.get("ok"):
+        msg = plan.get("message") or plan.get("error", "שגיאת חישוב")
+        return f"\n{RTL}{SEP}\n{RTL}📌 *חיזוק — {symbol}*\n{RTL}⚠️ {msg}"
+
+    status = plan["status"]
+    status_emoji = {
+        are.APPROVED:      "✅ מאושר",
+        are.WATCH:         "👁 צפייה",
+        are.BLOCKED:       "🚫 חסום",
+        are.MANUAL_REVIEW: "⚠️ בדיקה ידנית",
+    }.get(status, status)
+
+    ls   = plan["lot_state"]
+    lines = [
+        f"\n{RTL}{SEP}",
+        f"{RTL}📌 *Add-On Planner{f': {symbol}' if symbol else ''}*",
+        f"{RTL}סטטוס: *{status_emoji}*",
+        f"\n{RTL}📊 *מצב קמפיין נוכחי:*",
+        f"{RTL}  ▸ Open R: `{ls['open_r']:.1f}R`" if ls.get("open_r") is not None else f"{RTL}  ▸ Open R: לא זמין",
+        f"{RTL}  ▸ סיכון מקורי: `${ls['original_risk_usd']:.0f}`",
+        f"{RTL}  ▸ רווח נעול בסטופ: `${ls['locked_profit_usd']:.0f}`",
+        f"{RTL}  ▸ סיכון פתוח: `${ls['open_risk_usd']:.0f}`",
+        f"{RTL}  ▸ רווח ממומש: `${ls['realized_pnl_usd']:.0f}`",
+        f"{RTL}  ▸ תוצאה אם הסטופ הנוכחי נפגע: `${ls['net_result_if_stop_hit']:.0f}`",
+    ]
+
+    lines += [
+        f"\n{RTL}🔢 *הוספה מוצעת:*",
+        f"{RTL}  ▸ כניסה: `${plan['add_entry']:.2f}` | סטופ: `${plan['add_stop']:.2f}`",
+        f"{RTL}  ▸ סיכון למניה: `${plan['risk_per_share']:.2f}`",
+        f"{RTL}  ▸ כמות מוצעת: `{plan['proposed_qty']}` מניות",
+        f"{RTL}  ▸ סיכון ההוספה: `${plan['addon_risk_usd']:.0f}`",
+        f"{RTL}  ▸ מקסימום מותר: `{plan['max_qty']}` מניות",
+    ]
+
+    # Result if stopped
+    result = plan["result_if_stopped"]
+    result_emoji = "🟢" if result > 0 else ("🟡" if result >= plan["hard_floor_usd"] else "🔴")
+    r_str = f" ({plan['result_r']:.1f}R)" if plan.get("result_r") is not None else ""
+    lines += [
+        f"\n{RTL}📉 *תוצאה אם הסטופ נפגע:*",
+        f"{RTL}  {result_emoji} `${result:.0f}`{r_str}",
+        f"{RTL}  ▸ רצפה: `${plan['hard_floor_usd']:.0f}` (-25% סיכון מקורי)",
+    ]
+
+    # Stop mode
+    lines += [
+        f"\n{RTL}🔒 *מצב סטופ מומלץ:* `{plan['stop_mode']}`",
+        f"{RTL}  ▸ {plan['stop_mode_desc']}",
+    ]
+
+    # Reasons / Blocks / Warnings
+    if plan.get("reasons"):
+        lines.append(f"\n{RTL}✅ *אישורים:*")
+        for r in plan["reasons"][:3]:
+            lines.append(f"{RTL}  {r}")
+    if plan.get("blocks"):
+        lines.append(f"\n{RTL}🚫 *חסימות:*")
+        for b in plan["blocks"][:3]:
+            lines.append(f"{RTL}  {b}")
+    if plan.get("warnings"):
+        lines.append(f"\n{RTL}⚠️ *אזהרות:*")
+        for w in plan["warnings"][:2]:
+            lines.append(f"{RTL}  {w}")
+
+    return "\n".join(lines)
