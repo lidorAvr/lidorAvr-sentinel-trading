@@ -243,11 +243,15 @@ def _checkpoint_alert_text(sym, setup, checkpoint_r, open_r, is_algo,
 # ── Phase 3 — State-change alert templates ───────────────────────────────────
 
 def _runner_state_alert(sym, setup, open_r, protected_profit, giveback_usd,
-                         giveback_pct, current_stop, days_to_earnings):
+                         giveback_pct, current_stop, days_to_earnings,
+                         trail_stop: dict | None = None):
     RTL_M = "‏"
     earnings_line = ""
     if days_to_earnings is not None and days_to_earnings <= 30:
         earnings_line = f"\n{RTL_M}• דוחות בעוד: `{days_to_earnings} ימים`"
+    trail_line = ""
+    if trail_stop and trail_stop.get("basis") != "none" and trail_stop.get("suggested_stop"):
+        trail_line = f"\n{RTL_M}• 🎯 *Trailing Stop מוצע:* `${trail_stop['suggested_stop']:.2f}` ({trail_stop['basis']})"
     return (
         f"{RTL_M}🏃 *Runner Mode — {sym}*\n"
         f"{RTL_M}הפוזיציה הגיעה ל-`{open_r:.1f}R` — מצב Runner.\n"
@@ -255,7 +259,7 @@ def _runner_state_alert(sym, setup, open_r, protected_profit, giveback_usd,
         f"{RTL_M}• Open R: `{open_r:.1f}R`\n"
         f"{RTL_M}• רווח מוגן (לפי סטופ): `${protected_profit:.0f}`\n"
         f"{RTL_M}• Giveback עד סטופ: `${giveback_usd:.0f}` ({giveback_pct:.0f}%)\n"
-        f"{RTL_M}• סטופ נוכחי: `${current_stop:.2f}`{earnings_line}\n"
+        f"{RTL_M}• סטופ נוכחי: `${current_stop:.2f}`{trail_line}{earnings_line}\n"
         f"{RTL_M}─────────────────\n"
         f"{RTL_M}✅ להחזיק אם יש Tennis Ball ומחזור יורד בירידות.\n"
         f"{RTL_M}⚠️ Giveback > 40%? — שקל הדקת סטופ.\n"
@@ -773,10 +777,20 @@ def main():
                     if _dec == "hold" and (now_ts - _dec_ts) < 24 * 3600:
                         _fire = False  # user decided to hold — suppress for 24h
                     else:
+                        _ma_lvls = {}
+                        try:
+                            _ma_lvls = ec.get_ma_levels(sym)
+                        except Exception:
+                            pass
+                        _trail = ec.compute_suggested_trail_stop(
+                            side=_side_pos, current_price=curr,
+                            ma21=_ma_lvls.get("ma21"), ma50=_ma_lvls.get("ma50"),
+                            open_r=open_r, entry_price=entry,
+                        )
                         send_telegram_with_keyboard(
                             _runner_state_alert(sym, setup, open_r,
                                                 _protected_profit, _giveback_usd, _giveback_pct,
-                                                sl, _days_to_earnings),
+                                                sl, _days_to_earnings, trail_stop=_trail),
                             _runner_decision_keyboard(sym, campaign_id),
                         )
                 elif _new_state == ec.POSITION_STATE_BROKEN:

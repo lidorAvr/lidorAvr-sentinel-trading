@@ -13,6 +13,7 @@ developer menu in telegram_bot.handle_all_messages.
 """
 import os
 import json
+import time
 import glob as _glob
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -24,6 +25,32 @@ from telegram_menus import get_developer_menu
 from ibkr_sync_runner import (run_ibkr_sync, MANUAL_RESULT_FILE,
                                _REPORTS_DIR, _REPORTS_TO_KEEP, _CONFIG_PATH)
 import ibkr_trade_importer as _importer
+
+# ── Developer PIN gate ────────────────────────────────────────────────────────
+_DEV_PIN              = os.getenv("DEV_PIN", "")
+_PIN_SESSION_DURATION = 1800          # 30 minutes
+_pin_sessions: dict   = {}            # {chat_id: expires_ts}
+
+
+def dev_pin_session_active(chat_id: int) -> bool:
+    """Return True if the user has a valid (non-expired) developer PIN session."""
+    return time.time() < _pin_sessions.get(chat_id, 0)
+
+
+def dev_pin_activate_session(chat_id: int) -> None:
+    """Grant a 30-minute developer session for chat_id."""
+    _pin_sessions[chat_id] = time.time() + _PIN_SESSION_DURATION
+
+
+def dev_pin_validate(entered: str) -> bool:
+    """Return True if entered matches DEV_PIN (and DEV_PIN is set)."""
+    return bool(_DEV_PIN) and entered.strip() == _DEV_PIN
+
+
+def dev_pin_is_configured() -> bool:
+    """Return True if the DEV_PIN env var is set (non-empty)."""
+    return bool(_DEV_PIN)
+
 
 # ── Developer-menu constants ─────────────────────────────────────────────────
 _DEV_STATE_FILE      = "/app/ibkr_dev_state.json"

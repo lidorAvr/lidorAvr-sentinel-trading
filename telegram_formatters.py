@@ -333,3 +333,79 @@ def fmt_addon_card(plan: dict, symbol: str = "") -> str:
             lines.append(f"{RTL}  {w}")
 
     return "\n".join(lines)
+
+
+# ── Heat Thermometer ──────────────────────────────────────────────────────────
+
+_HEAT_FILLED  = "█"
+_HEAT_EMPTY   = "░"
+_HEAT_BLOCKS  = 10
+
+_HEAT_LABEL_MAP = [
+    (80, "🔥 חם מאוד"),
+    (60, "🟠 חם"),
+    (40, "🟡 מתון"),
+    (20, "🔵 קר"),
+    (0,  "❄️ קר מאוד"),
+]
+
+
+def _score_to_bar(score: float, blocks: int = _HEAT_BLOCKS) -> str:
+    filled = round(max(0, min(score, 100)) / 100 * blocks)
+    return _HEAT_FILLED * filled + _HEAT_EMPTY * (blocks - filled)
+
+
+def _heat_label(score: float) -> str:
+    for threshold, label in _HEAT_LABEL_MAP:
+        if score >= threshold:
+            return label
+    return "❄️ קר מאוד"
+
+
+def fmt_heat_thermometer(risk_rec: dict) -> str:
+    """
+    Visual heat thermometer for Telegram — S9 / M21 / L50 window breakdown.
+
+    Returns a ready-to-send Markdown string.
+    """
+    if not risk_rec.get("ok"):
+        msg = risk_rec.get("message", "אין מספיק נתונים")
+        return f"{RTL}🌡️ *מד החום:* ⚪ {msg}"
+
+    score = risk_rec.get("heat_score", 0)
+    bar   = _score_to_bar(score)
+    label = _heat_label(score)
+
+    lines = [
+        f"{RTL}{SEP}",
+        f"{RTL}🌡️ *מד חום מסחר*",
+        f"{RTL}`[{bar}]` *{score:.0f}/100* — {label}",
+    ]
+
+    s9_sc  = risk_rec.get("s9_score")
+    m21_sc = risk_rec.get("m21_score")
+    l50_sc = risk_rec.get("l50_score")
+
+    if s9_sc is not None and m21_sc is not None and l50_sc is not None:
+        lines += [
+            f"\n{RTL}📊 *פירוט לפי טווח:*",
+            f"{RTL}  S9  `[{_score_to_bar(s9_sc, 5)}]` `{s9_sc:.0f}`",
+            f"{RTL}  M21 `[{_score_to_bar(m21_sc, 5)}]` `{m21_sc:.0f}`",
+            f"{RTL}  L50 `[{_score_to_bar(l50_sc, 5)}]` `{l50_sc:.0f}`",
+        ]
+
+    s9_wr  = risk_rec.get("recent_10_wr", 0)
+    l50_wr = risk_rec.get("all_50_wr", 0)
+    if risk_rec.get("s9_stats") and risk_rec.get("l50_stats"):
+        n9  = risk_rec["s9_stats"]["n"]
+        n50 = risk_rec["l50_stats"]["n"]
+        lines.append(f"{RTL}  Win Rate — S9 ({n9}): `{s9_wr:.0f}%` | L50 ({n50}): `{l50_wr:.0f}%`")
+
+    curr_pct  = risk_rec.get("current_risk_pct", 0)
+    rec_pct   = risk_rec.get("recommended_risk_pct", 0)
+    direction = risk_rec.get("direction", "hold")
+    arrow = "⬆️" if direction == "up" else ("⬇️" if direction in ("down", "down_fast") else "➡️")
+    change = f" (כרגע: `{curr_pct:.2f}%`)" if rec_pct != curr_pct else " ← ללא שינוי"
+    lines.append(f"\n{RTL}{arrow} סיכון מומלץ: `{rec_pct:.2f}%`{change}")
+
+    return "\n".join(lines)

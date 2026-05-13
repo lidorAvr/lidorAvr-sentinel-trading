@@ -21,7 +21,9 @@ from telegram_devops import (_dev_sync_check, _dev_sync_record,
                               _run_manual_sync_thread, _process_uploaded_ibkr_xml,
                               get_ibkr_nav,
                               _DEV_STATE_FILE, _MANUAL_TRIGGER_FILE, _DEPLOY_TRIGGER_FILE,
-                              _DEV_SYNC_MAX_PER_DAY, _DEV_SYNC_COOLDOWN_HOURS)
+                              _DEV_SYNC_MAX_PER_DAY, _DEV_SYNC_COOLDOWN_HOURS,
+                              dev_pin_session_active, dev_pin_activate_session,
+                              dev_pin_validate, dev_pin_is_configured)
 
 from bot_health import build_health_report as _build_health_report  # noqa: E402
 
@@ -52,6 +54,17 @@ def handle_all_messages(message):
 
     # ── טיפול ב-state פעיל ─────────────────────────────────────────────
     active_state = user_state.get(chat_id, {})
+
+    if active_state.get("action") == "awaiting_dev_pin":
+        del user_state[chat_id]
+        if dev_pin_validate(text):
+            dev_pin_activate_session(chat_id)
+            bot.send_message(chat_id, f"{RTL}✅ *PIN מאומת — פגישה פעילה ל-30 דקות*", parse_mode="Markdown")
+            bot.send_message(chat_id, f"{RTL}🛠️ *תפריט מפתח — כלי פיתוח ודיבאג*", reply_markup=get_developer_menu(), parse_mode="Markdown")
+        else:
+            bot.send_message(chat_id, f"{RTL}⛔ *PIN שגוי — גישה נדחתה*", reply_markup=get_main_menu(), parse_mode="Markdown")
+        return
+
     if active_state.get("action") == "risk_reject_reason":
         reason = text.strip()
         rec_pct = active_state["rec_pct"]
@@ -95,7 +108,11 @@ def handle_all_messages(message):
         return
 
     if text == "🛠️ מפתח":
-        bot.send_message(chat_id, f"{RTL}🛠️ *תפריט מפתח — כלי פיתוח ודיבאג*", reply_markup=get_developer_menu(), parse_mode="Markdown")
+        if dev_pin_is_configured() and not dev_pin_session_active(chat_id):
+            user_state[chat_id] = {"action": "awaiting_dev_pin"}
+            bot.send_message(chat_id, f"{RTL}🔐 *תפריט מפתח — דרוש PIN*\nהזן את ה-PIN:", parse_mode="Markdown")
+        else:
+            bot.send_message(chat_id, f"{RTL}🛠️ *תפריט מפתח — כלי פיתוח ודיבאג*", reply_markup=get_developer_menu(), parse_mode="Markdown")
         return
 
     # ── Developer menu handlers ────────────────────────────────────────────────
@@ -190,7 +207,7 @@ def handle_all_messages(message):
                     import time as _time
                     with open(_TRIGGER_FILE, "w") as _tf:
                         _tf.write(str(_time.time()))
-                    msg += f"\n\n{RTL}🚀 *trigger נכתב* — deploy\_watcher יאסוף ויפעיל docker compose תוך ~5 שניות"
+                    msg += f"\n\n{RTL}🚀 *trigger נכתב* — deploy_watcher יאסוף ויפעיל docker compose תוך ~5 שניות"
                     _bot_log("Deploy trigger file written")
                 except Exception as te:
                     msg += f"\n\n{RTL}⚠️ לא הצלחתי לכתוב trigger file: {te}\nהרץ ידנית: `docker compose up -d --build`"
@@ -584,7 +601,27 @@ def _handle_addon_command(chat_id: int, text: str):
         card = tf.fmt_addon_card(plan, symbol=symbol)
         try: bot.delete_message(chat_id, loading.message_id)
         except: pass
-        bot.send_message(chat_id, card, parse_mode="Markdown")
+
+        # Store plan for confirmation step
+        import json as _json
+        user_state[chat_id] = {
+            "action":   "addon_pending",
+            "symbol":   symbol,
+            "entry":    add_entry,
+            "stop":     add_stop,
+            "qty":      plan.get("proposed_qty", qty_arg),
+            "add_type": type_arg,
+        }
+
+        markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            telebot.types.InlineKeyboardButton(
+                "✅ אשר כניסה",
+                callback_data=f"addon_confirm|YES|{symbol}|{add_entry}|{add_stop}|{plan.get('proposed_qty', qty_arg or 0)}",
+            ),
+            telebot.types.InlineKeyboardButton("❌ בטל", callback_data="cancel_action"),
+        )
+        bot.send_message(chat_id, card, parse_mode="Markdown", reply_markup=markup)
 
     except (IndexError, ValueError) as e:
         try: bot.delete_message(chat_id, loading.message_id)

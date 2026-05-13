@@ -19,6 +19,8 @@ try:
     ADMIN_ID = int(_admin_raw)
 except (TypeError, ValueError):
     raise SystemExit(f"TELEGRAM_ADMIN_ID must be an integer, got {_admin_raw!r}")
+if ADMIN_ID <= 0:
+    raise SystemExit(f"TELEGRAM_ADMIN_ID must be a positive integer, got {ADMIN_ID}")
 
 _supabase_url = os.getenv("SUPABASE_URL")
 _supabase_key = os.getenv("SUPABASE_KEY")

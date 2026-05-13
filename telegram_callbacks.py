@@ -142,6 +142,41 @@ def handle_queries(call):
                 except Exception: pass
             bot.send_message(chat_id, f"{RTL}📊 *{sym} — מימוש חלקי*\nהכוונה נרשמה. בצע את הפקודה ב-IBKR ועדכן במערכת לאחר ביצוע.", parse_mode="Markdown")
 
+    elif data.startswith("addon_confirm|"):
+        bot.answer_callback_query(call.id)
+        parts  = data.split("|")
+        action = parts[1] if len(parts) > 1 else ""
+        sym    = parts[2] if len(parts) > 2 else ""
+        try: bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=None)
+        except Exception: pass
+
+        if action == "YES":
+            pending = user_state.get(chat_id, {})
+            entry   = pending.get("entry", 0)
+            stop    = pending.get("stop", 0)
+            qty     = pending.get("qty", 0)
+            ts_str  = datetime.now().strftime("%Y-%m-%d %H:%M")
+            note    = f"Add-On אושר: כניסה ${entry} | סטופ ${stop} | כמות {qty} ({ts_str})"
+            try:
+                # record confirmation in management_notes of the open campaign
+                res = supabase.table("trades").select("campaign_id").eq("symbol", sym).execute()
+                cid = res.data[0]["campaign_id"] if res.data else None
+                if cid:
+                    repo.update_management_notes(supabase, cid, note)
+            except Exception:
+                pass
+            if chat_id in user_state:
+                del user_state[chat_id]
+            bot.send_message(
+                chat_id,
+                f"{RTL}✅ *Add-On אושר — {sym}*\n{RTL}כניסה: `${entry}` | סטופ: `${stop}` | כמות: `{qty}`\n{RTL}נרשם ב-management\\_notes.",
+                parse_mode="Markdown",
+            )
+        else:
+            if chat_id in user_state:
+                del user_state[chat_id]
+            bot.send_message(chat_id, f"{RTL}❌ Add-On בוטל.", reply_markup=get_main_menu())
+
     elif data.startswith("v|"):
         bot.answer_callback_query(call.id)
         parts = data.split('|')

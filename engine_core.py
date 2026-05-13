@@ -1860,6 +1860,76 @@ def compute_follow_through(
     return round(max(0.0, min(100.0, total)), 1)
 
 
+def get_ma_levels(symbol: str) -> dict:
+    """
+    Return MA21 and MA50 for `symbol` using the cached daily history.
+    Returns {"ma21": float|None, "ma50": float|None}.
+    """
+    hist = get_cached_history(symbol, period="1y", interval="1d")
+    if hist is None or hist.empty or len(hist) < 5:
+        return {"ma21": None, "ma50": None}
+    close = hist["Close"]
+    ma21  = float(close.rolling(21).mean().iloc[-1]) if len(close) >= 21 else None
+    ma50  = float(close.rolling(50).mean().iloc[-1]) if len(close) >= 50 else None
+    if ma21 is not None and not (ma21 > 0):
+        ma21 = None
+    if ma50 is not None and not (ma50 > 0):
+        ma50 = None
+    return {"ma21": ma21, "ma50": ma50}
+
+
+_TRAIL_MA_BUFFER_PCT      = 0.02   # 2% buffer between MA and suggested stop
+_TRAIL_TIGHT_R_THRESHOLD  = 8.0    # open_r >= 8R → trail under MA21 (tight)
+_TRAIL_LOOSE_R_THRESHOLD  = 5.0    # open_r >= 5R → trail under MA50 (loose)
+
+
+def compute_suggested_trail_stop(
+    side: str,
+    current_price: float,
+    ma21: "float | None",
+    ma50: "float | None",
+    open_r: float,
+    entry_price: float = 0.0,
+) -> dict:
+    """
+    Suggest a trailing stop level for a RUNNER position.
+
+    Returns:
+        suggested_stop  float | None
+        basis           "MA21" | "MA50" | "breakeven" | "none"
+        note            str (Hebrew)
+    """
+    is_long = str(side).upper() in ("BUY", "LONG")
+    buf = _TRAIL_MA_BUFFER_PCT
+
+    if is_long:
+        if open_r >= _TRAIL_TIGHT_R_THRESHOLD and ma21 is not None:
+            stop = round(ma21 * (1.0 - buf), 2)
+            return {"suggested_stop": stop, "basis": "MA21",
+                    "note": f"הדק סטופ לאזור MA21 (${stop:.2f}) — {open_r:.1f}R, שמור רווח"}
+        if open_r >= _TRAIL_LOOSE_R_THRESHOLD and ma50 is not None:
+            stop = round(ma50 * (1.0 - buf), 2)
+            return {"suggested_stop": stop, "basis": "MA50",
+                    "note": f"Trailing Stop ב-MA50 (${stop:.2f}) — תן לריצה להמשיך"}
+        if entry_price > 0:
+            return {"suggested_stop": round(entry_price, 2), "basis": "breakeven",
+                    "note": f"העלה סטופ ל-Breakeven (${entry_price:.2f}) — MA לא זמין"}
+    else:  # SHORT
+        if open_r >= _TRAIL_TIGHT_R_THRESHOLD and ma21 is not None:
+            stop = round(ma21 * (1.0 + buf), 2)
+            return {"suggested_stop": stop, "basis": "MA21",
+                    "note": f"Trailing Stop מעל MA21 (${stop:.2f}) — {open_r:.1f}R"}
+        if open_r >= _TRAIL_LOOSE_R_THRESHOLD and ma50 is not None:
+            stop = round(ma50 * (1.0 + buf), 2)
+            return {"suggested_stop": stop, "basis": "MA50",
+                    "note": f"Trailing Stop מעל MA50 (${stop:.2f})"}
+        if entry_price > 0:
+            return {"suggested_stop": round(entry_price, 2), "basis": "breakeven",
+                    "note": f"סטופ ל-Breakeven (${entry_price:.2f})"}
+
+    return {"suggested_stop": None, "basis": "none", "note": "לא ניתן לחשב Trailing Stop"}
+
+
 def compute_position_state(
     side: str,
     management_mode: str,

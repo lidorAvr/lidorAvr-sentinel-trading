@@ -228,20 +228,32 @@ Status: **complete** — Sprint 3 shipped. See `docs/SPRINT_3_REPORT.md`.
 
 ## Phase 9 — Meeting 4 & Sprint 4
 
-Status: **planned** — see `docs/CHATGPT_TEAM_PROMPT_V3.md`.
+Status: **complete** — 2026-05-13
 
-14 departments (7 original + 7 new) review Sprint 3 and surface
-requirements for Sprint 4. Output: Sprint 4 plan + Mark's Final Verdict
-(target ≥ 9.0/10, was 8.0/10 in Meeting 3).
+Mark's Final Verdict Meeting 4: **8.6/10** → Sprint 4 delivered.
 
-**Sprint 4 inputs (open from Sprint 3):**
-1. `fmt_heat_thermometer()` — Heat Score visualization (S9/M21/L50)
-2. Add-On Engine Phase 2 — Supabase schema + dashboard + alerts
-3. 48h Settle Period — empirical validation (needs production data)
-4. SSH setup on Orange Pi — user action
-5. Safe Markdown splitting in `telegram_portfolio.py`
-6. Developer menu PIN gate
-7. `docs/DESIGN_SYSTEM.md` — emoji/icon palette
+**Sprint 4 — completed:**
+1. ✅ Real Healthchecks — mtime-based liveness probes (4 services + tests)
+2. ✅ GitHub Actions CI — `claude/**` branch coverage added
+3. ✅ `compute_suggested_trail_stop()` — RUNNER trailing stop in engine_core.py + wired into risk_monitor.py
+4. ✅ `fmt_heat_thermometer()` — visual S9/M21/L50 thermometer bar in telegram_formatters.py
+5. ✅ `/addon` inline keyboard [אשר/בטל] — confirmation flow in telegram_bot.py + telegram_callbacks.py
+6. ✅ Developer menu PIN gate (`DEV_PIN` env var, 30-min session) — telegram_devops.py + telegram_bot.py
+7. ✅ `ADMIN_ID > 0` validation — bot_core.py fail-fast
+8. ✅ `docs/DESIGN_SYSTEM.md` — emoji/icon palette, heat labels, position states, healthcheck table
+9. ✅ Tests: 1201/1201 (+6 trailing stop, +4 healthcheck vs Sprint 3's 1195)
+
+**Still open for Meeting 5:**
+- Add-On Engine Phase 2 — Supabase schema + `/addon` dashboard
+- 48h Settle Period — empirical validation (production data needed)
+- SSH setup on Orange Pi — user action
+- Merge PR #15 → main — requires human approval
+- E2E test `test_e2e_risk_monitor.py`
+- Coverage report baseline (≥75% enforced by pytest-cov)
+
+## Phase 10 — Meeting 5 & Sprint 5
+
+Status: **planned** — see `docs/CHATGPT_TEAM_PROMPT_V4.md`.
 
 ## Parking lot
 
