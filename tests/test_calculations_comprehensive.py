@@ -104,12 +104,13 @@ class TestRMultiplePrecision:
 
 class TestProfitFactorEdgeCases:
     def test_all_wins_returns_sentinel_infinity(self):
+        import math
         df = pd.DataFrame([
             _trade("c1", "BUY",  "2025-01-07", 100, 5, 0, 90),
             _trade("c1", "SELL", "2025-01-09", 100, 5, 100, 0),
         ])
         result = ae.compute_period_analytics(df, START, END, ACCOUNT)
-        assert result["profit_factor"] == 99.0
+        assert math.isinf(result["profit_factor"])  # no losses → infinity
 
     def test_all_losses_returns_zero(self):
         df = pd.DataFrame([
