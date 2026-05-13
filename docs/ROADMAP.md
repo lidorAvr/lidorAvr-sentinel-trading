@@ -173,6 +173,43 @@ Rules (preserved throughout):
 - ALGO positions never receive automated exit instructions.
 - All alerts bounded to avoid noise (dedup + cooldown + market-hours gate).
 
+## Phase 7 — Minervini Team Review Cycle (Meetings 1 + 2)
+
+Status: **complete** — Sprint 1 + Sprint 2 shipped. See `docs/SPRINT_1_2_REPORT.md`.
+
+**Sprint 1 — Production Reliability** (commit `dc1afa5`)
+- `ec.get_campaign_risk_metrics(row)` — single source of truth for 1R
+- 3 silent failures in `risk_monitor.py` now send Telegram alerts
+- `_require_env()` startup validation
+- Mid-loop state checkpoint
+
+**Sprint 2 — Methodology Fidelity** (commit `e319fcb`)
+- `compute_follow_through()` — Minervini "wizards continue" scorer (LONG + SHORT)
+- `follow_through_score` wired into `compute_position_state` (was always `None`)
+- Heat Score: Wizard payoff threshold (≥3.0 → +24), gap fills, sharper streak penalty
+- SIGTERM/SIGINT graceful shutdown
+
+**Merge:** PR #15 merges `claude/review-dev-roadmap-6K19V` → `main`.
+**Tests: 1182 passing** (was 1153).
+
+## Phase 8 — Meeting 3 & New Departments
+
+Status: **planned** — see `docs/CHATGPT_TEAM_PROMPT_V2.md`.
+
+Adds 7 new departments (System / Network / Cybersecurity / Manual QA /
+Graphic Design / UX-UI / Research) with requirements-gathering structure.
+Output: Sprint 3 plan + ranked requirements list across all 14 departments.
+
+**Still open from Meetings 1+2 (must be resolved by end of Sprint 3):**
+1. `analytics_engine.py:250` — migrate to `get_campaign_risk_metrics()`
+2. `profit_factor` sentinel inconsistency (`99.0` vs `2.0`)
+3. `conftest.py` with Supabase + yfinance mocks
+4. Heat Score visualization in Telegram (S9/M21/L50)
+5. Add-On Engine Phase 2 (Supabase schema + dashboard + alerts)
+6. RISK_LADDER spacing review
+7. 48h Settle Period empirical validation
+8. SSH setup on Orange Pi (user action)
+
 ## Parking lot
 
 Ideas to consider later:
