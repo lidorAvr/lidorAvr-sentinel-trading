@@ -167,6 +167,7 @@ def handle_all_messages(message):
         bot.send_message(chat_id, f"{RTL}🔄 *Git Pull — מריץ...*",
                          reply_markup=get_developer_menu(), parse_mode="Markdown")
         _bot_log(f"Git pull triggered by {chat_id}")
+        _TRIGGER_FILE = "/app/deploy_trigger"
         try:
             result = subprocess.run(
                 ["git", "-C", "/app", "pull"],
@@ -182,16 +183,25 @@ def handle_all_messages(message):
             )
             if stderr:
                 msg += f"\n{RTL}⚠️ stderr:\n```\n{stderr}\n```"
-            msg += (
-                f"\n\n{RTL}🔄 *להפעיל מחדש את הקונטיינרים* הרץ על השרת:\n"
-                f"`docker compose up -d --build`"
-            )
+            if rc == 0:
+                # Write deploy trigger — deploy_watcher.sh on the host picks this up
+                # and runs: git pull && docker compose up -d --build
+                try:
+                    import time as _time
+                    with open(_TRIGGER_FILE, "w") as _tf:
+                        _tf.write(str(_time.time()))
+                    msg += f"\n\n{RTL}🚀 *trigger נכתב* — deploy\_watcher יאסוף ויפעיל docker compose תוך ~5 שניות"
+                    _bot_log("Deploy trigger file written")
+                except Exception as te:
+                    msg += f"\n\n{RTL}⚠️ לא הצלחתי לכתוב trigger file: {te}\nהרץ ידנית: `docker compose up -d --build`"
+            else:
+                msg += f"\n\n{RTL}⚠️ Git pull נכשל — trigger לא נכתב. בדוק שגיאות למעלה."
             _bot_log(f"Git pull rc={rc}: {stdout[:200]}")
         except FileNotFoundError:
             msg = (
                 f"{RTL}⚠️ *git לא מותקן בקונטיינר זה.*\n"
                 f"{RTL}כדי לפרוס עדכון, הרץ על Orange Pi:\n"
-                f"`cd ~/sentinel && git pull && docker compose up -d --build`"
+                f"`cd ~/sentinel_trading && git pull && docker compose up -d --build`"
             )
         except subprocess.TimeoutExpired:
             msg = f"{RTL}⏳ *Git pull פג timeout (60s).*"

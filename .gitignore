@@ -5,3 +5,5 @@ risk_recommendations.json
 risk_journal.json
 __pycache__/
 *.pyc
+deploy_trigger
+deploy_watcher.log

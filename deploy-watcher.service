@@ -1,0 +1,18 @@
+[Unit]
+Description=Sentinel Trading — Deploy Watcher
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+# Replace YOUR_USER with your actual Orange Pi username (e.g. pi, ubuntu, lidor)
+User=YOUR_USER
+WorkingDirectory=/home/YOUR_USER/sentinel_trading
+ExecStart=/home/YOUR_USER/sentinel_trading/deploy_watcher.sh
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
