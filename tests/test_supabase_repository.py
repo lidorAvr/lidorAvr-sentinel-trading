@@ -192,3 +192,49 @@ class TestUpdateManagementNotes:
         calls = [str(c) for c in sb.eq.call_args_list]
         assert any("C1" in c for c in calls)
         assert any("BUY" in c for c in calls)
+
+
+# ── get_open_campaign_for_symbol ───────────────────────────────────────────────
+
+class TestGetOpenCampaignForSymbol:
+    def test_returns_campaign_id_when_found(self):
+        sb = _sb()
+        sb.execute.return_value.data = [{"campaign_id": "CID-123"}]
+        result = repo.get_open_campaign_for_symbol(sb, "NVDA")
+        assert result == "CID-123"
+
+    def test_returns_none_when_no_data(self):
+        sb = _sb()
+        sb.execute.return_value.data = []
+        assert repo.get_open_campaign_for_symbol(sb, "NVDA") is None
+
+    def test_returns_none_when_data_is_none(self):
+        sb = _sb()
+        sb.execute.return_value.data = None
+        assert repo.get_open_campaign_for_symbol(sb, "NVDA") is None
+
+    def test_filters_by_symbol(self):
+        sb = _sb()
+        sb.execute.return_value.data = [{"campaign_id": "CID-999"}]
+        repo.get_open_campaign_for_symbol(sb, "MRVL")
+        eq_calls = [str(c) for c in sb.eq.call_args_list]
+        assert any("MRVL" in c for c in eq_calls)
+
+    def test_filters_by_buy_side(self):
+        sb = _sb()
+        sb.execute.return_value.data = [{"campaign_id": "CID-999"}]
+        repo.get_open_campaign_for_symbol(sb, "MRVL")
+        eq_calls = [str(c) for c in sb.eq.call_args_list]
+        assert any("BUY" in c for c in eq_calls)
+
+    def test_applies_limit_1(self):
+        sb = _sb()
+        sb.execute.return_value.data = [{"campaign_id": "CID-999"}]
+        repo.get_open_campaign_for_symbol(sb, "MRVL")
+        sb.limit.assert_called_with(1)
+
+    def test_orders_by_trade_date_desc(self):
+        sb = _sb()
+        sb.execute.return_value.data = [{"campaign_id": "CID-999"}]
+        repo.get_open_campaign_for_symbol(sb, "MRVL")
+        sb.order.assert_called_with("trade_date", desc=True)
