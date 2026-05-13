@@ -63,6 +63,7 @@ Examples:
 - Docker Compose commands
 - Telegram authorization / anti-spam
 - any auto-management or auto-update behavior
+- risk_monitor alert logic and state machine
 
 Process:
 
@@ -103,6 +104,57 @@ Do not:
 - add network calls to functions that should be pure
 - mix user-facing Hebrew strings deeply into core formulas unless already existing
 - make campaign logic depend on UI assumptions
+
+## Rules for `risk_monitor.py`
+
+`risk_monitor.py` is the automated alert and anti-spam state machine. Treat changes here as high-risk.
+
+### Alert deduplication invariants
+
+Every new alert type introduced in `risk_monitor.py` must:
+
+1. Have a **per-position boolean flag** in `risk_monitor_state.json` (e.g., `sizing_leak_alerted`, `breakeven_alerted`).
+2. Add that flag key to the **carry-over key list** at the top of the position loop.
+3. Check the flag before sending: `if not new_pos_entry.get("flag_name", False):`.
+4. Set the flag to `True` immediately after sending.
+5. Never re-fire the alert based on a timer/cooldown alone within the same state.
+
+Violating these invariants causes alert spam, which degrades the user's trust in the system.
+
+### Giveback zone rules
+
+- Giveback alerts must fire only when the **zone classification changes** (`gb["classification"] != prev_gb_class`).
+- Firing must also require that the current or previous zone is in `alert_classes` (`{"watch", "tighten", "protection_failure"}`).
+- Do NOT add a cooldown-based re-fire within the same zone. Zone-change detection already throttles it correctly.
+- `last_giveback_class` must always be updated after every cycle, even when no alert fires.
+
+### BROKEN state gate
+
+When a position reaches `POSITION_STATE_BROKEN`, the following alerts are suppressed:
+
+- Giveback alerts
+- Any alert that assumes the position is still developing
+
+The guard pattern is:
+```python
+if peak_open_r >= 1.5 and open_r < peak_open_r and _pos_state != ec.POSITION_STATE_BROKEN:
+    # Giveback logic here
+```
+
+Do not remove this guard.
+
+### Alert key rules
+
+- `build_position_alert_key()` must NOT include `trigger` in the key.
+- Including trigger causes Live Alert to fire on every minor price movement, which is spam.
+- Non-escalating key changes fire at most once per `LIVE_ALERT_REPEAT_COOLDOWN` (45 min).
+- Status escalations (higher `STATUS_RANK`) bypass the cooldown and always fire.
+
+### Daily Digest rules
+
+- Daily Digest fires **once per calendar day** only, tracked by `last_digest_date`.
+- Window: 21:00–22:00 UTC, Monday–Friday only.
+- It is not a Live Alert — do not add it to the position-level alert key or cooldown logic.
 
 ## Rules for `telegram_bot.py`
 
@@ -187,6 +239,15 @@ docker compose up -d --build telegram-bot
 ```
 
 Use direct `telegram_bot.py` only as an emergency rollback, because it bypasses the runner protections.
+
+Common rollback for risk-monitor:
+
+```bash
+docker compose stop risk-monitor
+git revert <commit_sha>
+docker compose up -d --build risk-monitor
+docker logs -f risk-monitor
+```
 
 ## Refactor protocol
 

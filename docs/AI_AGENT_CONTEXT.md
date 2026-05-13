@@ -6,17 +6,66 @@ Sentinel Trading is a personal trading operations system. It connects trade reco
 
 The system is not just a dashboard. It is used to support real trading decisions, so correctness and clarity are more important than cleverness.
 
+The system direction is: **from "displays data" to "coaches in real time"** — without spam, without drama, and without giving obvious instructions.
+
 ## User goals
 
 The system should help the user:
 
 1. Track open and closed trading campaigns accurately.
-2. Manage EP, VCP, ALGO, and other setup types separately.
+2. Manage EP, VCP, ALGO, and other setup types completely separately in statistics.
 3. Understand position health, risk, exposure, and R-multiple clearly.
 4. Avoid stale or misleading data.
 5. Get concise Telegram reports in Hebrew that are easy to act on.
 6. Automate repetitive journal/backlog work without corrupting trade data.
 7. Keep improving the system safely over time.
+8. Receive one daily summary instead of repeated intra-day alerts.
+9. Get one-time coaching alerts per position (Sizing Leak, Breakeven Protocol) — never repeated.
+
+## Stat scope separation
+
+All Win Rate, Expectancy, Avg Win R, Avg Loss R, and Profit Factor statistics must be scoped:
+
+- **Discretionary (disc)** = EP_MANUAL + VCP_MANUAL + other `_MANUAL` buckets. All have known initial stops.
+- **EP** = EP_MANUAL campaigns only.
+- **VCP** = VCP_MANUAL campaigns only.
+- **ALGO** = ALGO_OBSERVED. Measured by Net PnL and Net R (Target Base) only. Not counted in Win Rate.
+- **DATA_INCOMPLETE** = manual setups missing initial stop. Excluded from all quality statistics.
+- **Combined (countable)** = disc only (excludes ALGO and DATA_INCOMPLETE).
+
+The functions enforcing this:
+- `engine_core.classify_stat_bucket(setup_type, original_campaign_risk)` → bucket string
+- `engine_core.is_stat_countable(bucket)` → True for disc buckets, False for ALGO/DATA_INCOMPLETE
+- `engine_core.is_discretionary_bucket(bucket)` → True if bucket ends with `_MANUAL`
+- `adaptive_risk_engine.compute_closed_campaigns(df)` → each campaign dict includes `stat_bucket`
+
+## Alert tiers
+
+`risk_monitor.py` sends alerts in three tiers only:
+
+**Tier 1 — Immediate (always fire):**
+- Status escalation (position worsens to higher STATUS_RANK)
+- First-time state transitions: RUNNER, BROKEN, DEAD_MONEY
+- Stop breach, ALGO deep loss, risk deviation severe/system
+- Giveback zone transition (entering or leaving an alert zone)
+
+**Tier 2 — Throttled (once per threshold/event):**
+- Profit Protection Checkpoints (2R, 3R) — one-time per campaign
+- Breakeven Protocol — one-time per campaign
+- Sizing Leak — one-time per campaign when original_campaign_risk / target_risk_usd < 0.65
+- Adaptive Risk direction change — once per 24h per direction
+
+**Tier 3 — Daily Digest (once per day):**
+- Fires once at 21:00–22:00 UTC (US market close), Mon–Fri only
+- Lists all open positions with state emoji, Open R, and required action
+- Highlights symbols needing a decision (BROKEN / RUNNER / PROFIT_PROTECTION)
+- Tracked by `last_digest_date` in `risk_monitor_state.json`
+
+**Suppressed:**
+- Live Alert re-fires within 45 min unless status truly escalated
+- Giveback re-fires within the same zone (no cooldown re-fire)
+- Any alert after BROKEN state on that position (Giveback suppressed)
+- Sizing warning repeated in every Live Alert cycle
 
 ## Main strategies and concepts
 
@@ -67,6 +116,7 @@ Do not count partial sells as new trades. Do not create fake campaigns. Do not r
 - `telegram-bot`: runs `telegram_bot_secure_runner.py`
 - `dashboard`: runs `dashboard.py`
 - `risk-monitor`: runs `risk_monitor.py`
+- `reporting-service`: runs `report_scheduler.py`
 
 The Telegram service intentionally runs through `telegram_bot_secure_runner.py` instead of directly through `telegram_bot.py`.
 
