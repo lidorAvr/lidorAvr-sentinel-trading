@@ -204,23 +204,40 @@ def _window_stats(camps: list) -> dict:
 
 
 def _window_heat_score(stats: dict) -> float:
-    """Map window stats to a 0–100 heat score."""
+    """
+    Map window stats to a 0–100 heat score.
+
+    Components:
+      base       = Win Rate × 100
+      payoff     = +24 at Wizard threshold (≥3.0), graded down to -12 below 0.8
+      profit_factor = +12 at PF ≥ 2.5, graded down to -15 below 1.0
+      loss_streak = -10/-18 at 2/3+ consecutive losers (Minervini's "cut risk fast")
+    """
     if stats["n"] == 0:
         return 50.0
     score = stats["wr"] * 100
+
+    # Payoff (avg_win / avg_loss). Mark targets ≥ 2.0; "wizards" run ≥ 3.0.
     p = stats["payoff"]
-    if   p >= 2.5: score += 20
-    elif p >= 2.0: score += 15
-    elif p >= 1.5: score += 8
-    elif p >= 1.2: score += 3
-    elif 0 < p < 0.8: score -= 10
+    if   p >= 3.0:      score += 24
+    elif p >= 2.5:      score += 20
+    elif p >= 2.0:      score += 15
+    elif p >= 1.5:      score += 8
+    elif p >= 1.2:      score += 3
+    elif p >= 1.0:      score += 1   # marginal positive
+    elif 0 < p < 0.8:   score -= 12  # was -10
+    # (0.8 ≤ p < 1.0 stays neutral — sub-1 but not catastrophic)
+
     pf = stats["pf"]
     if   pf >= 2.5: score += 12
     elif pf >= 2.0: score += 8
     elif pf >= 1.5: score += 4
+    elif pf >= 1.0: score += 1   # marginal positive (was 0)
     elif pf < 1.0:  score -= 15
-    if   stats["loss_streak"] >= 3: score -= 15
-    elif stats["loss_streak"] >= 2: score -= 8
+
+    # Sharper streak penalty — Minervini cuts risk fast on consecutive losers.
+    if   stats["loss_streak"] >= 3: score -= 18  # was -15
+    elif stats["loss_streak"] >= 2: score -= 10  # was -8
     return min(100.0, max(0.0, score))
 
 

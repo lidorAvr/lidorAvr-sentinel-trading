@@ -1,4 +1,4 @@
-import os, json, time, telebot
+import os, json, time, signal, sys, telebot
 import pandas as pd
 from datetime import datetime
 from supabase import create_client
@@ -717,6 +717,18 @@ def main():
 
         _mgt_mode = ec.classify_management_mode(setup, sym)
 
+        # Follow-through score — None for ALGO (different management) or when
+        # the position is too young / history unavailable.
+        _ft_score = None
+        if _mgt_mode != "algo_observed":
+            try:
+                _ft_score = ec.compute_follow_through(
+                    symbol=sym, entry_date_str=entry_date,
+                    entry_price=entry, side=_side_pos,
+                )
+            except Exception as e:
+                print(f"follow-through error for {sym}: {e}")
+
         _state_result = ec.compute_position_state(
             side=_side_pos,
             management_mode=_mgt_mode,
@@ -727,7 +739,7 @@ def main():
             current_price=curr,
             current_stop=sl,
             days_to_earnings=_days_to_earnings,
-            follow_through_score=None,
+            follow_through_score=_ft_score,
             violation_score=0,
             has_new_high_since_entry=True,
             has_open_quantity=(qty > 0),
@@ -987,8 +999,37 @@ def _require_env() -> None:
         )
 
 
+_SHUTTING_DOWN = False
+
+
+def _graceful_shutdown(signum, frame):
+    """Save last-known state before container/process exit.
+
+    Triggered by docker compose down (SIGTERM) and Ctrl+C (SIGINT).
+    We rely on the most-recent state file written during the main loop; no
+    re-computation here to avoid touching Supabase mid-shutdown.
+    """
+    global _SHUTTING_DOWN
+    if _SHUTTING_DOWN:
+        return
+    _SHUTTING_DOWN = True
+    sig_name = signal.Signals(signum).name if hasattr(signal, "Signals") else str(signum)
+    print(f"🛑 Risk Monitor received {sig_name} — checkpoint and exit")
+    try:
+        if os.path.exists(STATE_FILE):
+            state = load_state()
+            state["shutdown_at"] = datetime.utcnow().isoformat()
+            state["shutdown_signal"] = sig_name
+            save_state(state)
+    except Exception as e:
+        print(f"shutdown checkpoint failed: {e}")
+    sys.exit(0)
+
+
 if __name__ == "__main__":
     _require_env()
+    signal.signal(signal.SIGTERM, _graceful_shutdown)
+    signal.signal(signal.SIGINT,  _graceful_shutdown)
     print("🛡️ Sentinel Risk Monitor Active")
     while True:
         try: main()

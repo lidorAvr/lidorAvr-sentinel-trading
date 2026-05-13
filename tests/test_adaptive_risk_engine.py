@@ -690,3 +690,74 @@ class TestMultiWindowFields:
         result = are.compute_adaptive_risk(_campaigns(5, 5), 0.5, 10000, open_positions=neg)
         # combined_open_r = -3.5 → <= -3.0 → bonus = -15
         assert result["open_r_bonus"] == -15.0
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Sprint 2 — Heat score refinements (Wizard threshold + gap fills + streak)
+# ──────────────────────────────────────────────────────────────────────────────
+class TestHeatScoreRefinements:
+    def test_wizard_payoff_threshold_rewarded(self):
+        """Payoff ≥ 3.0 should score higher than 2.5 ≤ payoff < 3.0."""
+        from adaptive_risk_engine import _window_heat_score
+        stats_wizard = {"n": 10, "wr": 0.6, "avg_win": 300, "avg_loss": 100,
+                        "payoff": 3.0, "pf": 2.0, "loss_streak": 0, "win_streak": 1}
+        stats_strong = {"n": 10, "wr": 0.6, "avg_win": 250, "avg_loss": 100,
+                        "payoff": 2.5, "pf": 2.0, "loss_streak": 0, "win_streak": 1}
+        wiz_score = _window_heat_score(stats_wizard)
+        strong_score = _window_heat_score(stats_strong)
+        assert wiz_score > strong_score
+
+    def test_marginal_payoff_gets_small_bonus(self):
+        """1.0 ≤ payoff < 1.2 should get +1 (was 0)."""
+        from adaptive_risk_engine import _window_heat_score
+        stats = {"n": 10, "wr": 0.5, "avg_win": 100, "avg_loss": 100,
+                 "payoff": 1.0, "pf": 1.0, "loss_streak": 0, "win_streak": 1}
+        # base = 50, payoff +1, pf +1 → 52
+        score = _window_heat_score(stats)
+        assert score == 52.0
+
+    def test_marginal_pf_gets_small_bonus(self):
+        """1.0 ≤ pf < 1.5 should get +1 (was 0)."""
+        from adaptive_risk_engine import _window_heat_score
+        # Payoff 1.2 → +3, PF 1.2 → +1, base 50 → 54
+        stats = {"n": 10, "wr": 0.5, "avg_win": 120, "avg_loss": 100,
+                 "payoff": 1.2, "pf": 1.2, "loss_streak": 0, "win_streak": 1}
+        assert _window_heat_score(stats) == 54.0
+
+    def test_sub_one_payoff_penalty_harder(self):
+        """payoff < 0.8 should now lose 12 points (was 10)."""
+        from adaptive_risk_engine import _window_heat_score
+        # base 50, payoff 0.5 → -12, pf 0.5 → -15 → score = 23
+        stats = {"n": 10, "wr": 0.5, "avg_win": 50, "avg_loss": 100,
+                 "payoff": 0.5, "pf": 0.5, "loss_streak": 0, "win_streak": 0}
+        assert _window_heat_score(stats) == 23.0
+
+    def test_loss_streak_three_penalty_harder(self):
+        """loss_streak ≥ 3 now loses 18 points (was 15)."""
+        from adaptive_risk_engine import _window_heat_score
+        # base 50, payoff 1.0 → +1, pf 1.0 → +1, streak 3 → -18 → score = 34
+        stats = {"n": 10, "wr": 0.5, "avg_win": 100, "avg_loss": 100,
+                 "payoff": 1.0, "pf": 1.0, "loss_streak": 3, "win_streak": 0}
+        assert _window_heat_score(stats) == 34.0
+
+    def test_loss_streak_two_penalty_harder(self):
+        """loss_streak == 2 now loses 10 points (was 8)."""
+        from adaptive_risk_engine import _window_heat_score
+        # base 50, payoff 1.0 → +1, pf 1.0 → +1, streak 2 → -10 → score = 42
+        stats = {"n": 10, "wr": 0.5, "avg_win": 100, "avg_loss": 100,
+                 "payoff": 1.0, "pf": 1.0, "loss_streak": 2, "win_streak": 0}
+        assert _window_heat_score(stats) == 42.0
+
+    def test_empty_window_returns_50(self):
+        """Empty window still returns neutral 50."""
+        from adaptive_risk_engine import _window_heat_score
+        stats = {"n": 0, "wr": 0, "avg_win": 0, "avg_loss": 0,
+                 "payoff": 0, "pf": 0, "loss_streak": 0, "win_streak": 0}
+        assert _window_heat_score(stats) == 50.0
+
+    def test_score_still_clamped_0_100(self):
+        """All-perfect stats stay ≤ 100."""
+        from adaptive_risk_engine import _window_heat_score
+        stats = {"n": 10, "wr": 1.0, "avg_win": 500, "avg_loss": 100,
+                 "payoff": 5.0, "pf": 5.0, "loss_streak": 0, "win_streak": 10}
+        assert _window_heat_score(stats) == 100.0

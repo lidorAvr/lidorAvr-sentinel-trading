@@ -1759,6 +1759,107 @@ def _make_state(state: str, event_risk: dict, reason: str) -> dict:
     }
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Follow-Through Score (Minervini "wizards continue")
+# ──────────────────────────────────────────────────────────────────────────────
+_FT_WINDOW_DAYS         = 10   # trading days after entry to evaluate
+_FT_MIN_DAYS_FOR_SCORE  = 5    # need at least this many bars before scoring
+_FT_PEAK_FULL_PCT       = 10.0 # peak gain ≥ 10% in window = full advance score
+_FT_NEW_HIGH_FULL_PCT   = 5.0  # close ≥ 5% above entry = full new-high score
+_FT_VOL_RATIO_FULL      = 1.5  # up-day vol / down-day vol ≥ 1.5 = full vol score
+
+
+def compute_follow_through(
+    symbol: str,
+    entry_date_str: str,
+    entry_price: float,
+    hist_df: "pd.DataFrame | None" = None,
+    side: str = "BUY",
+) -> "float | None":
+    """
+    Follow-Through Score [0, 100] — measures whether a breakout "follows through"
+    in the first ~10 trading days as Minervini's wizards describe.
+
+    Components:
+      50 pts — peak gain over window (10% = full)
+      25 pts — close distance above entry over window (5% = full)
+      25 pts — up-day vs down-day volume ratio (1.5x = full)
+
+    Returns:
+      float in [0, 100] — score when there is enough data
+      None — position is too young or history is unavailable
+
+    SHORT positions: score reflects downward follow-through (price drop from entry).
+    """
+    if entry_price <= 0:
+        return None
+    try:
+        entry_dt = pd.to_datetime(entry_date_str).tz_localize(None)
+    except Exception:
+        return None
+
+    if hist_df is None or getattr(hist_df, "empty", True):
+        hist_df = get_cached_history(symbol, "6mo", "1d")
+    if hist_df is None or hist_df.empty:
+        return None
+
+    df = hist_df.copy()
+    try:
+        df.index = pd.to_datetime(df.index).tz_localize(None)
+    except (AttributeError, TypeError):
+        try:
+            df.index = pd.to_datetime(df.index)
+        except Exception:
+            return None
+
+    post = df[df.index >= entry_dt].head(_FT_WINDOW_DAYS)
+    if len(post) < _FT_MIN_DAYS_FOR_SCORE:
+        return None
+
+    is_short = side.upper() in ("SHORT", "SELL")
+
+    # ── Peak advance ────────────────────────────────────────────────────────
+    if is_short:
+        # SHORT: success = price drops; "peak" = lowest low
+        peak_price = float(post["Low"].min()) if "Low" in post else float(post["Close"].min())
+        peak_pct = (entry_price - peak_price) / entry_price * 100.0
+    else:
+        peak_price = float(post["High"].max()) if "High" in post else float(post["Close"].max())
+        peak_pct = (peak_price - entry_price) / entry_price * 100.0
+    peak_score = max(0.0, min(50.0, 50.0 * (peak_pct / _FT_PEAK_FULL_PCT)))
+
+    # ── New-high distance (max close above entry) ───────────────────────────
+    if is_short:
+        best_close = float(post["Close"].min())
+        nh_pct = (entry_price - best_close) / entry_price * 100.0
+    else:
+        best_close = float(post["Close"].max())
+        nh_pct = (best_close - entry_price) / entry_price * 100.0
+    nh_score = max(0.0, min(25.0, 25.0 * (nh_pct / _FT_NEW_HIGH_FULL_PCT)))
+
+    # ── Volume confirmation (up-day vs down-day, relative to entry direction) ─
+    vol_score = 12.5  # neutral default if volume data is missing
+    if "Volume" in post and "Close" in post:
+        try:
+            close_diff = post["Close"].diff().fillna(0)
+            if is_short:
+                helpful_vol = float(post.loc[close_diff < 0, "Volume"].sum())
+                adverse_vol = float(post.loc[close_diff > 0, "Volume"].sum())
+            else:
+                helpful_vol = float(post.loc[close_diff > 0, "Volume"].sum())
+                adverse_vol = float(post.loc[close_diff < 0, "Volume"].sum())
+            if adverse_vol > 0:
+                ratio = helpful_vol / adverse_vol
+                vol_score = max(0.0, min(25.0, 25.0 * (ratio / _FT_VOL_RATIO_FULL)))
+            elif helpful_vol > 0:
+                vol_score = 25.0
+        except Exception:
+            pass
+
+    total = peak_score + nh_score + vol_score
+    return round(max(0.0, min(100.0, total)), 1)
+
+
 def compute_position_state(
     side: str,
     management_mode: str,
