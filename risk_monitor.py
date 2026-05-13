@@ -886,18 +886,21 @@ def main():
                 alert_text = (
                     f"{RTL}🎯 *התראת סיכון אדפטיבי*\n"
                     f"{RTL}───────────────\n"
-                    f"{RTL}חום מסחר: {risk_rec['heat_color']} `{heat:.0f}%` | {step}\n"
-                    f"{RTL}  ▸ S9: `{s9_sc:.0f}` × 50% | M21: `{m21_sc:.0f}` × 30% | L50: `{l50_sc:.0f}` × 20%\n"
+                    f"{RTL}חום מסחר: {risk_rec['heat_color']} `{heat:.0f}/100` | {step}\n"
+                    f"{RTL}  ▸ ציון (0-100) לפי טווח: S9(9 עסקאות)=`{s9_sc:.0f}` | M21(21)=`{m21_sc:.0f}` | L50(50)=`{l50_sc:.0f}`\n"
                 )
                 factors = risk_rec.get("heat_factors", [])
                 if factors:
                     alert_text += f"{RTL}\n{RTL}📊 גורמים מרכזיים:\n"
                     for f_line in factors[:3]:
                         alert_text += f"{RTL}  {f_line}\n"
-                alert_text += (
-                    f"{RTL}\n{RTL}רמה נוכחית: `{curr_pct:.2f}%` (`${curr_usd:,.0f}` לעסקה)\n"
-                    f"{RTL}{arrow} *המלצה:* `{rec_pct:.2f}%` (`${rec_usd:,.0f}` לעסקה)\n"
-                )
+                if rec_pct == curr_pct:
+                    alert_text += f"{RTL}\n{RTL}סיכון נוכחי: `{curr_pct:.2f}%` (`${curr_usd:,.0f}` לעסקה) — *ללא שינוי*\n"
+                else:
+                    alert_text += (
+                        f"{RTL}\n{RTL}סיכון נוכחי: `{curr_pct:.2f}%` (`${curr_usd:,.0f}` לעסקה)\n"
+                        f"{RTL}{arrow} *סיכון מוצע:* `{rec_pct:.2f}%` (`${rec_usd:,.0f}` לעסקה)\n"
+                    )
                 improve = risk_rec.get("what_to_improve", [])
                 if improve:
                     alert_text += f"{RTL}\n{RTL}🔼 לשיפור:\n"

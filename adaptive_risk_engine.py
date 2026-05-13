@@ -233,24 +233,41 @@ def _build_heat_factors(s9: dict, m21: dict, open_r_bonus: float) -> list:
     return factors[:5]
 
 
-def _build_what_to_improve(heat_score: float, s9: dict, direction: str) -> list:
-    """Specific improvements that would lift the score to the next level."""
+def _build_what_to_improve(heat_score: float, s9: dict, direction: str,
+                            s9_score: float = 50.0) -> list:
+    """
+    Specific improvements that would lift the heat score to the next level.
+    Does NOT prescribe a fixed win-rate target — instead infers the WR needed
+    given the trader's current payoff ratio and bonus context.
+    """
     items = []
     if direction not in ("down_fast", "hold"):
         return items
     target = 40.0 if direction == "down_fast" else 60.0
     gap = target - heat_score
-    items.append(f"ציון נדרש: {target:.0f}% | כרגע: {heat_score:.0f}% | פער: {gap:.0f}")
+    items.append(f"ציון חום נדרש: {target:.0f} | כרגע: {heat_score:.0f} | פער: {gap:.0f} נקודות")
+
     s9_wr = s9["wr"] * 100
-    if direction == "down_fast" and s9_wr < 50 and s9["n"] > 0:
-        wins_needed = max(1, round((50 - s9_wr) * s9["n"] / 100))
-        items.append(f"Win Rate S9: {s9_wr:.0f}% → נדרש ≥50% (עוד {wins_needed} ניצחון)")
-    elif direction == "hold" and s9_wr < 60:
-        items.append(f"Win Rate S9: {s9_wr:.0f}% → נדרש ≥60% לסיגנל עלייה")
+    # Infer how much of the current S9 score comes from non-WR factors (payoff, PF, streaks)
+    # so we can tell the trader what WR is actually needed at their current payoff level.
+    non_wr_component = s9_score - s9_wr  # bonuses/penalties excluding the WR base
+    wr_needed = max(0, min(100, round(target - non_wr_component)))
+    if s9_wr < wr_needed - 3 and s9["n"] > 0:
+        wins_needed = max(1, round((wr_needed - s9_wr) * s9["n"] / 100))
+        if s9["payoff"] >= 1.2:
+            items.append(
+                f"Win Rate S9: {s9_wr:.0f}% | עם Payoff {s9['payoff']:.1f}x נדרש ~{wr_needed:.0f}%"
+                f" (עוד {wins_needed} ניצחון)"
+            )
+        else:
+            items.append(
+                f"Win Rate S9: {s9_wr:.0f}% — Payoff נמוך ({s9['payoff']:.1f}x) מגביל את הציון"
+            )
+
     if s9["loss_streak"] >= 2:
         items.append(f"רצף הפסד פעיל ({s9['loss_streak']}) — ניצחון אחד יאפס")
     if 0 < s9["payoff"] < 1.2:
-        items.append(f"Payoff Ratio: {s9['payoff']:.1f}x → נדרש ≥1.2x לבונוס")
+        items.append(f"Payoff Ratio: {s9['payoff']:.1f}x | ניצחון גדול יותר מהפסד יוסיף בונוס ציון")
     return items[:4]
 
 
@@ -357,7 +374,7 @@ def compute_adaptive_risk(
     curr_usd = round(nav * current_risk_pct / 100, 0)
 
     heat_factors    = _build_heat_factors(s9_stats, m21_stats, open_r_bonus)
-    what_to_improve = _build_what_to_improve(heat_score, s9_stats, direction)
+    what_to_improve = _build_what_to_improve(heat_score, s9_stats, direction, s9_score=s9_score)
 
     result = {
         "ok": True,

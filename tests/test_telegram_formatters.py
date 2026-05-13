@@ -258,7 +258,7 @@ class TestFmtAdaptiveRiskBlock:
             self._rec(current_risk_pct=0.5, recommended_risk_pct=0.5,
                       current_risk_usd=100, recommended_risk_usd=100)
         )
-        assert "שמור" in result
+        assert "ללא שינוי" in result
 
     def test_actionability_review_required(self):
         result = tf.fmt_adaptive_risk_block(self._rec())

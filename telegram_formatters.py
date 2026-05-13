@@ -162,14 +162,14 @@ def fmt_adaptive_risk_block(risk_rec: dict) -> str:
         return f"\n{RTL}{SEP}\n{RTL}🎯 *סיכון אדפטיבי:* ⚪ {msg}"
     lines = [f"\n{RTL}{SEP}", f"{RTL}🎯 *המלצת סיכון אדפטיבי*",
              fmt_actionability("review_required")]
-    lines.append(f"{RTL}חום מסחר: {risk_rec['heat_color']} *{risk_rec['heat_label']}* (ציון: `{risk_rec['heat_score']:.0f}%`)")
+    lines.append(f"{RTL}חום מסחר: {risk_rec['heat_color']} *{risk_rec['heat_label']}* (ציון: `{risk_rec['heat_score']:.0f}/100`)")
 
     # Multi-window breakdown (new fields — shown if present)
     s9_sc  = risk_rec.get("s9_score")
     m21_sc = risk_rec.get("m21_score")
     l50_sc = risk_rec.get("l50_score")
     if s9_sc is not None:
-        lines.append(f"{RTL}  ▸ S9: `{s9_sc:.0f}` × 50% | M21: `{m21_sc:.0f}` × 30% | L50: `{l50_sc:.0f}` × 20%")
+        lines.append(f"{RTL}  ▸ ציון (0-100) לפי טווח: S9(9)=`{s9_sc:.0f}` | M21(21)=`{m21_sc:.0f}` | L50(50)=`{l50_sc:.0f}`")
 
     # Win rate per window
     s9_wr  = risk_rec.get("recent_10_wr", 0)  # backward-compat: mapped from S9
@@ -208,10 +208,11 @@ def fmt_adaptive_risk_block(risk_rec: dict) -> str:
     direction = risk_rec['direction']
     arrow = "⬆️" if direction == 'up' else ("⬇️⬇️" if direction == 'down_fast' else "➡️")
     lines.append(f"\n{RTL}{arrow} *{risk_rec['step_type']}*")
+    lines.append(f"{RTL}  סיכון נוכחי: `{curr_pct:.2f}%` (`${curr_usd:,.0f}` לעסקה)")
     if rec_pct == curr_pct:
-        lines.append(f"{RTL}  שמור על `{rec_pct:.2f}%` — `${rec_usd:,.0f}` לעסקה")
+        lines.append(f"{RTL}  סיכון מוצע: `{rec_pct:.2f}%` — *ללא שינוי*")
     else:
-        lines.append(f"{RTL}  `{curr_pct:.2f}%` (`${curr_usd:,.0f}`) ← → `{rec_pct:.2f}%` (`${rec_usd:,.0f}`)")
+        lines.append(f"{RTL}  סיכון מוצע: `{rec_pct:.2f}%` (`${rec_usd:,.0f}` לעסקה)")
 
     # What to improve (new field)
     improve = risk_rec.get("what_to_improve", [])
