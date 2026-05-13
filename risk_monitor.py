@@ -392,16 +392,18 @@ def check_position_risk_thresholds(sym, setup, open_r, open_pnl_usd, target_risk
         prev_gb_ts = prev_state.get("last_giveback_ts", 0)
         alert_classes_to_notify = {"watch", "tighten", "protection_failure"}
 
-        escalated = GIVEBACK_RANK.get(gb["classification"], 0) > GIVEBACK_RANK.get(prev_gb_class, 0)
-        cooled_down = (now_ts - prev_gb_ts) > GIVEBACK_COOLDOWN_SEC
-        should_fire = gb["classification"] in alert_classes_to_notify and (escalated or cooled_down)
+        zone_changed = gb["classification"] != prev_gb_class
+        # Fire only on zone transition (entering OR leaving an alert zone).
+        # No repeat-after-cooldown within the same zone — that caused the spam.
+        is_alert_current = gb["classification"] in alert_classes_to_notify
+        is_alert_prev = prev_gb_class in alert_classes_to_notify
+        should_fire = zone_changed and (is_alert_current or is_alert_prev)
 
         if should_fire:
             alerts.append(_giveback_alert_text(sym, setup, peak_open_r, open_r, gb, is_algo))
-            updates["last_giveback_class"] = gb["classification"]
+        updates["last_giveback_class"] = gb["classification"]
+        if should_fire:
             updates["last_giveback_ts"] = now_ts
-        elif gb["classification"] not in ("na", "natural"):
-            updates["last_giveback_class"] = gb["classification"]
 
     return alerts, updates
 

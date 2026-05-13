@@ -331,23 +331,42 @@ else:
             })
     camp_df = pd.DataFrame(closed_campaigns)
 
+    _EMPTY_BUCKET = {
+        "win_rate": 0, "adj_rr": 0, "expectancy_r": 0,
+        "total_pnl": 0, "total_r": 0, "count": 0,
+        "avg_win_r": 0, "avg_loss_r": 0,
+        "profit_factor": 0, "payoff_consistency": None, "max_loss_r": 0,
+    }
+
     def _bucket_stats(df):
-        """Compute win rate, adj R/R, expectancy for a DataFrame of campaigns."""
+        """Compute win rate, adj R/R, expectancy, and full edge metrics for a campaign DataFrame."""
         if df.empty:
-            return {"win_rate": 0, "adj_rr": 0, "expectancy_r": 0,
-                    "total_pnl": 0, "total_r": 0, "count": 0}
+            return _EMPTY_BUCKET.copy()
         wins = df[df['pnl_usd'] > 0]
         losses = df[df['pnl_usd'] < 0]
         wr = len(wins) / len(df)
-        aw = wins['Total_Campaign_R'].mean() if not wins.empty else 0
-        al = abs(losses['Total_Campaign_R'].mean()) if not losses.empty else 1
+        aw = float(wins['Total_Campaign_R'].mean()) if not wins.empty else 0.0
+        al = float(abs(losses['Total_Campaign_R'].mean())) if not losses.empty else 1.0
+        gross_profit_r = float(wins['Total_Campaign_R'].sum()) if not wins.empty else 0.0
+        gross_loss_r = float(abs(losses['Total_Campaign_R'].sum())) if not losses.empty else 0.0
+        pf = round(gross_profit_r / gross_loss_r, 2) if gross_loss_r > 0 else (99.0 if gross_profit_r > 0 else 0.0)
+        pc = None
+        if not wins.empty and len(wins) >= 2:
+            median_win = float(wins['Total_Campaign_R'].median())
+            pc = round(median_win / aw, 2) if aw > 0 else None
+        max_loss = float(abs(losses['Total_Campaign_R'].min())) if not losses.empty else 0.0
         return {
             "win_rate": wr,
-            "adj_rr": aw / al if al > 0 else 0,
-            "expectancy_r": (wr * aw) - ((1 - wr) * al),
-            "total_pnl": df['pnl_usd'].sum(),
-            "total_r": df['Total_Campaign_R'].sum(),
+            "adj_rr": round(aw / al, 2) if al > 0 else 0,
+            "expectancy_r": round((wr * aw) - ((1 - wr) * al), 2),
+            "total_pnl": float(df['pnl_usd'].sum()),
+            "total_r": float(df['Total_Campaign_R'].sum()),
             "count": len(df),
+            "avg_win_r": round(aw, 2),
+            "avg_loss_r": round(al, 2),
+            "profit_factor": pf,
+            "payoff_consistency": pc,
+            "max_loss_r": round(max_loss, 2),
         }
 
     if not camp_df.empty:
@@ -355,10 +374,14 @@ else:
         countable_df = camp_df[camp_df['stat_bucket'].apply(ec.is_stat_countable)]
         disc_df = camp_df[camp_df['stat_bucket'].apply(ec.is_discretionary_bucket)]
         algo_df = camp_df[camp_df['stat_bucket'] == ec.STAT_BUCKET_ALGO]
+        ep_df   = camp_df[camp_df['stat_bucket'] == 'EP_MANUAL']
+        vcp_df  = camp_df[camp_df['stat_bucket'] == 'VCP_MANUAL']
 
         combined_stats = _bucket_stats(countable_df)
         disc_stats = _bucket_stats(disc_df)
         algo_stats = _bucket_stats(algo_df)
+        ep_stats   = _bucket_stats(ep_df)
+        vcp_stats  = _bucket_stats(vcp_df)
 
         win_rate = combined_stats["win_rate"]
         adj_rr = combined_stats["adj_rr"]
@@ -366,9 +389,8 @@ else:
         total_pnl_net = camp_df['pnl_usd'].sum()
         total_r_net = camp_df['Total_Campaign_R'].sum()
     else:
-        combined_stats = disc_stats = algo_stats = {"win_rate": 0, "adj_rr": 0,
-            "expectancy_r": 0, "total_pnl": 0, "total_r": 0, "count": 0}
-        disc_df = algo_df = countable_df = pd.DataFrame()
+        combined_stats = disc_stats = algo_stats = ep_stats = vcp_stats = _EMPTY_BUCKET.copy()
+        disc_df = algo_df = countable_df = ep_df = vcp_df = pd.DataFrame()
         win_rate, adj_rr, expectancy_r, total_pnl_net, total_r_net = 0, 0, 0, 0, 0
 
     open_dict = actual_open_trades.to_dict('records') if not actual_open_trades.empty else []
@@ -794,6 +816,123 @@ else:
             st.info("No open positions to display.")
 
     with tabs[1]:
+        # ── Trader Edge Panel ─────────────────────────────────────────────────
+        st.subheader("📊 Trader Edge Panel")
+        st.caption("כל מדד מסוכם לפי scope עם פרשנות מינרביני והחלטה.")
+
+        if not camp_df.empty:
+            def _sizing_eff(df):
+                if df.empty or target_risk_usd <= 0:
+                    return None
+                v = df[df['original_campaign_risk'] > 0]
+                return float((v['original_campaign_risk'] / target_risk_usd).mean()) if not v.empty else None
+
+            _se_disc = _sizing_eff(disc_df)
+            _se_ep   = _sizing_eff(ep_df)
+            _se_vcp  = _sizing_eff(vcp_df)
+
+            def _fr(v): return f"{v:.2f}R" if v is not None else "—"
+            def _fpct(v): return f"{v*100:.1f}%" if v is not None else "—"
+            def _fx(v): return f"{v:.2f}x" if v is not None else "—"
+            def _fusd(v): return f"${v:+,.0f}" if v is not None else "—"
+            def _fv(v): return f"{v:.2f}" if v is not None else "—"
+
+            _panel_rows = [
+                ("N (עסקאות)",         disc_stats["count"],             ep_stats["count"],             vcp_stats["count"],             algo_stats["count"]),
+                ("Win Rate",           _fpct(disc_stats["win_rate"]),   _fpct(ep_stats["win_rate"]),   _fpct(vcp_stats["win_rate"]),   "—"),
+                ("Avg Win R",          _fr(disc_stats["avg_win_r"]),    _fr(ep_stats["avg_win_r"]),    _fr(vcp_stats["avg_win_r"]),    "—"),
+                ("Avg Loss R",         _fr(disc_stats["avg_loss_r"]),   _fr(ep_stats["avg_loss_r"]),   _fr(vcp_stats["avg_loss_r"]),   "—"),
+                ("W/L Ratio",          _fv(disc_stats["adj_rr"]),       _fv(ep_stats["adj_rr"]),       _fv(vcp_stats["adj_rr"]),       "—"),
+                ("Expectancy",         _fr(disc_stats["expectancy_r"]), _fr(ep_stats["expectancy_r"]), _fr(vcp_stats["expectancy_r"]), "—"),
+                ("Profit Factor",      _fv(disc_stats["profit_factor"]),_fv(ep_stats["profit_factor"]),_fv(vcp_stats["profit_factor"]),"—"),
+                ("Payoff Consistency", _fv(disc_stats["payoff_consistency"]) if disc_stats["payoff_consistency"] else "—",
+                                       _fv(ep_stats["payoff_consistency"]) if ep_stats["payoff_consistency"] else "—",
+                                       _fv(vcp_stats["payoff_consistency"]) if vcp_stats["payoff_consistency"] else "—", "—"),
+                ("Max Loss R",         _fr(disc_stats["max_loss_r"]),   _fr(ep_stats["max_loss_r"]),   _fr(vcp_stats["max_loss_r"]),   "—"),
+                ("Sizing Efficiency",  _fx(_se_disc) if _se_disc else "—", _fx(_se_ep) if _se_ep else "—", _fx(_se_vcp) if _se_vcp else "—", "—"),
+                ("Net PnL ($)",        _fusd(disc_stats["total_pnl"]),  _fusd(ep_stats["total_pnl"]),  _fusd(vcp_stats["total_pnl"]),  _fusd(algo_stats["total_pnl"])),
+            ]
+            _panel_df = pd.DataFrame(_panel_rows, columns=["מדד", "ידני (Disc)", "EP", "VCP", "ALGO"])
+            st.dataframe(_panel_df, use_container_width=True, hide_index=True)
+
+            # ── Decision Matrix for Manual scope ─────────────────────────────
+            st.markdown("#### 🎯 Decision Matrix — ידני")
+            _dm1, _dm2 = st.columns(2)
+
+            with _dm1:
+                _e = disc_stats["expectancy_r"]
+                _n = disc_stats["count"]
+                if _e < 0:
+                    st.error(f"🚨 Expectancy {_e:.2f}R — שלילי. עצור הגדלת סיכון מיידית.")
+                elif _e < 0.25:
+                    st.warning(f"⚠️ Expectancy {_e:.2f}R (N={_n}) — Edge חלש. פעל בסיכון מינימלי.")
+                elif _e >= 0.60 and _n >= 30:
+                    st.success(f"🔥 Expectancy {_e:.2f}R (N={_n}) — חזק. ניתן לשקול הגדלה הדרגתית.")
+                elif _e >= 0.60:
+                    st.info(f"✅ Expectancy {_e:.2f}R — טוב אך N={_n} קטן. אל תגדיל עדיין.")
+                else:
+                    st.success(f"✅ Expectancy {_e:.2f}R (N={_n}) — תקין. המשך בגודל רגיל.")
+
+                _wlr = disc_stats["adj_rr"]
+                if _wlr >= 2.0:
+                    st.success(f"🔥 W/L Ratio {_wlr:.2f}:1 — חזק. שמור על חיתוך הפסדים.")
+                elif _wlr >= 1.5:
+                    st.success(f"✅ W/L Ratio {_wlr:.2f}:1 — טוב.")
+                elif _wlr >= 1.2:
+                    st.warning(f"⚠️ W/L Ratio {_wlr:.2f}:1 — בינוני. שפר ניהול רווחים.")
+                else:
+                    st.error(f"🚨 W/L Ratio {_wlr:.2f}:1 — אין Edge ברור. עצור הגדלה.")
+
+                _pf = disc_stats["profit_factor"]
+                if _pf >= 1.7:
+                    st.success(f"🔥 Profit Factor {_pf:.2f} — חזק.")
+                elif _pf >= 1.3:
+                    st.info(f"✅ Profit Factor {_pf:.2f} — תקין.")
+                elif _pf >= 1.0:
+                    st.warning(f"⚠️ Profit Factor {_pf:.2f} — חלש. שפר או צמצם.")
+                else:
+                    st.error(f"🚨 Profit Factor {_pf:.2f} — מפסיד. בדוק דחוף.")
+
+            with _dm2:
+                _ml = disc_stats["max_loss_r"]
+                if _ml > 1.25:
+                    st.error(f"🚨 Max Loss {_ml:.2f}R — חריגת סטופ. בדוק ביצוע.")
+                elif _ml > 1.0:
+                    st.warning(f"⚠️ Max Loss {_ml:.2f}R — גבולי. לבדוק.")
+                else:
+                    st.success(f"✅ Max Loss {_ml:.2f}R — בשליטה.")
+
+                _pc = disc_stats["payoff_consistency"]
+                if _pc is not None:
+                    if _pc >= 0.70:
+                        st.success(f"✅ Payoff Consistency {_pc:.2f} — עקבי, לא תלוי בחריגים.")
+                    elif _pc >= 0.40:
+                        st.info(f"💡 Payoff Consistency {_pc:.2f} — סביר.")
+                    else:
+                        st.warning(f"⚠️ Payoff Consistency {_pc:.2f} — תוצאות תלויות בחריגים.")
+
+                if _se_disc is not None:
+                    if _se_disc < 0.60:
+                        st.warning(f"📉 Sizing Efficiency {_se_disc:.2f}x — נמוך מדי. הגדל גודל בכניסות עתידיות.")
+                    elif _se_disc < 0.85:
+                        st.info(f"💡 Sizing Efficiency {_se_disc:.2f}x — Undersized. שפר בהדרגה.")
+                    elif _se_disc <= 1.15:
+                        st.success(f"✅ Sizing Efficiency {_se_disc:.2f}x — אידיאלי.")
+                    elif _se_disc <= 1.40:
+                        st.warning(f"⚠️ Sizing Efficiency {_se_disc:.2f}x — מוגדל. עקוב.")
+                    else:
+                        st.error(f"🚨 Sizing Efficiency {_se_disc:.2f}x — חריגה. בדוק דחוף.")
+
+            _algo_drag = algo_stats["total_pnl"]
+            _algo_msg = f"🤖 ALGO Drag: ${_algo_drag:+,.0f} | {algo_stats['count']} קמפיינים — מנוהל חיצונית. לא לערבב עם ידני בסטטיסטיקה."
+            if _algo_drag < -200:
+                st.warning(_algo_msg)
+            else:
+                st.info(_algo_msg)
+        else:
+            st.info("אין קמפיינים סגורים עדיין.")
+
+        st.markdown("---")
         if not camp_df.empty:
             # ── סטטיסטיקות נפרדות: Discretionary / ALGO / Combined ─────────────
             st.subheader("📊 ביצועים לפי דלי סטטיסטיקה")
