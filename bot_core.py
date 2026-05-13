@@ -9,10 +9,23 @@ from supabase import create_client
 from dotenv import load_dotenv
 
 load_dotenv()
-TOKEN    = os.getenv("TELEGRAM_BOT_TOKEN")
-ADMIN_ID = os.getenv("TELEGRAM_ADMIN_ID")
+
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+if not TOKEN:
+    raise SystemExit("TELEGRAM_BOT_TOKEN is not set")
+
+_admin_raw = os.getenv("TELEGRAM_ADMIN_ID")
+try:
+    ADMIN_ID = int(_admin_raw)
+except (TypeError, ValueError):
+    raise SystemExit(f"TELEGRAM_ADMIN_ID must be an integer, got {_admin_raw!r}")
+
+_supabase_url = os.getenv("SUPABASE_URL")
+_supabase_key = os.getenv("SUPABASE_KEY")
+if not _supabase_url or not _supabase_key:
+    raise SystemExit("SUPABASE_URL and SUPABASE_KEY must be set")
 
 bot      = telebot.TeleBot(TOKEN)
-supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+supabase = create_client(_supabase_url, _supabase_key)
 user_state: dict = {}
 RTL = "‏"
