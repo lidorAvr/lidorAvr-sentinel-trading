@@ -226,9 +226,9 @@ def _build_heat_factors(s9: dict, m21: dict, open_r_bonus: float) -> list:
             factors.append(f"▲ שיפור: S9={s9_wr_pct:.0f}% מעל M21={m21_wr_pct:.0f}%")
         else:
             factors.append(f"▼ ירידה: S9={s9_wr_pct:.0f}% מתחת M21={m21_wr_pct:.0f}%")
-    if open_r_bonus >= 5:
+    if open_r_bonus > 0:
         factors.append(f"▲ פוזיציות פתוחות: +{open_r_bonus:.0f} נקודות")
-    elif open_r_bonus <= -8:
+    elif open_r_bonus < 0:
         factors.append(f"▼ פוזיציות פתוחות בהפסד: {open_r_bonus:.0f} נקודות")
     return factors[:5]
 

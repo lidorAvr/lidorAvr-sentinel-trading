@@ -189,17 +189,10 @@ def fmt_adaptive_risk_block(risk_rec: dict) -> str:
     elif risk_rec['loss_streak'] > 0:
         lines.append(f"{RTL}  ▸ ⚠️ רצף הפסדים: `{risk_rec['loss_streak']}` עסקאות")
 
-    # Heat factors (new field)
+    # Heat factors — includes open position adjustment if nonzero (no separate display needed)
     factors = risk_rec.get("heat_factors", [])
-    for f_line in factors[:3]:
+    for f_line in factors[:4]:
         lines.append(f"{RTL}  ▸ {f_line}")
-
-    # Open position adjustment
-    bonus = risk_rec.get('open_r_bonus', 0)
-    if bonus > 0:
-        lines.append(f"{RTL}  ▸ 🟢 פוזיציות פתוחות רווחיות: `+{bonus:.0f}` נקודות")
-    elif bonus < -2:
-        lines.append(f"{RTL}  ▸ 🔴 פוזיציות פתוחות בהפסד: `{bonus:.0f}` נקודות")
 
     curr_pct = risk_rec['current_risk_pct']
     rec_pct  = risk_rec['recommended_risk_pct']

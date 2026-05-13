@@ -166,6 +166,7 @@ def handle_market_regime(chat_id):
         acc_size, _target_risk_usd_regime, nav_stale_label = get_nav_and_risk(account_settings)
 
         exp = {"ALGO": 0, "VCP": 0, "EP": 0, "OTHER": 0}
+        open_r_regime = []
         if not open_pos.empty:
             for _, row in open_pos.iterrows():
                 sym, setup = row["symbol"], str(row["setup_type"]).upper()
@@ -175,6 +176,13 @@ def handle_market_regime(chat_id):
                     exp[setup] += val
                 else:
                     exp["OTHER"] += val
+                open_pnl = (curr - float(row["price"])) * float(row["quantity"])
+                init_sl = float(row.get("initial_stop", 0))
+                base_price = float(row.get("base_price", row["price"]))
+                base_qty = float(row.get("base_qty", row["quantity"]))
+                orig_risk = (base_price - init_sl) * base_qty if init_sl > 0 and init_sl < base_price else 0
+                if orig_risk > 0:
+                    open_r_regime.append(open_pnl / orig_risk)
 
         total_exp = sum(exp.values())
         total_pct = (total_exp / acc_size) * 100 if acc_size > 0 else 0
@@ -186,7 +194,10 @@ def handle_market_regime(chat_id):
         try:
             current_risk_pct = float(account_settings.get("risk_pct_input", 0.5))
             closed_camps = are.compute_closed_campaigns(df)
-            risk_rec = are.compute_adaptive_risk(closed_camps, current_risk_pct, acc_size)
+            risk_rec = are.compute_adaptive_risk(
+                closed_camps, current_risk_pct, acc_size,
+                open_r_list=open_r_regime or None,
+            )
             rep += tf.fmt_adaptive_risk_block(risk_rec)
         except Exception:
             pass
