@@ -12,12 +12,12 @@ adaptive_risk_engine.py
 """
 
 from __future__ import annotations
-import json, os, time
+import json, math, os, time
 from datetime import datetime
 import pandas as pd
 import engine_core as ec
 
-RISK_LADDER = [0.35, 0.50, 0.75, 1.00, 1.25, 1.50, 2.00, 2.50]
+RISK_LADDER = [0.25, 0.40, 0.60, 0.85, 1.15, 1.50, 2.00]  # uniform step cadence, removes non-monotonic 2.50 outlier
 RECOMMENDATIONS_LOG_FILE = "risk_recommendations.json"
 RISK_JOURNAL_FILE = "risk_journal.json"
 SENTINEL_CONFIG_FILE = "sentinel_config.json"
@@ -188,7 +188,7 @@ def _window_stats(camps: list) -> dict:
     if gross_loss > 0:
         pf = round(gross_profit / gross_loss, 2)
     elif gross_profit > 0:
-        pf = 2.0
+        pf = math.inf
     else:
         pf = 0.0
     loss_streak = win_streak = 0
@@ -209,7 +209,7 @@ def _window_heat_score(stats: dict) -> float:
 
     Components:
       base       = Win Rate × 100
-      payoff     = +24 at Wizard threshold (≥3.0), graded down to -12 below 0.8
+      payoff     = +24 at Wizard threshold (≥3.0), graded down to -15 below 0.8
       profit_factor = +12 at PF ≥ 2.5, graded down to -15 below 1.0
       loss_streak = -10/-18 at 2/3+ consecutive losers (Minervini's "cut risk fast")
     """
@@ -225,7 +225,7 @@ def _window_heat_score(stats: dict) -> float:
     elif p >= 1.5:      score += 8
     elif p >= 1.2:      score += 3
     elif p >= 1.0:      score += 1   # marginal positive
-    elif 0 < p < 0.8:   score -= 12  # was -10
+    elif 0 < p < 0.8:   score -= 15  # Mark's red line: payoff below 0.8 warrants maximum penalty
     # (0.8 ≤ p < 1.0 stays neutral — sub-1 but not catastrophic)
 
     pf = stats["pf"]
@@ -256,10 +256,11 @@ def _build_heat_factors(s9: dict, m21: dict, open_r_bonus: float) -> list:
     elif 0 < p < 1.0:
         factors.append(f"▼ Payoff Ratio (S9): {p:.1f}x — הפסד ממוצע גדול מרווח ממוצע")
     pf = s9["pf"]
+    pf_display = "∞" if math.isinf(pf) else f"{pf:.1f}x"
     if pf >= 2.0:
-        factors.append(f"▲ Profit Factor (S9): {pf:.1f}x — תיק שורי")
+        factors.append(f"▲ Profit Factor (S9): {pf_display} — תיק שורי")
     elif pf < 1.0:
-        factors.append(f"▼ Profit Factor (S9): {pf:.1f}x — הפסדות גדולות מרווחות")
+        factors.append(f"▼ Profit Factor (S9): {pf_display} — הפסדות גדולות מרווחות")
     if s9["loss_streak"] >= 3:
         factors.append(f"▼ רצף הפסד: {s9['loss_streak']} עסקאות ברצף")
     elif s9["win_streak"] >= 3:

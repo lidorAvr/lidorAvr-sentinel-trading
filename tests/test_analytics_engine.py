@@ -72,8 +72,9 @@ class TestComputePeriodAnalyticsOneTrade:
         assert result["total_r_net"] > 0
 
     def test_profit_factor_no_losses(self):
+        import math
         result = m.compute_period_analytics(self._win_df(), START, END, _ACCOUNT)
-        assert result["profit_factor"] == 99.0  # no losses → max sentinel value
+        assert math.isinf(result["profit_factor"])  # no losses → infinity (mathematically correct)
 
     def test_missing_stop_rate_full(self):
         df = _make_df([

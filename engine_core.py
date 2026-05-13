@@ -1764,7 +1764,7 @@ def _make_state(state: str, event_risk: dict, reason: str) -> dict:
 # ──────────────────────────────────────────────────────────────────────────────
 _FT_WINDOW_DAYS         = 10   # trading days after entry to evaluate
 _FT_MIN_DAYS_FOR_SCORE  = 5    # need at least this many bars before scoring
-_FT_PEAK_FULL_PCT       = 10.0 # peak gain ≥ 10% in window = full advance score
+_FT_PEAK_FULL_PCT       = 7.0  # peak gain ≥ 7% in window = full advance score (Minervini wizard threshold)
 _FT_NEW_HIGH_FULL_PCT   = 5.0  # close ≥ 5% above entry = full new-high score
 _FT_VOL_RATIO_FULL      = 1.5  # up-day vol / down-day vol ≥ 1.5 = full vol score
 

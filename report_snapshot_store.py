@@ -3,9 +3,16 @@ report_snapshot_store.py — persist and load period KPI snapshots as JSON.
 One file per period at /app/report_state/snapshots/<type>/<YYYY-MM-DD>.json.
 Enables WoW / MoM trend comparisons without a database.
 """
-import os, json
+import math, os, json
 from datetime import datetime
 from typing import Optional
+
+
+def _safe_float(v):
+    """Replace non-finite floats (inf/nan) with None for JSON serialization."""
+    if isinstance(v, float) and not math.isfinite(v):
+        return None
+    return v
 
 _BASE_DIR = "/app/report_state/snapshots"
 
@@ -29,7 +36,7 @@ def save(period_type: str, period_start: datetime, period_end: datetime,
         "campaigns_closed":      analytics.get("campaigns_closed", 0),
         "win_rate":              analytics.get("win_rate", 0),
         "expectancy_r":          analytics.get("expectancy_r", 0),
-        "profit_factor":         analytics.get("profit_factor", 0),
+        "profit_factor":         _safe_float(analytics.get("profit_factor", 0)),
         "avg_win_r":             analytics.get("avg_win_r", 0),
         "avg_loss_r":            analytics.get("avg_loss_r", 0),
         "total_r_net":           analytics.get("total_r_net", 0),

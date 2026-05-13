@@ -314,12 +314,14 @@ def _monthly_coaching_insights(a: dict) -> list:
             "קרא שוב את כללי ה-Minervini ויישם."
         )
 
-    pf = a.get("profit_factor", 0)
-    if pf >= 2.0:
-        insights.append(f"Profit Factor של {pf:.2f} — המערכת עובדת. אל תשנה setups שעובדים.")
+    import math as _math
+    pf = a.get("profit_factor") or 0  # None (no losses, loaded from snapshot) → 0
+    pf_display = "∞" if isinstance(pf, float) and _math.isinf(pf) else f"{pf:.2f}"
+    if pf >= 2.0:  # True for math.inf; False for 0 or None-coerced-to-0
+        insights.append(f"Profit Factor של {pf_display} — המערכת עובדת. אל תשנה setups שעובדים.")
     elif pf < 1.0 and a.get("campaigns_closed", 0) > 5:
         insights.append(
-            f"Profit Factor מתחת ל-1 ({pf:.2f}) — ה-system במצב הפסד. "
+            f"Profit Factor מתחת ל-1 ({pf_display}) — ה-system במצב הפסד. "
             "שקול הפחתת גודל עד שה-edge יתאושש."
         )
 

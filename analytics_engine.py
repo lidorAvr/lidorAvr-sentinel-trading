@@ -3,6 +3,7 @@ analytics_engine.py — pure-function KPI computation for weekly/monthly reports
 Takes a trades DataFrame (from Supabase) + period bounds + account state.
 No network calls, no Supabase — fully testable.
 """
+import math
 import pandas as pd
 from datetime import datetime
 from typing import Optional
@@ -49,7 +50,7 @@ def compute_period_analytics(
 
         gross_profit = wins["net_pnl"].sum()   if not wins.empty   else 0.0
         gross_loss   = abs(losses["net_pnl"].sum()) if not losses.empty else 0.0
-        profit_factor = gross_profit / gross_loss if gross_loss > 0 else 99.0
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else (math.inf if gross_profit > 0 else 0.0)
 
         total_r   = float(campaigns["net_r"].sum())
         real_pnl  = float(campaigns["net_pnl"].sum())
@@ -93,7 +94,7 @@ def compute_period_analytics(
                 "net_r":         float(grp["net_r"].sum()),
                 "win_rate":      len(g_wins) / len(grp) if grp.shape[0] else 0,
                 "avg_r":         float(grp["net_r"].mean()),
-                "profit_factor": gw_pnl / gl_pnl if gl_pnl > 0 else 99.0,
+                "profit_factor": gw_pnl / gl_pnl if gl_pnl > 0 else (math.inf if gw_pnl > 0 else 0.0),
             }
 
         return {

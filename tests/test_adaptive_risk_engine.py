@@ -725,12 +725,12 @@ class TestHeatScoreRefinements:
         assert _window_heat_score(stats) == 54.0
 
     def test_sub_one_payoff_penalty_harder(self):
-        """payoff < 0.8 should now lose 12 points (was 10)."""
+        """payoff < 0.8 should lose 15 points (Mark's red line)."""
         from adaptive_risk_engine import _window_heat_score
-        # base 50, payoff 0.5 → -12, pf 0.5 → -15 → score = 23
+        # base 50, payoff 0.5 → -15, pf 0.5 → -15 → score = 20
         stats = {"n": 10, "wr": 0.5, "avg_win": 50, "avg_loss": 100,
                  "payoff": 0.5, "pf": 0.5, "loss_streak": 0, "win_streak": 0}
-        assert _window_heat_score(stats) == 23.0
+        assert _window_heat_score(stats) == 20.0
 
     def test_loss_streak_three_penalty_harder(self):
         """loss_streak ≥ 3 now loses 18 points (was 15)."""
