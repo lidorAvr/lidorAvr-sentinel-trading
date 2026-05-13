@@ -28,6 +28,9 @@ PROFIT_CHECKPOINTS = [2.0, 3.0]  # Fire alert when open_r crosses these threshol
 DEVIATION_COOLDOWN_SEC  = 3 * 3600   # 3h cooldown for same deviation class
 GIVEBACK_COOLDOWN_SEC   = 6 * 3600   # 6h cooldown for same giveback class
 LIVE_ALERT_REPEAT_COOLDOWN = 45 * 60  # 45 min: prevents oscillation spam on non-escalating action/status changes
+DAILY_DIGEST_UTC_HOUR_START = 21     # Daily digest window: 21:00 UTC (US market close)
+DAILY_DIGEST_UTC_HOUR_END   = 22     # End of window — fires once in this hour per day
+SIZING_LEAK_THRESHOLD = 0.65         # < 65% of target risk → Sizing Leak alert (one-time)
 
 # Phase 5 — Anti-Spam: state-transition cooldowns (prevents oscillation re-alerts)
 STATE_ALERT_COOLDOWN = {
@@ -343,6 +346,76 @@ def _algo_visibility_alert(visibility_avg, n_positions):
     )
 
 
+def _sizing_leak_alert(sym, setup, sizing_ratio, target_risk_usd, original_campaign_risk):
+    RTL_M = "‏"
+    return (
+        f"{RTL_M}⚖️ *Sizing Leak — {sym}*\n"
+        f"{RTL_M}סטאפ: `{setup}` | נלקח ב-`{sizing_ratio:.2f}x` סיכון יעד\n"
+        f"{RTL_M}יעד: `${target_risk_usd:.0f}` | בפועל: `${original_campaign_risk:.0f}`\n"
+        f"{RTL_M}─────────────────\n"
+        f"{RTL_M}המשמעות: ה-Edge קיים, אבל ההון לא מנוצל מספיק.\n"
+        f"{RTL_M}לא לפעול עכשיו — לרשום כלקח לטרייד הבא מאותו Setup."
+    )
+
+
+def _daily_digest_text(rows: list, date_str: str) -> str:
+    RTL_M = "‏"
+    _state_emoji = {
+        ec.POSITION_STATE_RUNNER:            "🏃",
+        ec.POSITION_STATE_BROKEN:            "🔴",
+        ec.POSITION_STATE_DEAD_MONEY:        "⏳",
+        ec.POSITION_STATE_YELLOW_FLAG:       "🟡",
+        ec.POSITION_STATE_PROFIT_PROTECTION: "🛡️",
+        ec.POSITION_STATE_WORKING:           "✅",
+        ec.POSITION_STATE_PROVING:           "🔍",
+    }
+    _action_map = {
+        ec.POSITION_STATE_RUNNER:            "הגן על רווח",
+        ec.POSITION_STATE_BROKEN:            "בצע יציאה",
+        ec.POSITION_STATE_DEAD_MONEY:        "שקול צמצום",
+        ec.POSITION_STATE_YELLOW_FLAG:       "מעקב צמוד",
+        ec.POSITION_STATE_PROFIT_PROTECTION: "שקול הדקת סטופ",
+        ec.POSITION_STATE_WORKING:           "עקוב",
+        ec.POSITION_STATE_PROVING:           "בדוק follow-through",
+    }
+    lines = [
+        f"{RTL_M}📋 *Sentinel — סיכום יומי | {date_str}*",
+        f"{RTL_M}───────────────────",
+    ]
+    urgent = []
+    for r in rows:
+        emoji = _state_emoji.get(r["state"], "⚪")
+        action = _action_map.get(r["state"], "עקוב")
+        tag = " `[ALGO]`" if r["is_algo"] else ""
+        r_str = f"`{r['open_r']:+.1f}R`"
+        lines.append(f"{RTL_M}• *{r['sym']}*{tag} {emoji} {r_str} — {action}")
+        if r["state"] in (ec.POSITION_STATE_BROKEN, ec.POSITION_STATE_RUNNER,
+                          ec.POSITION_STATE_PROFIT_PROTECTION):
+            urgent.append(r["sym"])
+    if urgent:
+        lines.append(f"{RTL_M}───────────────────")
+        lines.append(f"{RTL_M}⚡ *נדרשת החלטה:* {', '.join(urgent)}")
+    lines.append(f"{RTL_M}───────────────────")
+    lines.append(f"{RTL_M}_(ללא פעולה נוספת? הדאשבורד עדכני)_")
+    return "\n".join(lines)
+
+
+def _send_daily_digest_if_due(state: dict, rows: list, now_ts: float) -> None:
+    """Send one daily digest at US market close (21:00–22:00 UTC), Mon–Fri only."""
+    now_utc = datetime.utcnow()
+    if now_utc.weekday() >= 5:  # Sat/Sun — market closed
+        return
+    if not (DAILY_DIGEST_UTC_HOUR_START <= now_utc.hour < DAILY_DIGEST_UTC_HOUR_END):
+        return
+    today_str = now_utc.strftime("%Y-%m-%d")
+    if state.get("last_digest_date") == today_str:
+        return
+    if not rows:
+        return
+    send_telegram(_daily_digest_text(rows, now_utc.strftime("%d/%m/%Y")))
+    state["last_digest_date"] = today_str
+
+
 def check_position_risk_thresholds(sym, setup, open_r, open_pnl_usd, target_risk_usd,
                                     is_algo, prev_state, now_ts):
     """
@@ -484,6 +557,7 @@ def main():
     total_algo_exposure = 0.0
     algo_oversight_positions = []
     new_position_state = {}
+    daily_digest_rows = []
     now_ts = datetime.utcnow().timestamp()
 
     for _, row in open_pos.iterrows():
@@ -569,7 +643,8 @@ def main():
                               "algo_loss_streak", "algo_streak_alerted_yellow",
                               "algo_streak_alerted_orange", "algo_deep_loss_alerted",
                               "last_state_alert_ts", "last_state_alert_type",
-                              "runner_decision", "runner_decision_ts"):
+                              "runner_decision", "runner_decision_ts",
+                              "sizing_leak_alerted"):
                 if carry_key in prev:
                     new_pos_entry[carry_key] = prev[carry_key]
 
@@ -710,6 +785,22 @@ def main():
             })
         # ─────────────────────────────────────────────────────────────────────
 
+        # ── Sizing Leak: one-time alert when position is undersized vs target ─
+        if (not is_algo and original_campaign_risk > 0 and target_risk_usd > 0
+                and not new_pos_entry.get("sizing_leak_alerted", False)):
+            _sizing_ratio = original_campaign_risk / target_risk_usd
+            if _sizing_ratio < SIZING_LEAK_THRESHOLD:
+                send_telegram(_sizing_leak_alert(sym, setup, _sizing_ratio,
+                                                 target_risk_usd, original_campaign_risk))
+                new_pos_entry["sizing_leak_alerted"] = True
+
+        # ── Collect row for daily digest ──────────────────────────────────────
+        daily_digest_rows.append({
+            "sym": sym, "setup": setup, "open_r": open_r,
+            "state": new_pos_entry.get("position_state", ""),
+            "is_algo": is_algo,
+        })
+
         new_position_state[campaign_id] = new_pos_entry
         
     # ── Phase 4: ALGO Oversight — portfolio-level visibility check ───────────
@@ -753,6 +844,12 @@ def main():
             
     state["positions"] = new_position_state
     state["cluster"] = {"status": cluster_status, "algo_cluster_pct": round(algo_cluster_pct, 2), "updated_at": datetime.utcnow().isoformat(), "last_alert_ts": last_cluster_alert}
+
+    # ── Daily Digest (US market close, once per day) ──────────────────────────
+    try:
+        _send_daily_digest_if_due(state, daily_digest_rows, now_ts)
+    except Exception as e:
+        print(f"Daily digest error: {e}")
 
     # --- Adaptive Risk Proactive Alert ---
     try:
