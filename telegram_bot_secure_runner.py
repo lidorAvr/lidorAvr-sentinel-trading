@@ -1,6 +1,31 @@
 import os
+import threading
 import time
 from collections import defaultdict, deque
+
+_HEARTBEAT_DIR = "/app/state"
+_HEARTBEAT_INTERVAL = 60
+
+
+def _touch_heartbeat(name: str) -> None:
+    """Write current timestamp to /app/state/{name}_last_cycle so healthchecks can verify liveness."""
+    try:
+        os.makedirs(_HEARTBEAT_DIR, exist_ok=True)
+        path = os.path.join(_HEARTBEAT_DIR, f"{name}_last_cycle")
+        with open(path, "w") as fh:
+            fh.write(str(time.time()))
+    except Exception:
+        pass
+
+
+def _start_heartbeat_thread(name: str, interval: int = _HEARTBEAT_INTERVAL) -> None:
+    """Start a daemon thread that touches the heartbeat file every `interval` seconds."""
+    def _loop():
+        while True:
+            _touch_heartbeat(name)
+            time.sleep(interval)
+    t = threading.Thread(target=_loop, daemon=True, name=f"heartbeat-{name}")
+    t.start()
 
 ADMIN_ID = os.getenv('TELEGRAM_ADMIN_ID')
 WORKDIR = os.getenv('SENTINEL_WORKDIR', '/home/orangepi/sentinel_trading')
@@ -115,6 +140,7 @@ def install_telegram_hardening():
 def main():
     if os.path.isdir(WORKDIR):
         os.chdir(WORKDIR)
+    _start_heartbeat_thread("telegram_bot")
     install_telegram_hardening()
     import telegram_bot
     telegram_bot.bot.infinity_polling()

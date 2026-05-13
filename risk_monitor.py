@@ -7,6 +7,18 @@ import xml.etree.ElementTree as ET
 import engine_core as ec
 import adaptive_risk_engine as are
 
+_HEARTBEAT_DIR = "/app/state"
+
+def _touch_heartbeat(name: str) -> None:
+    """Write current timestamp to /app/state/{name}_last_cycle so healthchecks can verify liveness."""
+    try:
+        os.makedirs(_HEARTBEAT_DIR, exist_ok=True)
+        path = os.path.join(_HEARTBEAT_DIR, f"{name}_last_cycle")
+        with open(path, "w") as fh:
+            fh.write(str(time.time()))
+    except Exception:
+        pass
+
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID = os.getenv("TELEGRAM_ADMIN_ID")
@@ -983,6 +995,8 @@ def main():
         print(f"Risk alert error: {e}")
 
     save_state(state)
+    _touch_heartbeat("risk_monitor")
+
 
 def _require_env() -> None:
     """Fail fast at startup when a critical env var is missing."""

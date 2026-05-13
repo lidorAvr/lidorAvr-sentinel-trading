@@ -13,6 +13,7 @@ services:
       - 1.1.1.1
     volumes:
       - .:/app
+      - sentinel_state:/app/state
     mem_limit: 1536m
     logging:
       driver: "json-file"
@@ -20,11 +21,11 @@ services:
         max-size: "10m"
         max-file: "5"
     healthcheck:
-      test: ["CMD", "python3", "-c", "import sys; sys.exit(0)"]
+      test: ["CMD", "python3", "-c", "import os,time,sys; p='/app/state/sentinel_bot_last_cycle'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p)<1920 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 20s
+      start_period: 30s
 
   telegram-bot:
     build: .
@@ -40,6 +41,7 @@ services:
       - 1.1.1.1
     volumes:
       - .:/app
+      - sentinel_state:/app/state
     mem_limit: 1536m
     logging:
       driver: "json-file"
@@ -47,11 +49,11 @@ services:
         max-size: "10m"
         max-file: "5"
     healthcheck:
-      test: ["CMD", "python3", "-c", "import sys; sys.exit(0)"]
+      test: ["CMD", "python3", "-c", "import os,time,sys; p='/app/state/telegram_bot_last_cycle'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p)<180 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 20s
+      start_period: 30s
 
   dashboard:
     build: .
@@ -102,11 +104,11 @@ services:
         max-size: "10m"
         max-file: "5"
     healthcheck:
-      test: ["CMD", "python3", "-c", "import risk_monitor"]
+      test: ["CMD", "python3", "-c", "import os,time,sys; p='/app/state/risk_monitor_last_cycle'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p)<720 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 20s
+      start_period: 30s
     depends_on:
       - telegram-bot
 
@@ -124,6 +126,7 @@ services:
       - 1.1.1.1
     volumes:
       - .:/app
+      - sentinel_state:/app/state
     mem_limit: 1536m
     logging:
       driver: "json-file"
@@ -131,11 +134,11 @@ services:
         max-size: "10m"
         max-file: "5"
     healthcheck:
-      test: ["CMD", "python3", "-c", "import report_scheduler"]
+      test: ["CMD", "python3", "-c", "import os,time,sys; p='/app/state/report_scheduler_last_cycle'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p)<150 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 20s
+      start_period: 30s
     depends_on:
       - telegram-bot
 

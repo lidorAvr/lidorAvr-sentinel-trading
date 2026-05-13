@@ -16,8 +16,20 @@ ISRAEL_TZ   = ZoneInfo("Asia/Jerusalem")
 LOG_FILE    = "/app/logs/sentinel_report.log"
 LOG_MAX_LINES = 2000
 
-STATE_FILE  = "/app/report_state/scheduler_state.json"
-LOOP_SEC    = 60
+STATE_FILE       = "/app/report_state/scheduler_state.json"
+LOOP_SEC         = 60
+_HEARTBEAT_DIR   = "/app/state"
+
+
+def _touch_heartbeat(name: str) -> None:
+    """Write current timestamp to /app/state/{name}_last_cycle so healthchecks can verify liveness."""
+    try:
+        os.makedirs(_HEARTBEAT_DIR, exist_ok=True)
+        path = os.path.join(_HEARTBEAT_DIR, f"{name}_last_cycle")
+        with open(path, "w") as fh:
+            fh.write(str(time.time()))
+    except Exception:
+        pass
 
 # Schedule: (weekday, hour, minute) — weekday 5 = Saturday (Python: Mon=0, Sun=6)
 _WEEKLY_WEEKDAY = 5
@@ -398,6 +410,7 @@ def main():
         except Exception as e:
             log(f"ERROR in main loop: {e}")
 
+        _touch_heartbeat("report_scheduler")
         time.sleep(LOOP_SEC)
 
 

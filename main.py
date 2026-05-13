@@ -13,6 +13,18 @@ SYNC_STATE_FILE   = "/app/ibkr_sync_state.json"
 MANUAL_TRIGGER_FILE = "/app/ibkr_manual_trigger"   # written by telegram_bot developer menu
 LOG_FILE           = "/app/logs/sentinel_main.log"
 LOG_MAX_LINES      = 2000
+_HEARTBEAT_DIR     = "/app/state"
+
+
+def _touch_heartbeat(name: str) -> None:
+    """Write current timestamp to /app/state/{name}_last_cycle so healthchecks can verify liveness."""
+    try:
+        os.makedirs(_HEARTBEAT_DIR, exist_ok=True)
+        path = os.path.join(_HEARTBEAT_DIR, f"{name}_last_cycle")
+        with open(path, "w") as fh:
+            fh.write(str(time.time()))
+    except Exception:
+        pass
 
 SYNC_START_HOUR       = 7
 SYNC_END_HOUR         = 11
@@ -156,6 +168,7 @@ if __name__ == "__main__":
         log("Telegram credentials not found in environment!")
 
     while True:
+        _touch_heartbeat("sentinel_bot")
         # ── Manual trigger (developer menu) ────────────────────────────────────
         if os.path.exists(MANUAL_TRIGGER_FILE):
             _handle_manual_trigger(t_token, c_id)
