@@ -12,7 +12,7 @@ adaptive_risk_engine.py
 """
 
 from __future__ import annotations
-import json, os
+import json, os, time
 from datetime import datetime
 import pandas as pd
 import engine_core as ec
@@ -21,6 +21,7 @@ RISK_LADDER = [0.35, 0.50, 0.75, 1.00, 1.25, 1.50, 2.00, 2.50]
 RECOMMENDATIONS_LOG_FILE = "risk_recommendations.json"
 RISK_JOURNAL_FILE = "risk_journal.json"
 SENTINEL_CONFIG_FILE = "sentinel_config.json"
+RISK_SETTLE_HOURS = 48.0  # hours to hold at new risk level before next recommendation fires
 
 
 def _closest_ladder_index(pct: float) -> int:
@@ -35,12 +36,37 @@ def update_risk_pct(new_pct: float) -> bool:
         if os.path.exists(SENTINEL_CONFIG_FILE):
             with open(SENTINEL_CONFIG_FILE, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
+        old_pct = float(cfg.get("risk_pct_input", new_pct))
         cfg["risk_pct_input"] = round(float(new_pct), 4)
+        cfg["risk_changed_ts"] = time.time()
+        cfg["risk_changed_dir"] = "up" if new_pct > old_pct else "down_fast"
         with open(SENTINEL_CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
         return True
     except Exception:
         return False
+
+
+def get_risk_settle_info() -> dict:
+    """Returns settle period status. 'active' is True for 48h after a confirmed risk change."""
+    try:
+        with open(SENTINEL_CONFIG_FILE, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        changed_ts = float(cfg.get("risk_changed_ts", 0))
+        changed_dir = cfg.get("risk_changed_dir", "")
+        changed_pct = float(cfg.get("risk_pct_input", 0))
+        if not changed_ts or not changed_dir:
+            return {"active": False, "hours_remaining": 0.0, "dir": "", "to_pct": 0.0}
+        elapsed = (time.time() - changed_ts) / 3600
+        hours_remaining = max(0.0, RISK_SETTLE_HOURS - elapsed)
+        return {
+            "active": hours_remaining > 0,
+            "hours_remaining": round(hours_remaining, 1),
+            "dir": changed_dir,
+            "to_pct": changed_pct,
+        }
+    except Exception:
+        return {"active": False, "hours_remaining": 0.0, "dir": "", "to_pct": 0.0}
 
 
 def log_risk_journal(entry: dict) -> None:

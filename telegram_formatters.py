@@ -155,7 +155,7 @@ def fmt_regime_report(regime: dict, exposure_pct: float,
     return "\n".join(lines)
 
 
-def fmt_adaptive_risk_block(risk_rec: dict) -> str:
+def fmt_adaptive_risk_block(risk_rec: dict, settle_info: dict | None = None) -> str:
     """בלוק המלצת סיכון אדפטיבי — מוצג בדוח משטר שוק ובסיכום תיק."""
     if not risk_rec.get('ok'):
         msg = risk_rec.get('message', 'אין מספיק נתונים')
@@ -206,6 +206,14 @@ def fmt_adaptive_risk_block(risk_rec: dict) -> str:
         lines.append(f"{RTL}  סיכון מוצע: `{rec_pct:.2f}%` — *ללא שינוי*")
     else:
         lines.append(f"{RTL}  סיכון מוצע: `{rec_pct:.2f}%` (`${rec_usd:,.0f}` לעסקה)")
+
+    # Settle period note — shown when user just confirmed a raise/cut within 48h
+    if settle_info and settle_info.get("active") and settle_info.get("dir") == direction:
+        hrs = settle_info["hours_remaining"]
+        lines.append(
+            f"{RTL}📌 *תקופת התבססות:* שינוי בוצע לאחרונה — "
+            f"עוד `{hrs:.0f}ש` לפני שהמלצה הבאה תישלח"
+        )
 
     # What to improve (new field)
     improve = risk_rec.get("what_to_improve", [])

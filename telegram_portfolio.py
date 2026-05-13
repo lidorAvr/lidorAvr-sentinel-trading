@@ -198,7 +198,7 @@ def handle_market_regime(chat_id):
                 closed_camps, current_risk_pct, acc_size,
                 open_r_list=open_r_regime or None,
             )
-            rep += tf.fmt_adaptive_risk_block(risk_rec)
+            rep += tf.fmt_adaptive_risk_block(risk_rec, settle_info=are.get_risk_settle_info())
         except Exception:
             pass
 
@@ -410,7 +410,7 @@ def handle_portfolio_room(chat_id):
                 closed_camps, current_risk_pct, acc_size,
                 open_r_list=open_r_vals or None,
             )
-            msg += tf.fmt_adaptive_risk_block(risk_rec)
+            msg += tf.fmt_adaptive_risk_block(risk_rec, settle_info=are.get_risk_settle_info())
         except Exception:
             pass
 

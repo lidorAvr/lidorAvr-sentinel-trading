@@ -871,7 +871,13 @@ def main():
                 and (now_ts - last_risk_ts) < 24 * 3600
             )
 
-            if not same_direction_recently:
+            # Settle gate: skip alert for 48h after user confirmed a risk change
+            settle = are.get_risk_settle_info()
+            in_settle = settle["active"] and settle["dir"] == risk_rec["direction"]
+            if in_settle:
+                print(f"Adaptive risk: in settle period ({settle['hours_remaining']:.1f}h remaining), skipping alert")
+
+            if not same_direction_recently and not in_settle:
                 rec_pct = risk_rec["recommended_risk_pct"]
                 curr_pct = risk_rec["current_risk_pct"]
                 curr_usd = risk_rec["current_risk_usd"]
