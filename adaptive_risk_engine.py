@@ -143,19 +143,132 @@ def compute_closed_campaigns(trades_df: pd.DataFrame) -> list[dict]:
     return closed
 
 
+def _window_stats(camps: list) -> dict:
+    """Compute descriptive stats for a window of closed campaigns (newest-first)."""
+    if not camps:
+        return {"n": 0, "wr": 0.0, "avg_win": 0.0, "avg_loss": 0.0,
+                "payoff": 0.0, "pf": 0.0, "loss_streak": 0, "win_streak": 0}
+    wins   = [c for c in camps if c.get("is_win")]
+    losses = [c for c in camps if not c.get("is_win")]
+    n   = len(camps)
+    wr  = len(wins) / n
+    win_pnl  = [float(c.get("total_pnl_usd", 0)) for c in wins   if float(c.get("total_pnl_usd", 0)) > 0]
+    loss_pnl = [abs(float(c.get("total_pnl_usd", 0))) for c in losses if float(c.get("total_pnl_usd", 0)) < 0]
+    avg_win  = sum(win_pnl)  / len(win_pnl)  if win_pnl  else 0.0
+    avg_loss = sum(loss_pnl) / len(loss_pnl) if loss_pnl else 0.0
+    payoff = round(avg_win / avg_loss, 2) if avg_loss > 0 and avg_win > 0 else 0.0
+    gross_profit = sum(win_pnl)
+    gross_loss   = sum(loss_pnl)
+    if gross_loss > 0:
+        pf = round(gross_profit / gross_loss, 2)
+    elif gross_profit > 0:
+        pf = 2.0
+    else:
+        pf = 0.0
+    loss_streak = win_streak = 0
+    for c in camps:
+        if c.get("is_win"):
+            if loss_streak > 0: break
+            win_streak += 1
+        else:
+            if win_streak > 0: break
+            loss_streak += 1
+    return {"n": n, "wr": round(wr, 3), "avg_win": round(avg_win, 2), "avg_loss": round(avg_loss, 2),
+            "payoff": payoff, "pf": pf, "loss_streak": loss_streak, "win_streak": win_streak}
+
+
+def _window_heat_score(stats: dict) -> float:
+    """Map window stats to a 0–100 heat score."""
+    if stats["n"] == 0:
+        return 50.0
+    score = stats["wr"] * 100
+    p = stats["payoff"]
+    if   p >= 2.5: score += 20
+    elif p >= 2.0: score += 15
+    elif p >= 1.5: score += 8
+    elif p >= 1.2: score += 3
+    elif 0 < p < 0.8: score -= 10
+    pf = stats["pf"]
+    if   pf >= 2.5: score += 12
+    elif pf >= 2.0: score += 8
+    elif pf >= 1.5: score += 4
+    elif pf < 1.0:  score -= 15
+    if   stats["loss_streak"] >= 3: score -= 15
+    elif stats["loss_streak"] >= 2: score -= 8
+    return min(100.0, max(0.0, score))
+
+
+def _build_heat_factors(s9: dict, m21: dict, open_r_bonus: float) -> list:
+    """Build ordered list of factors explaining the heat score."""
+    factors = []
+    s9_wr_pct  = s9["wr"]  * 100
+    m21_wr_pct = m21["wr"] * 100
+    if s9_wr_pct >= 60:
+        factors.append(f"▲ Win Rate (S9): {s9_wr_pct:.0f}% — תורם חיובי")
+    elif s9_wr_pct < 50 and s9["n"] > 0:
+        factors.append(f"▼ Win Rate (S9): {s9_wr_pct:.0f}% — גורר ציון למטה")
+    p = s9["payoff"]
+    if p >= 1.5:
+        factors.append(f"▲ Payoff Ratio (S9): {p:.1f}x — ניצחונות גדולים מהפסדים")
+    elif 0 < p < 1.0:
+        factors.append(f"▼ Payoff Ratio (S9): {p:.1f}x — הפסד ממוצע גדול מרווח ממוצע")
+    pf = s9["pf"]
+    if pf >= 2.0:
+        factors.append(f"▲ Profit Factor (S9): {pf:.1f}x — תיק שורי")
+    elif pf < 1.0:
+        factors.append(f"▼ Profit Factor (S9): {pf:.1f}x — הפסדות גדולות מרווחות")
+    if s9["loss_streak"] >= 3:
+        factors.append(f"▼ רצף הפסד: {s9['loss_streak']} עסקאות ברצף")
+    elif s9["win_streak"] >= 3:
+        factors.append(f"▲ רצף רווח: {s9['win_streak']} עסקאות ברצף")
+    if m21["n"] >= 5 and abs(s9_wr_pct - m21_wr_pct) >= 15:
+        if s9_wr_pct > m21_wr_pct:
+            factors.append(f"▲ שיפור: S9={s9_wr_pct:.0f}% מעל M21={m21_wr_pct:.0f}%")
+        else:
+            factors.append(f"▼ ירידה: S9={s9_wr_pct:.0f}% מתחת M21={m21_wr_pct:.0f}%")
+    if open_r_bonus >= 5:
+        factors.append(f"▲ פוזיציות פתוחות: +{open_r_bonus:.0f} נקודות")
+    elif open_r_bonus <= -8:
+        factors.append(f"▼ פוזיציות פתוחות בהפסד: {open_r_bonus:.0f} נקודות")
+    return factors[:5]
+
+
+def _build_what_to_improve(heat_score: float, s9: dict, direction: str) -> list:
+    """Specific improvements that would lift the score to the next level."""
+    items = []
+    if direction not in ("down_fast", "hold"):
+        return items
+    target = 40.0 if direction == "down_fast" else 60.0
+    gap = target - heat_score
+    items.append(f"ציון נדרש: {target:.0f}% | כרגע: {heat_score:.0f}% | פער: {gap:.0f}")
+    s9_wr = s9["wr"] * 100
+    if direction == "down_fast" and s9_wr < 50 and s9["n"] > 0:
+        wins_needed = max(1, round((50 - s9_wr) * s9["n"] / 100))
+        items.append(f"Win Rate S9: {s9_wr:.0f}% → נדרש ≥50% (עוד {wins_needed} ניצחון)")
+    elif direction == "hold" and s9_wr < 60:
+        items.append(f"Win Rate S9: {s9_wr:.0f}% → נדרש ≥60% לסיגנל עלייה")
+    if s9["loss_streak"] >= 2:
+        items.append(f"רצף הפסד פעיל ({s9['loss_streak']}) — ניצחון אחד יאפס")
+    if 0 < s9["payoff"] < 1.2:
+        items.append(f"Payoff Ratio: {s9['payoff']:.1f}x → נדרש ≥1.2x לבונוס")
+    return items[:4]
+
+
 def compute_adaptive_risk(
-    closed_campaigns: list[dict],
+    closed_campaigns: list,
     current_risk_pct: float,
     nav: float,
-    open_r_list: list[float] | None = None,
+    open_r_list=None,
+    open_positions=None,
 ) -> dict:
     """
-    מחשב המלצת סיכון אדפטיבית.
+    Compute adaptive risk recommendation using multi-window scoring.
 
-    closed_campaigns: פלט של compute_closed_campaigns (ממוין חדש→ישן)
-    current_risk_pct: אחוז סיכון נוכחי מ-sentinel_config.json (למשל 0.5)
-    nav: NAV נוכחי בדולרים
-    open_r_list: רשימת R צף לכל פוזיציה פתוחה (חיובי = רווח, שלילי = הפסד)
+    closed_campaigns: output of compute_closed_campaigns (newest-first)
+    current_risk_pct: current risk % from sentinel_config.json
+    nav: current NAV in USD
+    open_r_list: legacy list of open R floats (positive-only bonus for backward compat)
+    open_positions: list of {"open_r": float, "is_algo": bool} — ALGO counted at 0.25x
     """
     if len(closed_campaigns) < 3:
         return {
@@ -164,11 +277,6 @@ def compute_adaptive_risk(
             "message": f"רק {len(closed_campaigns)} קמפיינים סגורים — נדרשות לפחות 3 לניתוח",
         }
 
-    recent_50 = closed_campaigns[:50]
-    recent_10 = closed_campaigns[:10]
-
-    # Discretionary = countable (excludes ALGO + DATA_INCOMPLETE so WR matches dashboard).
-    # Falls back to setup_type filter on legacy dicts without stat_bucket.
     def _is_disc(c: dict) -> bool:
         bucket = c.get("stat_bucket")
         if bucket:
@@ -176,122 +284,115 @@ def compute_adaptive_risk(
         return c.get("setup_type", "").upper() != "ALGO"
 
     disc_camps = [c for c in closed_campaigns if _is_disc(c)]
-    if disc_camps:
-        actual_recent_10 = disc_camps[:10]
-        actual_recent_50 = disc_camps[:50]
+    if not disc_camps:
+        disc_camps = closed_campaigns[:50]
+
+    # Multi-window scoring on disc-only campaigns (short=50%, medium=30%, long=20%)
+    s9_stats  = _window_stats(disc_camps[:9])
+    m21_stats = _window_stats(disc_camps[:21])
+    l50_stats = _window_stats(disc_camps[:50])
+
+    s9_score  = _window_heat_score(s9_stats)
+    m21_score = _window_heat_score(m21_stats)
+    l50_score = _window_heat_score(l50_stats)
+
+    base_heat = s9_score * 0.50 + m21_score * 0.30 + l50_score * 0.20
+
+    # Open position adjustment — ALGO positions at 0.25x weight
+    disc_open_r = 0.0
+    algo_open_r = 0.0
+
+    if open_positions:
+        for op in open_positions:
+            r = float(op.get("open_r", 0))
+            if op.get("is_algo"):
+                algo_open_r += r
+            else:
+                disc_open_r += r
+        combined_open_r = disc_open_r + algo_open_r * 0.25
+    elif open_r_list:
+        # Legacy path: bonus-only (positive R only), no ALGO separation
+        combined_open_r = sum(float(r) for r in open_r_list if r > 0)
     else:
-        actual_recent_10 = recent_10
-        actual_recent_50 = recent_50
+        combined_open_r = 0.0
 
-    # Weighted Win Rate: last 10 weight=2, rest weight=1; ALGO at 0.25x (observer only)
-    weighted_wins = 0.0
-    weighted_total = 0.0
-    for i, c in enumerate(recent_50):
-        is_algo = c.get("setup_type", "").upper() == "ALGO"
-        base_w = 2.0 if i < 10 else 1.0
-        w = base_w * (0.25 if is_algo else 1.0)
-        weighted_wins += w * (1 if c.get("is_win") else 0)
-        weighted_total += w
+    if   combined_open_r >= 5.0:  open_r_bonus = 10.0
+    elif combined_open_r >= 2.0:  open_r_bonus = 5.0
+    elif combined_open_r >= 1.0:  open_r_bonus = 2.0
+    elif combined_open_r <= -3.0: open_r_bonus = -15.0
+    elif combined_open_r <= -1.0: open_r_bonus = -8.0
+    elif combined_open_r < 0.0:   open_r_bonus = -3.0
+    else:                         open_r_bonus = 0.0
 
-    weighted_wr = weighted_wins / weighted_total if weighted_total > 0 else 0.0
+    heat_score = min(100.0, max(0.0, base_heat + open_r_bonus))
 
-    # Win rates shown to user — from discretionary only (no ALGO noise)
-    recent_10_wr = (
-        sum(1 for c in actual_recent_10 if c.get("is_win")) / len(actual_recent_10)
-    ) if actual_recent_10 else 0.0
-    all_50_wr = (
-        sum(1 for c in actual_recent_50 if c.get("is_win")) / len(actual_recent_50)
-    ) if actual_recent_50 else 0.0
+    s9_loss_streak = s9_stats["loss_streak"]
+    s9_win_streak  = s9_stats["win_streak"]
 
-    # Streak Detection: discretionary only — ALGO losses should not penalise the trader
-    streak_source = disc_camps[:50] if disc_camps else recent_50
-    win_streak = 0
-    loss_streak = 0
-    for c in streak_source:
-        if c.get("is_win"):
-            if loss_streak > 0:
-                break
-            win_streak += 1
-        else:
-            if win_streak > 0:
-                break
-            loss_streak += 1
-
-    heat_score = weighted_wr * 100  # 0–100
-
-    # Payoff quality factor: are recent wins bigger than historical wins?
-    wins_10 = [c["total_pnl_usd"] for c in actual_recent_10 if c.get("is_win") and c.get("total_pnl_usd", 0) > 0]
-    wins_50 = [c["total_pnl_usd"] for c in actual_recent_50 if c.get("is_win") and c.get("total_pnl_usd", 0) > 0]
-    avg_win_10 = sum(wins_10) / len(wins_10) if wins_10 else 0.0
-    avg_win_50 = sum(wins_50) / len(wins_50) if wins_50 else 0.0
-    payoff_ratio = avg_win_10 / avg_win_50 if avg_win_50 > 0 and avg_win_10 > 0 else 1.0
-
-    payoff_delta = 0.0
-    if len(wins_10) >= 2:
-        if payoff_ratio >= 1.5:
-            payoff_delta = 10.0   # Recent wins 50%+ above historical → hot streak
-        elif payoff_ratio >= 1.2:
-            payoff_delta = 5.0
-        elif payoff_ratio < 0.6:
-            payoff_delta = -10.0  # Recent wins shrinking → cooling off
-
-    # Open position bonus: running winners are strong evidence of a hot period
-    open_r_bonus = 0.0
-    if open_r_list:
-        running_r = sum(r for r in open_r_list if r > 0)
-        if running_r >= 5.0:
-            open_r_bonus = 10.0
-        elif running_r >= 2.0:
-            open_r_bonus = 5.0
-        elif running_r >= 1.0:
-            open_r_bonus = 2.0
-
-    heat_score = min(100.0, max(0.0, heat_score + payoff_delta + open_r_bonus))
-
-    if heat_score >= 60 and loss_streak < 3:
+    if heat_score >= 60 and s9_loss_streak < 2:
         heat_label, heat_color, direction = "חזק", "🔥", "up"
-    elif heat_score < 40 or loss_streak >= 3:
+    elif heat_score < 40 or s9_loss_streak >= 3:
         heat_label, heat_color, direction = "חלש", "❄️", "down_fast"
     else:
         heat_label, heat_color, direction = "נייטרל", "➖", "hold"
 
     curr_idx = _closest_ladder_index(current_risk_pct)
     if direction == "up":
-        new_idx = min(curr_idx + 1, len(RISK_LADDER) - 1)
+        new_idx   = min(curr_idx + 1, len(RISK_LADDER) - 1)
         step_type = "העלאת סיכון הדרגתית"
     elif direction == "down_fast":
-        new_idx = max(curr_idx - 2, 0)
+        new_idx   = max(curr_idx - 2, 0)
         step_type = "צמצום סיכון מהיר"
     else:
-        new_idx = curr_idx
+        new_idx   = curr_idx
+        step_type = "שמירה על רמה קיימת"
+
+    # Bug fix: if the ladder index didn't actually move, treat as hold — no alert should fire
+    if new_idx == curr_idx and direction != "hold":
+        direction = "hold"
         step_type = "שמירה על רמה קיימת"
 
     rec_pct = RISK_LADDER[new_idx]
     rec_usd = round(nav * rec_pct / 100, 0)
     curr_usd = round(nav * current_risk_pct / 100, 0)
 
+    heat_factors    = _build_heat_factors(s9_stats, m21_stats, open_r_bonus)
+    what_to_improve = _build_what_to_improve(heat_score, s9_stats, direction)
+
     result = {
         "ok": True,
         "error": None,
-        "n_trades": len(recent_50),
-        "n_used_10": len(actual_recent_10),
-        "n_used_50": len(actual_recent_50),
-        "heat_score": round(heat_score, 1),
-        "heat_label": heat_label,
-        "heat_color": heat_color,
-        "win_streak": win_streak,
-        "loss_streak": loss_streak,
-        "recent_10_wr": round(recent_10_wr * 100, 1),
-        "all_50_wr": round(all_50_wr * 100, 1),
-        "payoff_ratio": round(payoff_ratio, 2),
+        # Backward-compatible keys (mapped from multi-window data)
+        "n_trades":    len(disc_camps),
+        "n_used_10":   s9_stats["n"],
+        "n_used_50":   l50_stats["n"],
+        "heat_score":  round(heat_score, 1),
+        "heat_label":  heat_label,
+        "heat_color":  heat_color,
+        "win_streak":  s9_win_streak,
+        "loss_streak": s9_loss_streak,
+        "recent_10_wr": round(s9_stats["wr"] * 100, 1),
+        "all_50_wr":    round(l50_stats["wr"] * 100, 1),
+        "payoff_ratio": s9_stats["payoff"],
         "open_r_bonus": round(open_r_bonus, 1),
-        "current_risk_pct": current_risk_pct,
-        "current_risk_usd": curr_usd,
+        "current_risk_pct":     current_risk_pct,
+        "current_risk_usd":     curr_usd,
         "recommended_risk_pct": rec_pct,
         "recommended_risk_usd": rec_usd,
-        "direction": direction,
-        "step_type": step_type,
+        "direction":   direction,
+        "step_type":   step_type,
         "generated_at": datetime.now().isoformat(),
+        # New multi-window breakdown
+        "s9_score":    round(s9_score, 1),
+        "m21_score":   round(m21_score, 1),
+        "l50_score":   round(l50_score, 1),
+        "s9_stats":    s9_stats,
+        "m21_stats":   m21_stats,
+        "l50_stats":   l50_stats,
+        "disc_open_r": round(disc_open_r, 2),
+        "algo_open_r": round(algo_open_r, 2),
+        "heat_factors":     heat_factors,
+        "what_to_improve":  what_to_improve,
     }
     _log_recommendation(result)
     return result

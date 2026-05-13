@@ -163,37 +163,63 @@ def fmt_adaptive_risk_block(risk_rec: dict) -> str:
     lines = [f"\n{RTL}{SEP}", f"{RTL}🎯 *המלצת סיכון אדפטיבי*",
              fmt_actionability("review_required")]
     lines.append(f"{RTL}חום מסחר: {risk_rec['heat_color']} *{risk_rec['heat_label']}* (ציון: `{risk_rec['heat_score']:.0f}%`)")
+
+    # Multi-window breakdown (new fields — shown if present)
+    s9_sc  = risk_rec.get("s9_score")
+    m21_sc = risk_rec.get("m21_score")
+    l50_sc = risk_rec.get("l50_score")
+    if s9_sc is not None:
+        lines.append(f"{RTL}  ▸ S9: `{s9_sc:.0f}` × 50% | M21: `{m21_sc:.0f}` × 30% | L50: `{l50_sc:.0f}` × 20%")
+
+    # Win rate per window
+    s9_wr  = risk_rec.get("recent_10_wr", 0)  # backward-compat: mapped from S9
+    l50_wr = risk_rec.get("all_50_wr", 0)
+    n50 = risk_rec.get('n_used_50', risk_rec.get('n_trades', 0))
+    if risk_rec.get("s9_stats") and risk_rec.get("l50_stats"):
+        n9  = risk_rec["s9_stats"]["n"]
+        n50 = risk_rec["l50_stats"]["n"]
+        lines.append(f"{RTL}  ▸ Win Rate — S9 ({n9}): `{s9_wr:.0f}%` | L50 ({n50}): `{l50_wr:.0f}%`")
+    else:
+        n10 = risk_rec.get('n_used_10', min(10, risk_rec.get('n_trades', 10)))
+        lines.append(f"{RTL}  ▸ שיעור הצלחה ({n10} אחרונות): `{s9_wr:.0f}%`")
+
+    # Streak
     if risk_rec['win_streak'] > 0:
         lines.append(f"{RTL}  ▸ רצף רווחים: `{risk_rec['win_streak']}` עסקאות")
     elif risk_rec['loss_streak'] > 0:
         lines.append(f"{RTL}  ▸ ⚠️ רצף הפסדים: `{risk_rec['loss_streak']}` עסקאות")
-    n10 = risk_rec.get('n_used_10', min(10, risk_rec.get('n_trades', 10)))
-    n50 = risk_rec.get('n_used_50', min(50, risk_rec.get('n_trades', 50)))
-    if n10 == n50:
-        lines.append(f"{RTL}  ▸ שיעור הצלחה ({n10} קמפיינים סגורים): `{risk_rec['recent_10_wr']:.0f}%`")
-    else:
-        lines.append(f"{RTL}  ▸ שיעור הצלחה ({n10} אחרונות): `{risk_rec['recent_10_wr']:.0f}%`")
-        lines.append(f"{RTL}  ▸ שיעור הצלחה ({n50} אחרונות): `{risk_rec['all_50_wr']:.0f}%`")
-    if risk_rec.get('payoff_ratio', 1.0) >= 1.2:
-        lines.append(f"{RTL}  ▸ 📈 ביצועי ניצחונות אחרונים: `{risk_rec['payoff_ratio']:.1f}x` מממוצע היסטורי")
-    if risk_rec.get('open_r_bonus', 0) > 0:
-        lines.append(f"{RTL}  ▸ 🟢 בונוס פוזיציות פתוחות: `+{risk_rec['open_r_bonus']:.0f}` נקודות חום")
+
+    # Heat factors (new field)
+    factors = risk_rec.get("heat_factors", [])
+    for f_line in factors[:3]:
+        lines.append(f"{RTL}  ▸ {f_line}")
+
+    # Open position adjustment
+    bonus = risk_rec.get('open_r_bonus', 0)
+    if bonus > 0:
+        lines.append(f"{RTL}  ▸ 🟢 פוזיציות פתוחות רווחיות: `+{bonus:.0f}` נקודות")
+    elif bonus < -2:
+        lines.append(f"{RTL}  ▸ 🔴 פוזיציות פתוחות בהפסד: `{bonus:.0f}` נקודות")
+
     curr_pct = risk_rec['current_risk_pct']
-    rec_pct = risk_rec['recommended_risk_pct']
+    rec_pct  = risk_rec['recommended_risk_pct']
     curr_usd = risk_rec['current_risk_usd']
-    rec_usd = risk_rec['recommended_risk_usd']
+    rec_usd  = risk_rec['recommended_risk_usd']
     direction = risk_rec['direction']
-    if direction == 'up':
-        arrow = "⬆️"
-    elif direction == 'down_fast':
-        arrow = "⬇️⬇️"
-    else:
-        arrow = "➡️"
+    arrow = "⬆️" if direction == 'up' else ("⬇️⬇️" if direction == 'down_fast' else "➡️")
     lines.append(f"\n{RTL}{arrow} *{risk_rec['step_type']}*")
     if rec_pct == curr_pct:
         lines.append(f"{RTL}  שמור על `{rec_pct:.2f}%` — `${rec_usd:,.0f}` לעסקה")
     else:
         lines.append(f"{RTL}  `{curr_pct:.2f}%` (`${curr_usd:,.0f}`) ← → `{rec_pct:.2f}%` (`${rec_usd:,.0f}`)")
+
+    # What to improve (new field)
+    improve = risk_rec.get("what_to_improve", [])
+    if improve:
+        lines.append(f"\n{RTL}🔼 לשיפור:")
+        for imp in improve[:3]:
+            lines.append(f"{RTL}  → {imp}")
+
     return "\n".join(lines)
 
 

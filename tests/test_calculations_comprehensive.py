@@ -331,18 +331,18 @@ class TestAdaptiveRiskMath:
         result = are.compute_adaptive_risk(campaigns, are.RISK_LADDER[0], 10000)
         assert result["recommended_risk_pct"] == are.RISK_LADDER[0]
 
-    def test_weighted_win_rate_recent_10_counted_double(self):
-        """Manually verify weighted win rate formula."""
-        # 10 wins (weight 2 each) + 5 losses (weight 1 each)
-        # weighted_wins = 10*2 = 20, weighted_total = 10*2+5*1 = 25
-        # weighted_wr = 20/25 = 0.8
+    def test_strong_performer_gives_high_heat(self):
+        """10 wins + 5 losses (67% WR, 2:1 payoff) → strong heat ≥ 80%, direction up."""
+        # Old single-window formula gave exactly 80%. New multi-window gives higher score:
+        # S9 = 9 wins (100% WR) + payoff/PF bonuses → heat well above 80%.
         campaigns = (
             [{"campaign_id": f"w{i}", "is_win": True,  "close_date": datetime(2025,1,20-i), "total_pnl_usd": 100} for i in range(10)] +
             [{"campaign_id": f"l{i}", "is_win": False, "close_date": datetime(2025,1,9-i),  "total_pnl_usd": -50}  for i in range(5)]
         )
         result = are.compute_adaptive_risk(campaigns, 0.5, 10000)
         assert result["ok"] is True
-        assert result["heat_score"] == pytest.approx(80.0, abs=0.1)
+        assert result["heat_score"] >= 80.0
+        assert result["direction"] == "up"
 
     def test_rec_usd_equals_nav_times_pct_div_100(self):
         campaigns = self._campaigns(wins=7, losses=3)

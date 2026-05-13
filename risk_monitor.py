@@ -558,6 +558,7 @@ def main():
     algo_oversight_positions = []
     new_position_state = {}
     daily_digest_rows = []
+    open_positions_for_risk = []
     now_ts = datetime.utcnow().timestamp()
 
     for _, row in open_pos.iterrows():
@@ -650,6 +651,7 @@ def main():
 
         # Risk Deviation / Giveback / Profit Protection Checkpoints
         is_algo = ec.is_algo_position(setup, sym)
+        open_positions_for_risk.append({"open_r": open_r, "is_algo": is_algo})
         threshold_alerts, threshold_updates = check_position_risk_thresholds(
             sym=sym, setup=setup, open_r=open_r, open_pnl_usd=open_pnl,
             target_risk_usd=target_risk_usd, is_algo=is_algo,
@@ -856,7 +858,8 @@ def main():
         current_risk_pct = float(account_settings.get("risk_pct_input", 0.5))
         nav_for_risk = float(account_settings.get("nav", acc_size))
         closed_camps = are.compute_closed_campaigns(df)
-        risk_rec = are.compute_adaptive_risk(closed_camps, current_risk_pct, nav_for_risk)
+        risk_rec = are.compute_adaptive_risk(closed_camps, current_risk_pct, nav_for_risk,
+                                             open_positions=open_positions_for_risk)
 
         if risk_rec.get("ok") and risk_rec["direction"] != "hold":
             prev_alert = state.get("risk_alert", {})
@@ -874,17 +877,33 @@ def main():
                 curr_usd = risk_rec["current_risk_usd"]
                 rec_usd = risk_rec["recommended_risk_usd"]
                 arrow = "⬆️" if risk_rec["direction"] == "up" else "⬇️⬇️"
-                heat = risk_rec["heat_score"]
-                step = risk_rec["step_type"]
+                heat  = risk_rec["heat_score"]
+                step  = risk_rec["step_type"]
+                s9_sc  = risk_rec.get("s9_score",  heat)
+                m21_sc = risk_rec.get("m21_score", heat)
+                l50_sc = risk_rec.get("l50_score", heat)
 
                 alert_text = (
                     f"{RTL}🎯 *התראת סיכון אדפטיבי*\n"
                     f"{RTL}───────────────\n"
                     f"{RTL}חום מסחר: {risk_rec['heat_color']} `{heat:.0f}%` | {step}\n"
-                    f"{RTL}רמה נוכחית: `{curr_pct:.2f}%` (`${curr_usd:,.0f}` לעסקה)\n"
-                    f"{RTL}{arrow} המלצה: `{rec_pct:.2f}%` (`${rec_usd:,.0f}` לעסקה)\n\n"
-                    f"{RTL}האם לאשר שינוי סיכון?"
+                    f"{RTL}  ▸ S9: `{s9_sc:.0f}` × 50% | M21: `{m21_sc:.0f}` × 30% | L50: `{l50_sc:.0f}` × 20%\n"
                 )
+                factors = risk_rec.get("heat_factors", [])
+                if factors:
+                    alert_text += f"{RTL}\n{RTL}📊 גורמים מרכזיים:\n"
+                    for f_line in factors[:3]:
+                        alert_text += f"{RTL}  {f_line}\n"
+                alert_text += (
+                    f"{RTL}\n{RTL}רמה נוכחית: `{curr_pct:.2f}%` (`${curr_usd:,.0f}` לעסקה)\n"
+                    f"{RTL}{arrow} *המלצה:* `{rec_pct:.2f}%` (`${rec_usd:,.0f}` לעסקה)\n"
+                )
+                improve = risk_rec.get("what_to_improve", [])
+                if improve:
+                    alert_text += f"{RTL}\n{RTL}🔼 לשיפור:\n"
+                    for imp in improve[:3]:
+                        alert_text += f"{RTL}  → {imp}\n"
+                alert_text += f"\n{RTL}האם לאשר שינוי סיכון?"
                 markup = telebot.types.InlineKeyboardMarkup(row_width=2)
                 markup.add(
                     telebot.types.InlineKeyboardButton(

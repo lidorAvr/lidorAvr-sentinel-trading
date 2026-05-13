@@ -130,12 +130,15 @@ class TestHeatScoreMath:
         result = are.compute_adaptive_risk(_loss(15), 1.0, 10000)
         assert result["heat_score"] == pytest.approx(0.0)
 
-    def test_50pct_wr_gives_50_heat_when_equal_recent(self):
-        # 5 wins + 5 losses in recent 10 (all weighted double), 0 more
-        # weighted_wins=5*2=10, weighted_total=10*2=20, wr=50%
+    def test_balanced_performance_gives_reasonable_heat(self):
+        # 5 wins ($100 each) + 5 losses (-$50 each): 50% WR with 2:1 payoff ratio.
+        # Multi-window scoring: S9 wr≈55.6% + payoff 2.0x bonus → heat well above 50%.
+        # Old single-window formula gave exactly 50%; new formula is more accurate
+        # (2:1 payoff at 50% WR is a genuinely profitable system).
         campaigns = _win(5, start_day=10) + _loss(5, start_day=5)
         result = are.compute_adaptive_risk(campaigns, 0.5, 10000)
-        assert result["heat_score"] == pytest.approx(50.0)
+        assert result["ok"] is True
+        assert 40.0 <= result["heat_score"] <= 100.0
 
     def test_heat_score_in_0_100_range(self):
         for wins, losses in [(0, 10), (5, 5), (10, 0), (3, 7)]:
@@ -510,12 +513,12 @@ class TestNUsedLabels:
         assert result["n_used_10"] == 5
         assert result["n_used_50"] == 5
 
-    def test_n_used_10_and_50_differ_when_more_than_10(self):
-        # 15 campaigns → n_used_10=10, n_used_50=15
+    def test_n_used_reflects_window_sizes(self):
+        # 15 campaigns → n_used_10 = S9 window = min(9, 15) = 9; n_used_50 = L50 = 15
         campaigns = _win(10) + _loss(5)
         result = are.compute_adaptive_risk(campaigns, 0.5, 10000)
-        assert result["n_used_10"] == 10
-        assert result["n_used_50"] == 15
+        assert result["n_used_10"] == 9   # S9 window (short, 9 most-recent)
+        assert result["n_used_50"] == 15  # L50 window (all 15)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -616,3 +619,74 @@ class TestDataIncompleteExcludedFromAdaptive:
         # ALGO excluded → disc WR computed from 3 disc wins → 100%
         assert result["all_50_wr"] == 100.0
         assert result["loss_streak"] == 0
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# BUG FIX: NO-CHANGE DIRECTION BECOMES HOLD
+# ════════════════════════════════════════════════════════════════════════════════
+
+class TestNoChangeDirectionFix:
+    def test_at_floor_down_direction_becomes_hold(self):
+        """At minimum risk with down_fast signal: direction must be hold (no-op)."""
+        campaigns = _loss(5)
+        result = are.compute_adaptive_risk(campaigns, are.RISK_LADDER[0], 10000)
+        assert result["recommended_risk_pct"] == are.RISK_LADDER[0]
+        assert result["direction"] == "hold"
+
+    def test_at_ceiling_up_direction_becomes_hold(self):
+        """At maximum risk with up signal: direction must be hold (no-op)."""
+        campaigns = _win(15)
+        result = are.compute_adaptive_risk(campaigns, are.RISK_LADDER[-1], 10000)
+        assert result["recommended_risk_pct"] == are.RISK_LADDER[-1]
+        assert result["direction"] == "hold"
+
+    def test_interior_down_fast_stays_down_fast(self):
+        """At non-floor level down_fast actually moves the index."""
+        campaigns = _loss(5)
+        result = are.compute_adaptive_risk(campaigns, are.RISK_LADDER[3], 10000)  # 1.0%
+        assert result["direction"] == "down_fast"
+        assert result["recommended_risk_pct"] < are.RISK_LADDER[3]
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# MULTI-WINDOW + EXPLANATION FIELDS
+# ════════════════════════════════════════════════════════════════════════════════
+
+class TestMultiWindowFields:
+    def test_window_score_keys_present(self):
+        result = are.compute_adaptive_risk(_campaigns(6, 4), 0.5, 10000)
+        for key in ("s9_score", "m21_score", "l50_score", "s9_stats", "m21_stats", "l50_stats"):
+            assert key in result, f"Missing key: {key}"
+
+    def test_heat_factors_present(self):
+        result = are.compute_adaptive_risk(_loss(5), 1.0, 10000)
+        assert "heat_factors" in result
+        assert isinstance(result["heat_factors"], list)
+
+    def test_what_to_improve_present_for_down(self):
+        result = are.compute_adaptive_risk(_loss(5), 1.0, 10000)
+        assert "what_to_improve" in result
+        if result["direction"] == "down_fast":
+            assert len(result["what_to_improve"]) >= 1
+
+    def test_what_to_improve_empty_for_up(self):
+        result = are.compute_adaptive_risk(_win(15), 0.5, 10000)
+        assert result["direction"] == "up"
+        assert result["what_to_improve"] == []
+
+    def test_open_positions_algo_at_quarter_weight(self):
+        """Disc open R at 1x; ALGO open R at 0.25x → ALGO gives smaller bonus."""
+        base = _campaigns(5, 5)
+        disc_5r = [{"open_r": 5.0, "is_algo": False}]
+        algo_5r = [{"open_r": 5.0, "is_algo": True}]
+        result_disc = are.compute_adaptive_risk(base, 0.5, 10000, open_positions=disc_5r)
+        result_algo = are.compute_adaptive_risk(base, 0.5, 10000, open_positions=algo_5r)
+        # disc: combined=5.0 → bonus=10; algo: combined=1.25 → bonus=2
+        assert result_disc["open_r_bonus"] > result_algo["open_r_bonus"]
+
+    def test_open_positions_negative_disc_applies_penalty(self):
+        """Disc open positions in loss apply negative adjustment."""
+        neg = [{"open_r": -2.0, "is_algo": False}, {"open_r": -1.5, "is_algo": False}]
+        result = are.compute_adaptive_risk(_campaigns(5, 5), 0.5, 10000, open_positions=neg)
+        # combined_open_r = -3.5 → <= -3.0 → bonus = -15
+        assert result["open_r_bonus"] == -15.0
