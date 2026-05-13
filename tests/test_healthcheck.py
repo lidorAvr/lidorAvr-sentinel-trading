@@ -1,64 +1,84 @@
 """
-tests/test_healthcheck.py — verify _touch_heartbeat() works correctly in all three services.
+tests/test_healthcheck.py — tests for the real _touch_heartbeat() in risk_monitor.py.
+
+Imports the actual production implementation (not a re-defined helper) so any
+regression in the real code will be caught here.
+
+Uses the same stub pattern as test_phase5_anti_spam.py to silence heavy
+module-level imports (telebot, supabase, dotenv) that aren't relevant to
+the heartbeat logic.
 """
 import os
+import sys
 import time
-import pytest
+import types
 import tempfile
+import pytest
+
+# ── Stub heavy dependencies so risk_monitor can be imported in tests ─────────
+for _mod in ["telebot", "supabase", "dotenv"]:
+    if _mod not in sys.modules:
+        sys.modules[_mod] = types.ModuleType(_mod)
+
+sys.modules["supabase"].create_client = lambda *a, **k: None   # type: ignore
+sys.modules["dotenv"].load_dotenv     = lambda *a, **k: None   # type: ignore
+
+class _FakeBot:
+    def __init__(self, *a, **k): pass
+
+sys.modules["telebot"].TeleBot = _FakeBot  # type: ignore
+
+import risk_monitor as rm   # ← real production module
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _make_touch_fn(tmp_dir):
-    """Return a _touch_heartbeat function bound to tmp_dir, mirroring all service implementations."""
-    def _touch_heartbeat(name: str) -> None:
-        os.makedirs(tmp_dir, exist_ok=True)
-        path = os.path.join(tmp_dir, f"{name}_last_cycle")
-        with open(path, "w") as fh:
-            fh.write(str(time.time()))
-    return _touch_heartbeat
+def _heartbeat_path(tmp_dir: str, name: str) -> str:
+    return os.path.join(tmp_dir, f"{name}_last_cycle")
 
 
-def _heartbeat_age(tmp_dir, name: str) -> float:
-    """Return seconds since the heartbeat file was last modified."""
-    path = os.path.join(tmp_dir, f"{name}_last_cycle")
-    return time.time() - os.path.getmtime(path)
-
-
-# ── Tests ──────────────────────────────────────────────────────────────────────
+# ── Tests ─────────────────────────────────────────────────────────────────────
 
 @pytest.mark.unit
-class TestTouchHeartbeat:
-    def test_creates_file_on_first_call(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            touch = _make_touch_fn(tmp)
-            touch("risk_monitor")
-            assert os.path.exists(os.path.join(tmp, "risk_monitor_last_cycle"))
+class TestRealTouchHeartbeat:
+    """Tests call the actual rm._touch_heartbeat() implementation."""
 
-    def test_file_content_is_recent_timestamp(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            touch = _make_touch_fn(tmp)
-            before = time.time()
-            touch("report_scheduler")
-            after = time.time()
-            path = os.path.join(tmp, "report_scheduler_last_cycle")
-            written = float(open(path).read())
-            assert before <= written <= after
+    def test_creates_file_on_first_call(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(rm, "_HEARTBEAT_DIR", str(tmp_path))
+        rm._touch_heartbeat("risk_monitor")
+        assert os.path.exists(_heartbeat_path(str(tmp_path), "risk_monitor"))
 
-    def test_mtime_is_fresh_after_touch(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            touch = _make_touch_fn(tmp)
-            touch("sentinel_bot")
-            age = _heartbeat_age(tmp, "sentinel_bot")
-            assert age < 2.0, f"heartbeat file is {age:.2f}s old — expected < 2s"
+    def test_file_content_is_recent_timestamp(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(rm, "_HEARTBEAT_DIR", str(tmp_path))
+        before = time.time()
+        rm._touch_heartbeat("report_scheduler")
+        after = time.time()
+        content = open(_heartbeat_path(str(tmp_path), "report_scheduler")).read()
+        written = float(content)
+        assert before <= written <= after
 
-    def test_second_touch_updates_mtime(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            touch = _make_touch_fn(tmp)
-            touch("telegram_bot")
-            time.sleep(0.05)
-            mtime1 = os.path.getmtime(os.path.join(tmp, "telegram_bot_last_cycle"))
-            time.sleep(0.05)
-            touch("telegram_bot")
-            mtime2 = os.path.getmtime(os.path.join(tmp, "telegram_bot_last_cycle"))
-            assert mtime2 > mtime1, "second touch must update mtime"
+    def test_mtime_is_fresh_after_touch(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(rm, "_HEARTBEAT_DIR", str(tmp_path))
+        rm._touch_heartbeat("sentinel_bot")
+        age = time.time() - os.path.getmtime(_heartbeat_path(str(tmp_path), "sentinel_bot"))
+        assert age < 2.0, f"heartbeat file is {age:.2f}s old — expected < 2s"
+
+    def test_second_touch_updates_mtime(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(rm, "_HEARTBEAT_DIR", str(tmp_path))
+        rm._touch_heartbeat("telegram_bot")
+        mtime1 = os.path.getmtime(_heartbeat_path(str(tmp_path), "telegram_bot"))
+        time.sleep(0.05)
+        rm._touch_heartbeat("telegram_bot")
+        mtime2 = os.path.getmtime(_heartbeat_path(str(tmp_path), "telegram_bot"))
+        assert mtime2 > mtime1, "second touch must update mtime"
+
+    def test_creates_dir_if_missing(self, monkeypatch, tmp_path):
+        nested = str(tmp_path / "deep" / "nested")
+        monkeypatch.setattr(rm, "_HEARTBEAT_DIR", nested)
+        rm._touch_heartbeat("risk_monitor")
+        assert os.path.exists(os.path.join(nested, "risk_monitor_last_cycle"))
+
+    def test_silent_on_permission_error(self, monkeypatch):
+        """_touch_heartbeat must never raise — it silently swallows errors."""
+        monkeypatch.setattr(rm, "_HEARTBEAT_DIR", "/proc/nonexistent_sentinel_test")
+        rm._touch_heartbeat("risk_monitor")   # must not raise

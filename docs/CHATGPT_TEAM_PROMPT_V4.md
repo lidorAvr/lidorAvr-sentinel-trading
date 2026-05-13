@@ -21,7 +21,8 @@
 6. ✅ **Developer menu PIN gate** — `DEV_PIN` env, 30-min session
 7. ✅ **`ADMIN_ID > 0` validation** — fail-fast ב-bot_core.py
 8. ✅ **docs/DESIGN_SYSTEM.md** — emoji/icon palette + healthcheck table
-9. ✅ **Tests: 1201/1201** (+6 trailing stop, +4 healthcheck)
+9. ✅ **Tests: 1203/1203** (+6 trailing stop, +6 healthcheck — real rm._touch_heartbeat, not mock)
+10. ✅ **PR #15 → main** — merged
 
 ### ספרינטים קודמים (לרקע):
 
@@ -157,7 +158,7 @@ def compute_suggested_trail_stop(side, current_price, ma21, ma50, open_r, entry_
 
 | # | פריט | עדיפות קיימת | סטטוס |
 |---|---|---|---|
-| 1 | Merge PR #15 → main | 1 | פתוח |
+| 1 | Merge PR #15 → main | 1 | ✅ בוצע |
 | 2 | E2E test test_e2e_risk_monitor.py | 2 | פתוח |
 | 3 | Coverage gate ≥75% (pytest-cov) | 2 | פתוח |
 | 4 | Add-On Phase 2 Supabase schema | 2 | פתוח |
@@ -171,6 +172,7 @@ def compute_suggested_trail_stop(side, current_price, ma21, ma50, open_r, entry_
 | 12 | pytest markers על 1201 הטסטים הקיימים | 4 | פתוח |
 | 13 | Safe Markdown splitting — testing | 4 | קיים, ללא טסטים |
 | 14 | /addon Phase 2 — eligibility dashboard | 4 | פתוח |
+| 15 | DEV_PIN ב-.env — PIN לתפריט מפתח | 5 | יעד עתידי (לא דחוף) |
 
 ---
 

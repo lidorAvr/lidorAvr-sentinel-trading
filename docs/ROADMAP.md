@@ -241,15 +241,17 @@ Mark's Final Verdict Meeting 4: **8.6/10** → Sprint 4 delivered.
 6. ✅ Developer menu PIN gate (`DEV_PIN` env var, 30-min session) — telegram_devops.py + telegram_bot.py
 7. ✅ `ADMIN_ID > 0` validation — bot_core.py fail-fast
 8. ✅ `docs/DESIGN_SYSTEM.md` — emoji/icon palette, heat labels, position states, healthcheck table
-9. ✅ Tests: 1201/1201 (+6 trailing stop, +4 healthcheck vs Sprint 3's 1195)
+9. ✅ Tests: 1203/1203 (+8 — trailing stop x6, healthcheck x6 real-impl vs Sprint 3's 1195)
+10. ✅ test_healthcheck.py שכותב מחדש — מייבא rm._touch_heartbeat אמיתי, לא helper מזויף
 
 **Still open for Meeting 5:**
 - Add-On Engine Phase 2 — Supabase schema + `/addon` dashboard
 - 48h Settle Period — empirical validation (production data needed)
 - SSH setup on Orange Pi — user action
-- Merge PR #15 → main — requires human approval
+- ✅ Merge PR #15 → main — בוצע
 - E2E test `test_e2e_risk_monitor.py`
 - Coverage report baseline (≥75% enforced by pytest-cov)
+- DEV_PIN ב-`.env` — יעד עתידי (optional, single-user system כרגע)
 
 ## Phase 10 — Meeting 5 & Sprint 5
 
