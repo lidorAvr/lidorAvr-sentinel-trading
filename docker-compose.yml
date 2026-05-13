@@ -13,6 +13,18 @@ services:
       - 1.1.1.1
     volumes:
       - .:/app
+    mem_limit: 1536m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
   telegram-bot:
     build: .
@@ -28,6 +40,18 @@ services:
       - 1.1.1.1
     volumes:
       - .:/app
+    mem_limit: 1536m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
   dashboard:
     build: .
@@ -43,6 +67,18 @@ services:
       - 1.1.1.1
     volumes:
       - .:/app
+    mem_limit: 1536m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   risk-monitor:
     build: .
@@ -58,6 +94,19 @@ services:
       - 1.1.1.1
     volumes:
       - .:/app
+      - sentinel_state:/app/state
+    mem_limit: 1536m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import risk_monitor"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     depends_on:
       - telegram-bot
 
@@ -75,5 +124,21 @@ services:
       - 1.1.1.1
     volumes:
       - .:/app
+    mem_limit: 1536m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import report_scheduler"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     depends_on:
       - telegram-bot
+
+volumes:
+  sentinel_state:
+    driver: local
