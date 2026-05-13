@@ -226,6 +226,23 @@ Status: **complete** — Sprint 3 shipped. See `docs/SPRINT_3_REPORT.md`.
 6. Safe Markdown splitting in `telegram_portfolio.py`
 7. Developer menu PIN gate
 
+## Phase 9 — Meeting 4 & Sprint 4
+
+Status: **planned** — see `docs/CHATGPT_TEAM_PROMPT_V3.md`.
+
+14 departments (7 original + 7 new) review Sprint 3 and surface
+requirements for Sprint 4. Output: Sprint 4 plan + Mark's Final Verdict
+(target ≥ 9.0/10, was 8.0/10 in Meeting 3).
+
+**Sprint 4 inputs (open from Sprint 3):**
+1. `fmt_heat_thermometer()` — Heat Score visualization (S9/M21/L50)
+2. Add-On Engine Phase 2 — Supabase schema + dashboard + alerts
+3. 48h Settle Period — empirical validation (needs production data)
+4. SSH setup on Orange Pi — user action
+5. Safe Markdown splitting in `telegram_portfolio.py`
+6. Developer menu PIN gate
+7. `docs/DESIGN_SYSTEM.md` — emoji/icon palette
+
 ## Parking lot
 
 Ideas to consider later:
