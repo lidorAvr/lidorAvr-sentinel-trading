@@ -23,7 +23,8 @@ from telegram_devops import (_dev_sync_check, _dev_sync_record,
                               _DEV_STATE_FILE, _MANUAL_TRIGGER_FILE, _DEPLOY_TRIGGER_FILE,
                               _DEV_SYNC_MAX_PER_DAY, _DEV_SYNC_COOLDOWN_HOURS,
                               dev_pin_session_active, dev_pin_activate_session,
-                              dev_pin_validate, dev_pin_is_configured)
+                              dev_pin_validate, dev_pin_is_configured,
+                              dev_pin_rate_limited, dev_pin_record_failure)
 
 from bot_health import build_health_report as _build_health_report  # noqa: E402
 
@@ -57,11 +58,14 @@ def handle_all_messages(message):
 
     if active_state.get("action") == "awaiting_dev_pin":
         del user_state[chat_id]
-        if dev_pin_validate(text):
+        if dev_pin_rate_limited(chat_id):
+            bot.send_message(chat_id, f"{RTL}🔒 *יותר מדי ניסיונות — נסה שוב בעוד 5 דקות*", reply_markup=get_main_menu(), parse_mode="Markdown")
+        elif dev_pin_validate(text):
             dev_pin_activate_session(chat_id)
             bot.send_message(chat_id, f"{RTL}✅ *PIN מאומת — פגישה פעילה ל-30 דקות*", parse_mode="Markdown")
             bot.send_message(chat_id, f"{RTL}🛠️ *תפריט מפתח — כלי פיתוח ודיבאג*", reply_markup=get_developer_menu(), parse_mode="Markdown")
         else:
+            dev_pin_record_failure(chat_id)
             bot.send_message(chat_id, f"{RTL}⛔ *PIN שגוי — גישה נדחתה*", reply_markup=get_main_menu(), parse_mode="Markdown")
         return
 

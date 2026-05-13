@@ -161,6 +161,15 @@ def handle_queries(call):
                 cid = repo.get_open_campaign_for_symbol(supabase, sym)
                 if cid:
                     repo.update_management_notes(supabase, cid, note)
+                    # Mark addon fields (requires migration 001_addon_phase2.sql)
+                    try:
+                        _tid = repo.get_latest_buy_trade_id(supabase, sym, cid)
+                        if _tid:
+                            _seq_res = supabase.table("trades").select("trade_id").eq("campaign_id", cid).eq("is_addon", True).execute()
+                            _seq = len(_seq_res.data or []) + 1
+                            repo.update_addon_record(supabase, _tid, cid, _seq)
+                    except Exception:
+                        pass  # expected until migration 001_addon_phase2.sql is applied
                 else:
                     bot.send_message(
                         chat_id,

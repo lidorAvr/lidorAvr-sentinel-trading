@@ -31,6 +31,7 @@ def _sb():
 
 # ── get_all_trades ─────────────────────────────────────────────────────────────
 
+@pytest.mark.unit
 class TestGetAllTrades:
     def test_calls_trades_table(self):
         sb = _sb()
@@ -55,6 +56,7 @@ class TestGetAllTrades:
 
 # ── get_trades_by_symbol ───────────────────────────────────────────────────────
 
+@pytest.mark.unit
 class TestGetTradesBySymbol:
     def test_filters_by_symbol(self):
         sb = _sb()
@@ -69,6 +71,7 @@ class TestGetTradesBySymbol:
 
 # ── get_incomplete_trades ──────────────────────────────────────────────────────
 
+@pytest.mark.unit
 class TestGetIncompleteTrades:
     def test_calls_or_with_query(self):
         sb = _sb()
@@ -96,6 +99,7 @@ class TestGetIncompleteTrades:
 
 # ── get_earlier_buys_for_campaign ─────────────────────────────────────────────
 
+@pytest.mark.unit
 class TestGetEarlierBuysForCampaign:
     def test_filters_campaign_id(self):
         sb = _sb()
@@ -122,6 +126,7 @@ class TestGetEarlierBuysForCampaign:
 
 # ── get_old_trades ─────────────────────────────────────────────────────────────
 
+@pytest.mark.unit
 class TestGetOldTrades:
     def test_filters_by_date(self):
         sb = _sb()
@@ -136,6 +141,7 @@ class TestGetOldTrades:
 
 # ── get_campaigns_pnl ─────────────────────────────────────────────────────────
 
+@pytest.mark.unit
 class TestGetCampaignsPnl:
     def test_selects_correct_columns(self):
         sb = _sb()
@@ -150,6 +156,7 @@ class TestGetCampaignsPnl:
 
 # ── update_trade ───────────────────────────────────────────────────────────────
 
+@pytest.mark.unit
 class TestUpdateTrade:
     def test_calls_update_with_fields(self):
         sb = _sb()
@@ -164,6 +171,7 @@ class TestUpdateTrade:
 
 # ── update_stop_for_campaign ───────────────────────────────────────────────────
 
+@pytest.mark.unit
 class TestUpdateStopForCampaign:
     def test_updates_stop_loss(self):
         sb = _sb()
@@ -180,6 +188,7 @@ class TestUpdateStopForCampaign:
 
 # ── update_management_notes ───────────────────────────────────────────────────
 
+@pytest.mark.unit
 class TestUpdateManagementNotes:
     def test_updates_management_notes(self):
         sb = _sb()
@@ -196,6 +205,7 @@ class TestUpdateManagementNotes:
 
 # ── get_open_campaign_for_symbol ───────────────────────────────────────────────
 
+@pytest.mark.unit
 class TestGetOpenCampaignForSymbol:
     def test_returns_campaign_id_when_found(self):
         sb = _sb()

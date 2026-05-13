@@ -18,6 +18,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 
+@pytest.mark.integration
 class TestAnalyticsUsesGetCampaignRiskMetrics:
     """Verify analytics_engine no longer uses inline orig_risk formula."""
 
@@ -63,6 +64,7 @@ class TestAnalyticsUsesGetCampaignRiskMetrics:
         assert result["avg_win_r"] == pytest.approx(2.0)
 
 
+@pytest.mark.integration
 class TestFollowThroughWiredToPositionState:
     """Verify follow_through_score affects DEAD_MONEY classification."""
 
@@ -99,6 +101,7 @@ class TestFollowThroughWiredToPositionState:
         assert result["state"] != POSITION_STATE_DEAD_MONEY
 
 
+@pytest.mark.integration
 class TestSnapshotStoreInfSerialization:
     """Verify report_snapshot_store sanitizes math.inf before JSON serialization."""
 

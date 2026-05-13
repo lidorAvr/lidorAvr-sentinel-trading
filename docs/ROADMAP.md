@@ -255,7 +255,34 @@ Mark's Final Verdict Meeting 4: **8.6/10** → Sprint 4 delivered.
 
 ## Phase 10 — Meeting 5 & Sprint 5
 
-Status: **planned** — see `docs/CHATGPT_TEAM_PROMPT_V4.md`.
+Status: **complete** — 2026-05-13. See `docs/SPRINT_5_REPORT.md`.
+
+Mark's Final Verdict Meeting 5: **8.9/10** → Sprint 5 delivered in full.
+
+**Sprint 5 — completed:**
+1. ✅ Fix `telegram_callbacks.py:162` — Supabase query bug (`get_open_campaign_for_symbol()`)
+2. ✅ Fix `telegram_callbacks.py:166-167` — Silent failure → Telegram alert on error
+3. ✅ Production Stability: autoheal container, mem_limit 1200m (was 1536m), sentinel-bot max_age 1980s
+4. ✅ Security: `hmac.compare_digest` for PIN, rate limit 3/5min, persistent sessions JSON
+5. ✅ Add-On Phase 2a: `migrations/001_addon_phase2.sql` + `update_addon_record()` + callback wired
+6. ✅ Test Infrastructure: `mock_telegram_bot` fixture, `test_e2e_risk_monitor.py` (9 tests), pytest markers
+7. ✅ Tests: **1219/1219** (was 1210) — 0 failures
+
+**Stable release:** all Sprint 1-5 requirements closed. System ready for production deployment.
+
+**User action required:**
+- Run `migrations/001_addon_phase2.sql` against Supabase to enable Add-On Phase 2a columns.
+
+## Phase 11 — Meeting 6 (next)
+
+Status: **planned** — sprint backlog TBD in Meeting 6.
+
+Ideas for Meeting 6:
+- `fmt_heat_thermometer()` wired to weekly Telegram report
+- `test_e2e_risk_monitor.py` expanded (full main() mock cycle)
+- Coverage gate ≥75% enforced in CI
+- Add-On eligibility dashboard (`/addon` Phase 2b)
+- Audit log table + `audit_logger.py`
 
 ## Parking lot
 

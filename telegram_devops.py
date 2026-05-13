@@ -12,6 +12,7 @@ shared bot/supabase singletons from bot_core. They are exercised from the
 developer menu in telegram_bot.handle_all_messages.
 """
 import os
+import hmac
 import json
 import time
 import glob as _glob
@@ -29,7 +30,34 @@ import ibkr_trade_importer as _importer
 # ── Developer PIN gate ────────────────────────────────────────────────────────
 _DEV_PIN              = os.getenv("DEV_PIN", "")
 _PIN_SESSION_DURATION = 1800          # 30 minutes
-_pin_sessions: dict   = {}            # {chat_id: expires_ts}
+_PIN_SESSIONS_FILE    = "/app/state/dev_pin_sessions.json"
+_PIN_RATE_LIMIT_COUNT  = 3            # max failed attempts
+_PIN_RATE_LIMIT_WINDOW = 300          # within 5 minutes
+
+_PIN_FAILED_ATTEMPTS: dict = {}       # {chat_id: [ts1, ts2, ...]}
+
+
+def _load_pin_sessions() -> dict:
+    """Load non-expired sessions from disk (survives container restart)."""
+    try:
+        with open(_PIN_SESSIONS_FILE) as f:
+            raw = json.load(f)
+        now = time.time()
+        return {int(k): float(v) for k, v in raw.items() if float(v) > now}
+    except Exception:
+        return {}
+
+
+def _save_pin_sessions() -> None:
+    try:
+        os.makedirs(os.path.dirname(_PIN_SESSIONS_FILE), exist_ok=True)
+        with open(_PIN_SESSIONS_FILE, "w") as f:
+            json.dump({str(k): v for k, v in _pin_sessions.items()}, f)
+    except Exception:
+        pass
+
+
+_pin_sessions: dict = _load_pin_sessions()
 
 
 def dev_pin_session_active(chat_id: int) -> bool:
@@ -38,18 +66,35 @@ def dev_pin_session_active(chat_id: int) -> bool:
 
 
 def dev_pin_activate_session(chat_id: int) -> None:
-    """Grant a 30-minute developer session for chat_id."""
+    """Grant a 30-minute developer session and persist it to disk."""
     _pin_sessions[chat_id] = time.time() + _PIN_SESSION_DURATION
+    _save_pin_sessions()
 
 
 def dev_pin_validate(entered: str) -> bool:
-    """Return True if entered matches DEV_PIN (and DEV_PIN is set)."""
-    return bool(_DEV_PIN) and entered.strip() == _DEV_PIN
+    """Constant-time comparison — prevents timing-based brute-force."""
+    if not _DEV_PIN:
+        return False
+    return hmac.compare_digest(entered.strip(), _DEV_PIN)
 
 
 def dev_pin_is_configured() -> bool:
     """Return True if the DEV_PIN env var is set (non-empty)."""
     return bool(_DEV_PIN)
+
+
+def dev_pin_rate_limited(chat_id: int) -> bool:
+    """Return True if chat_id exceeded 3 failed PIN attempts within 5 minutes."""
+    now = time.time()
+    recent = [t for t in _PIN_FAILED_ATTEMPTS.get(chat_id, [])
+              if now - t < _PIN_RATE_LIMIT_WINDOW]
+    _PIN_FAILED_ATTEMPTS[chat_id] = recent
+    return len(recent) >= _PIN_RATE_LIMIT_COUNT
+
+
+def dev_pin_record_failure(chat_id: int) -> None:
+    """Record a failed PIN attempt timestamp for rate limiting."""
+    _PIN_FAILED_ATTEMPTS.setdefault(chat_id, []).append(time.time())
 
 
 # ── Developer-menu constants ─────────────────────────────────────────────────

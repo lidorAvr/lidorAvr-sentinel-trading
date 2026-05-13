@@ -4,6 +4,8 @@ Shared pytest fixtures for Sentinel Trading test suite.
 Provides reusable mocks for external dependencies (Supabase, yfinance)
 and sample data structures used across multiple test modules.
 """
+import sys
+import types
 import pandas as pd
 import pytest
 from unittest.mock import MagicMock, patch
@@ -71,3 +73,34 @@ def sample_closed_campaigns():
             "close_date":  "2026-04-10",
         },
     ]
+
+
+@pytest.fixture
+def mock_telegram_bot(monkeypatch):
+    """
+    Capture all messages sent via risk_monitor.send_telegram / send_telegram_with_keyboard.
+
+    Yields a list that accumulates message strings as the test runs.
+
+    Usage:
+        def test_foo(mock_telegram_bot):
+            trigger_something()
+            assert "expected phrase" in mock_telegram_bot[0]
+    """
+    # Ensure heavy deps are stubbed before risk_monitor is referenced
+    for _mod in ("telebot", "supabase", "dotenv"):
+        if _mod not in sys.modules:
+            sys.modules[_mod] = types.ModuleType(_mod)
+    if not getattr(sys.modules["supabase"], "create_client", None):
+        sys.modules["supabase"].create_client = lambda *a, **k: None
+    if not getattr(sys.modules["dotenv"], "load_dotenv", None):
+        sys.modules["dotenv"].load_dotenv = lambda *a, **k: None
+    if not getattr(sys.modules["telebot"], "TeleBot", None):
+        sys.modules["telebot"].TeleBot = type("TeleBot", (), {"__init__": lambda *a, **k: None})
+
+    import risk_monitor as rm
+
+    sent: list = []
+    monkeypatch.setattr(rm, "send_telegram", lambda msg: sent.append(msg))
+    monkeypatch.setattr(rm, "send_telegram_with_keyboard", lambda msg, kb: sent.append(msg))
+    return sent
