@@ -194,21 +194,37 @@ Status: **complete** — Sprint 1 + Sprint 2 shipped. See `docs/SPRINT_1_2_REPOR
 
 ## Phase 8 — Meeting 3 & New Departments
 
-Status: **planned** — see `docs/CHATGPT_TEAM_PROMPT_V2.md`.
+Status: **complete** — Sprint 3 shipped. See `docs/SPRINT_3_REPORT.md`.
 
-Adds 7 new departments (System / Network / Cybersecurity / Manual QA /
-Graphic Design / UX-UI / Research) with requirements-gathering structure.
-Output: Sprint 3 plan + ranked requirements list across all 14 departments.
+**Sprint 3 — Production Reliability + Calibration** (5 commits on `claude/review-dev-roadmap-6K19V`)
 
-**Still open from Meetings 1+2 (must be resolved by end of Sprint 3):**
-1. `analytics_engine.py:250` — migrate to `get_campaign_risk_metrics()`
-2. `profit_factor` sentinel inconsistency (`99.0` vs `2.0`)
-3. `conftest.py` with Supabase + yfinance mocks
-4. Heat Score visualization in Telegram (S9/M21/L50)
-5. Add-On Engine Phase 2 (Supabase schema + dashboard + alerts)
-6. RISK_LADDER spacing review
-7. 48h Settle Period empirical validation
-8. SSH setup on Orange Pi (user action)
+**Calibration:**
+- `_FT_PEAK_FULL_PCT` 10.0 → 7.0 (empirically validated Minervini wizard threshold)
+- payoff < 0.8 penalty -12 → -15 (Mark's red line)
+- RISK_LADDER revised to `[0.25, 0.40, 0.60, 0.85, 1.15, 1.50, 2.00]` (uniform cadence)
+- `profit_factor` sentinel unified to `math.inf` (analytics + adaptive risk + display)
+
+**Production reliability:**
+- `analytics_engine.py:250` → `get_campaign_risk_metrics()` (LONG/SHORT + fallback)
+- `bot_core.py` fail-fast validation (TOKEN, ADMIN_ID int-check, SUPABASE credentials)
+- `docker-compose.yml` hardened (healthcheck, mem_limit 1.5 GB, log rotation, named volume)
+
+**Test infrastructure:**
+- `tests/conftest.py` — 4 shared fixtures (mock_supabase, mock_yfinance, sample positions)
+- `tests/test_integration.py` — 7 cross-module integration tests
+- `pytest.ini` markers (unit / integration / slow)
+- `requirements-dev.txt` pytest-cov added
+
+**Tests: 1191 passing** (was 1182 — +9 new tests).
+
+**Still open for Meeting 4:**
+1. Heat Score visualization in Telegram (S9/M21/L50 thermometer) — Maya's requirement
+2. Add-On Engine Phase 2 (Supabase schema + dashboard + alerts)
+3. 48h Settle Period empirical validation
+4. SSH setup on Orange Pi (user action)
+5. `fmt_heat_thermometer()` in `telegram_formatters.py`
+6. Safe Markdown splitting in `telegram_portfolio.py`
+7. Developer menu PIN gate
 
 ## Parking lot
 
