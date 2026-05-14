@@ -10,10 +10,10 @@ SEP = "───────────────"
 # ── Actionability Layer ────────────────────────────────────────────────────
 # Every alert must declare what the user should do with it.
 ACTIONABILITY_LABELS = {
-    "action_required": "🔴 פעולה נדרשת",
-    "review_required": "🟡 לבדוק",
+    "action_required":  "🔴 פעולה נדרשת",
+    "review_required":  "🟡 ממתין להחלטה — אשר/דחה דרך /risk",
     "observation_only": "⚪ מידע בלבד",
-    "system_health":   "🔧 בריאות מערכת",
+    "system_health":    "🔧 בריאות מערכת",
     "external_managed": "🟠 מנוהל חיצונית — Sentinel בפיקוח בלבד",
 }
 
@@ -62,8 +62,15 @@ def fmt_position_card(i: int, sym: str, setup: str, days_held: int,
                       open_r_val: float, status: str, action_short: str,
                       add_on_count: int = 0, base_price: float = 0,
                       locked_profit: float = 0, giveback_risk: float = 0,
-                      capital_risk: float = 0) -> str:
-    """כרטיס פוזיציה אחד — קומפקטי וברור."""
+                      capital_risk: float = 0,
+                      initial_stop: float = 0, current_stop: float = 0) -> str:
+    """כרטיס פוזיציה אחד — קומפקטי וברור.
+
+    initial_stop / current_stop are the entry-time stop and the active stop
+    respectively. If they differ, the card shows both (trailing/tightening
+    is the most common cause). If current_stop ≤ 0, the card flags missing
+    stop explicitly.
+    """
     pnl_icon = '🟢' if open_pnl >= 0 else '🔴'
     addon_tag = f" +(+{add_on_count})" if add_on_count > 0 else ""
     base_tag = f" _(בסיס ${base_price:.2f})_" if add_on_count > 0 and base_price > 0 else ""
@@ -72,9 +79,23 @@ def fmt_position_card(i: int, sym: str, setup: str, days_held: int,
     if total_campaign_r == 0 and open_r_val == 0 and capital_risk == 0 and locked_profit == 0:
         r_str = "`N/A` ⚠️ חסר סטופ התחלתי"
 
+    # Stop line — operator-critical info that was missing from the original card.
+    if current_stop and current_stop > 0:
+        dist_pct = ((curr - current_stop) / curr * 100) if curr > 0 else 0
+        if initial_stop and initial_stop > 0 and abs(initial_stop - current_stop) > 0.01:
+            direction = "⬆️" if current_stop > initial_stop else "⬇️"
+            stop_line = (f"{RTL}  ▸ סטופ: `${current_stop:.2f}` "
+                         f"({dist_pct:+.1f}% מהנוכחי) {direction} מ-`${initial_stop:.2f}`")
+        else:
+            stop_line = (f"{RTL}  ▸ סטופ: `${current_stop:.2f}` "
+                         f"({dist_pct:+.1f}% מהנוכחי)")
+    else:
+        stop_line = f"{RTL}  ▸ סטופ: `⚠️ חסר` (השלם דרך /next או הדאשבורד)"
+
     lines = [
         f"{RTL}*{i}. {sym}*{addon_tag} | 🏷️ {setup} | {days_held}d",
         f"{RTL}  ▸ כניסה: `${entry:.2f}`{base_tag} → נוכחי: `${curr:.2f}`",
+        stop_line,
         f"{RTL}  ▸ רווח צף: {pnl_icon} `${open_pnl:+.2f}` | סה״כ: `${total_pos_profit:+.2f}`",
         f"{RTL}  ▸ R: {r_str}",
         f"{RTL}  ▸ חשיפה: `{weight_pct:.1f}%` (${pos_value:,.0f})",

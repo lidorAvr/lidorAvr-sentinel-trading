@@ -69,14 +69,19 @@ def build_health_report() -> str:
     except Exception as e:
         bad(f"Supabase — שגיאת חיבור: {str(e)[:40]}")
 
-    # 6. Missing stops (open buy rows)
+    # 6. Missing stops (open buy rows) — exclude ALGO (managed externally,
+    # no stop expected)
     try:
-        res2 = supabase.table("trades").select("symbol,stop_loss,quantity,side").execute()
+        res2 = supabase.table("trades").select("symbol,stop_loss,quantity,side,setup_type").execute()
         df_h = pd.DataFrame(res2.data if res2.data else [])
         if not df_h.empty:
             buys = df_h[df_h["side"].str.upper() == "BUY"].copy()
             buys["stop_loss"] = pd.to_numeric(buys["stop_loss"], errors="coerce").fillna(0)
             buys["quantity"] = pd.to_numeric(buys["quantity"], errors="coerce").fillna(0)
+            # Exclude ALGO — those are managed externally and never expected
+            # to have a Sentinel-side stop_loss value.
+            buys["setup_upper"] = buys["setup_type"].astype(str).str.upper().fillna("")
+            buys = buys[buys["setup_upper"] != "ALGO"]
             ms = buys[(buys["quantity"] > 0) & (buys["stop_loss"] <= 0)]
             syms = ", ".join(ms["symbol"].unique()[:5])
             ok("Missing Stops — אין") if ms.empty else warn(f"Missing Stops — {len(ms)} שורות ({syms})")

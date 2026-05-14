@@ -262,7 +262,8 @@ class TestFmtAdaptiveRiskBlock:
 
     def test_actionability_review_required(self):
         result = tf.fmt_adaptive_risk_block(self._rec())
-        assert "לבדוק" in result or "review" in result.lower()
+        # New action-oriented label per 2026-05-14 feedback
+        assert "ממתין" in result and "/risk" in result
 
     def test_win_rate_shown(self):
         result = tf.fmt_adaptive_risk_block(self._rec())

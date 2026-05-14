@@ -288,18 +288,33 @@ def handle_all_messages(message):
             bot.send_message(chat_id, f"⚪ {stats.get('message', 'שגיאה')}", parse_mode="Markdown")
             return
         last_str = " ".join(stats.get("last_actions", []))
+        total      = stats['total_recommendations']
+        evaluated  = stats['evaluated']
+        pending    = max(0, total - evaluated)
+        followed   = stats['followed']
+        not_followed = stats['not_followed']
         msg = (
-            f"{RTL}📊 *סטטיסטיקת ציות — המלצות סיכון*\n"
+            f"{RTL}📊 *ציות להמלצות סיכון אדפטיבי*\n"
             f"{RTL}───────────────\n"
-            f"{RTL}סה\"כ המלצות: `{stats['total_recommendations']}`\n"
-            f"{RTL}הוערכו: `{stats['evaluated']}`\n"
-            f"{RTL}אושרו ✅: `{stats['followed']}`\n"
-            f"{RTL}נדחו ❌: `{stats['not_followed']}`\n"
+            f"{RTL}המערכת המליצה לשנות סיכון *{total}* פעמים מאז התחלת המעקב.\n"
+            f"{RTL}מתוכן ענית (אישר/דחה) על *{evaluated}* בלבד; שאר *{pending}* פגו ללא תגובה.\n"
         )
-        if stats["adherence_pct"] is not None:
-            msg += f"{RTL}ציות כללי: `{stats['adherence_pct']:.0f}%`\n"
+        if evaluated > 0:
+            msg += (
+                f"{RTL}\n"
+                f"{RTL}מתוך *{evaluated}* שהשבת:\n"
+                f"{RTL}  ✅ אושרו: `{followed}`\n"
+                f"{RTL}  ❌ נדחו: `{not_followed}`\n"
+            )
+            if stats["adherence_pct"] is not None:
+                msg += f"{RTL}  → ציות: `{stats['adherence_pct']:.0f}%`\n"
         if last_str:
-            msg += f"{RTL}10 האחרונות: {last_str}"
+            msg += (
+                f"{RTL}\n"
+                f"{RTL}10 ההמלצות האחרונות:\n"
+                f"{RTL}  {last_str}\n"
+                f"{RTL}  _(⏳ ממתינה ל-/risk · ✅ אושר · ❌ נדחה)_"
+            )
         return bot.send_message(chat_id, msg, parse_mode="Markdown")
 
     if text in ["/health", "🏥 בריאות מערכת"]:

@@ -110,9 +110,10 @@ class TestFmtAlgoRiskNote:
     def test_review_required_actionability(self):
         from telegram_formatters import fmt_algo_risk_note, fmt_actionability
         result = fmt_algo_risk_note("QQQ", 2.5, 15.0, "מניה עלתה חדות")
-        review_line = fmt_actionability("review_required")
-        # The actionability token appears in the note
-        assert "לבדוק" in result
+        # The actionability token appears in the note. Label was updated
+        # on 2026-05-14 from cryptic "🟡 לבדוק" → action-oriented
+        # "🟡 ממתין להחלטה — אשר/דחה דרך /risk".
+        assert "ממתין" in result and "/risk" in result
 
     def test_no_exit_instruction(self):
         from telegram_formatters import fmt_algo_risk_note

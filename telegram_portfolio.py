@@ -234,6 +234,7 @@ def handle_portfolio_room(chat_id):
         total_exposure = total_disc_exposure = total_algo_exposure = 0
         total_locked_profit = total_giveback_risk = 0
         algo_count = 0
+        algo_breakdown = []  # [(sym, pct_of_nav), ...] for the per-symbol cluster line
         active_symbols = []
         open_r_vals = []  # running R for each open position → fed into adaptive risk
 
@@ -314,6 +315,7 @@ def handle_portfolio_room(chat_id):
                 algo_count += 1
                 total_algo_pnl += open_pnl_usd
                 total_algo_exposure += pos_value
+                algo_breakdown.append((sym, weight_pct))
                 open_r_str = f"`{open_r_val:.1f}R` *(Target Risk Base)*"
                 e_data = engine_res.get("data") or {}
                 risk_basis = e_data.get("risk_basis", "Target")
@@ -324,7 +326,7 @@ def handle_portfolio_room(chat_id):
                 msg += f"{RTL}   ▸ כניסה: {entry_text} | נוכחי: `${curr:.2f}`\n"
                 msg += f"{RTL}   ▸ סטופ: מנוהל חיצונית | בסיס R: `{risk_basis}` | שקיפות סיכון: `{risk_vis}/100`\n"
                 msg += f"{RTL}   ▸ רווח צף: {pnl_icon} `${open_pnl_usd:.2f}` | כולל: `${total_pos_profit:.2f}`\n"
-                msg += f"{RTL}   ▸ חשיפה: `{weight_pct:.1f}%` מקרן הבסיס\n"
+                msg += f"{RTL}   ▸ חשיפה: `{weight_pct:.1f}%` מ-NAV\n"
                 msg += f"{RTL}   ▸ Open R (צף): {open_r_str}\n"
                 msg += f"{RTL}   ▸ סטטוס שוק: {status}\n"
                 msg += f"{RTL}   ▸ פיקוח: `מידע בלבד — Sentinel אינה מנהלת יציאות אלגו`\n"
@@ -345,6 +347,7 @@ def handle_portfolio_room(chat_id):
                     locked_profit=locked_profit_usd,
                     giveback_risk=giveback_risk_usd,
                     capital_risk=current_open_loss_risk,
+                    initial_stop=init_sl_clean, current_stop=sl,
                 ) + "\n"
                 if original_campaign_risk > 0 and sizing_str != "✅ תקין":
                     clean_sizing = sizing_str.replace('⚠️ ', '').replace('📉 ', '')
@@ -376,9 +379,17 @@ def handle_portfolio_room(chat_id):
         msg += f"{RTL}▸ רווח נעול (Locked) בסטופים: `${total_locked_profit:,.2f}`\n"
         msg += f"{RTL}▸ סך הכל רווח מוגן (Secured): `${total_secured:,.2f}`\n"
         msg += f"{RTL}▸ סיכון ויתור רווח צף (Giveback): `${total_giveback_risk:,.2f}`\n"
-        msg += f"{RTL}▸ חשיפה כללית: `{total_weight:.1f}%` מקרן הבסיס\n"
+        msg += f"{RTL}▸ חשיפה כללית: `{total_weight:.1f}%` מ-NAV (`${acc_size:,.0f}`)\n"
         if algo_count > 0:
-            msg += f"\n{RTL}🤖 *בקרת אשכול אלגו:*\n{RTL}▸ חשיפה אלגו: `{algo_cluster_pct:.1f}%` מהקרן\n"
+            msg += f"\n{RTL}🤖 *בקרת אשכול אלגו:*\n"
+            msg += f"{RTL}▸ חשיפה אלגו: `{algo_cluster_pct:.1f}%` מ-NAV\n"
+            # Per-symbol breakdown — operator wants to see which ALGO symbol
+            # is contributing what, not just the cluster total.
+            if algo_breakdown:
+                # Sort descending by weight for readability
+                _sorted = sorted(algo_breakdown, key=lambda x: x[1], reverse=True)
+                _parts = " | ".join(f"{s} {w:.1f}%" for s, w in _sorted)
+                msg += f"{RTL}▸ פירוט: {_parts}\n"
 
         spy_hist_caching = ec.get_cached_history("SPY", "1y", "1d")
         regime_for_coaching = ec.compute_market_regime(spy_hist_caching)

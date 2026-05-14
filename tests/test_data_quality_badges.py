@@ -81,7 +81,8 @@ class TestFmtActionability:
 
     def test_review_required_label(self):
         result = fmt_actionability("review_required")
-        assert "לבדוק" in result
+        # Action-oriented per 2026-05-14 feedback (replaces cryptic "🟡 לבדוק")
+        assert "ממתין" in result and "/risk" in result
         assert "🟡" in result
 
     def test_observation_only_label(self):
