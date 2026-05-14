@@ -68,13 +68,55 @@ def update_stop_for_campaign(sb, campaign_id, stop_price):
     sb.table("trades").update({"stop_loss": stop_price}).eq("campaign_id", campaign_id).eq("side", "BUY").execute()
 
 
+def get_management_notes(sb, campaign_id: str) -> str:
+    """Read the current management_notes blob for a campaign.
+
+    Returns empty string when the campaign exists but has no notes yet,
+    or when no row matches. Caller can rely on str return type.
+    """
+    res = (
+        sb.table("trades")
+        .select("management_notes")
+        .eq("campaign_id", campaign_id)
+        .eq("side", "BUY")
+        .order("trade_date", desc=False)  # earliest BUY = the canonical row
+        .limit(1)
+        .execute()
+    )
+    data = res.data if res and res.data else []
+    if not data:
+        return ""
+    return data[0].get("management_notes") or ""
+
+
 def update_management_notes(sb, campaign_id, note):
-    sb.table("trades").update({"management_notes": note}).eq("campaign_id", campaign_id).eq("side", "BUY").execute()
+    """Append a timestamped note to the campaign's management history.
+
+    Sprint 8 #8 (Compliance): switched from REPLACE to APPEND. Without this,
+    every Add-On confirmation overwrote the prior note — so a regulator
+    asking "when was the last addon?" got only the most recent answer.
+    History is now preserved in the column directly, in addition to the
+    audit_log row that audit_logger writes (defense in depth: even if
+    migration 002 hasn't been applied and audit_log is unreachable, the
+    notes column itself preserves the trail).
+
+    Each entry is prefixed with a timestamp `[YYYY-MM-DD HH:MM]` for
+    grep-ability and human readability when displayed in Telegram.
+    """
+    from datetime import datetime
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    new_entry = f"[{ts}] {note}"
+
+    previous = get_management_notes(sb, campaign_id)
+    full_notes = f"{previous}\n{new_entry}" if previous else new_entry
+
+    sb.table("trades").update({"management_notes": full_notes}).eq("campaign_id", campaign_id).eq("side", "BUY").execute()
     # Audit: addon confirmations and stop adjustments flow through here.
     # log_action is fail-open — never raises, prints to stderr on failure.
     audit_logger.log_action(
         sb, audit_logger.ACTION_ADDON_CONFIRM,
-        after={"campaign_id": campaign_id, "note": note},
+        before={"previous_notes_chars": len(previous)},
+        after={"campaign_id": campaign_id, "appended": new_entry},
     )
 
 

@@ -186,21 +186,117 @@ class TestUpdateStopForCampaign:
         assert any("BUY" in c for c in calls)
 
 
-# ── update_management_notes ───────────────────────────────────────────────────
+# ── update_management_notes (Sprint 8 #8: APPEND not REPLACE) ─────────────────
 
 @pytest.mark.unit
 class TestUpdateManagementNotes:
-    def test_updates_management_notes(self):
-        sb = _sb()
-        repo.update_management_notes(sb, "C1", "Runner: להחזיק")
-        sb.update.assert_called_with({"management_notes": "Runner: להחזיק"})
+    """
+    Sprint 8 #8: switched from REPLACE to APPEND so management_notes
+    preserves the full trail. Defense-in-depth: even if migration 002
+    isn't applied and audit_log can't be written, the column itself
+    keeps history.
+    """
 
-    def test_filters_campaign_and_side(self):
-        sb = _sb()
+    def _sb_with_existing(self, existing_notes):
+        """Build a mock that returns `existing_notes` from get_management_notes
+        and tracks what update() was called with."""
+        sb = MagicMock()
+        sb.table.return_value = sb
+        sb.select.return_value = sb
+        sb.eq.return_value = sb
+        sb.order.return_value = sb
+        sb.limit.return_value = sb
+        sb.update.return_value = sb
+        sb.execute.return_value.data = [{"management_notes": existing_notes}] if existing_notes is not None else []
+        return sb
+
+    def test_appends_to_existing_notes(self):
+        sb = self._sb_with_existing("[2026-05-13 10:00] First entry")
+        repo.update_management_notes(sb, "C1", "Add-On approved")
+        # update() called with the concatenation: existing + "\n[TS] new"
+        update_calls = [c for c in sb.update.call_args_list]
+        assert len(update_calls) >= 1
+        last_payload = update_calls[-1][0][0]
+        notes_value = last_payload["management_notes"]
+        assert "First entry" in notes_value
+        assert "Add-On approved" in notes_value
+        # Newline separator between old and new
+        assert "\n" in notes_value
+
+    def test_first_note_no_leading_newline(self):
+        """When previous notes are empty, no orphan '\\n' at the start."""
+        sb = self._sb_with_existing("")
+        repo.update_management_notes(sb, "C1", "First entry")
+        last_payload = sb.update.call_args_list[-1][0][0]
+        notes_value = last_payload["management_notes"]
+        assert not notes_value.startswith("\n")
+        assert "First entry" in notes_value
+
+    def test_timestamp_prefix_present(self):
+        """Each appended entry must be prefixed with [YYYY-MM-DD HH:MM]."""
+        import re
+        sb = self._sb_with_existing("")
+        repo.update_management_notes(sb, "C1", "Stop tightened to BE")
+        notes_value = sb.update.call_args_list[-1][0][0]["management_notes"]
+        # Match "[YYYY-MM-DD HH:MM]" — 4-2-2 digits, space, 2:2 digits
+        assert re.match(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\] ", notes_value), \
+            f"Expected timestamped prefix, got: {notes_value!r}"
+
+    def test_filters_campaign_and_side_on_update(self):
+        """The UPDATE call must scope to (campaign_id, side=BUY)."""
+        sb = self._sb_with_existing("")
         repo.update_management_notes(sb, "C1", "note")
-        calls = [str(c) for c in sb.eq.call_args_list]
-        assert any("C1" in c for c in calls)
-        assert any("BUY" in c for c in calls)
+        eq_calls = [str(c) for c in sb.eq.call_args_list]
+        assert any("C1" in c for c in eq_calls)
+        assert any("BUY" in c for c in eq_calls)
+
+    def test_handles_missing_existing_notes_as_empty(self):
+        """When no row matches the SELECT, treat as empty (don't crash)."""
+        sb = self._sb_with_existing(None)  # .data = []
+        repo.update_management_notes(sb, "MISSING", "first note ever")
+        # Still produces a write
+        assert sb.update.called
+        notes_value = sb.update.call_args_list[-1][0][0]["management_notes"]
+        assert "first note ever" in notes_value
+
+
+# ── get_management_notes (Sprint 8 #8) ────────────────────────────────────────
+
+@pytest.mark.unit
+class TestGetManagementNotes:
+    def _sb_returning(self, data):
+        sb = MagicMock()
+        sb.table.return_value = sb
+        sb.select.return_value = sb
+        sb.eq.return_value = sb
+        sb.order.return_value = sb
+        sb.limit.return_value = sb
+        sb.execute.return_value.data = data
+        return sb
+
+    def test_returns_existing_notes(self):
+        sb = self._sb_returning([{"management_notes": "[2026-05-13] entry"}])
+        assert repo.get_management_notes(sb, "C1") == "[2026-05-13] entry"
+
+    def test_returns_empty_string_when_no_row(self):
+        sb = self._sb_returning([])
+        assert repo.get_management_notes(sb, "C1") == ""
+
+    def test_returns_empty_string_when_data_none(self):
+        sb = self._sb_returning(None)
+        assert repo.get_management_notes(sb, "C1") == ""
+
+    def test_returns_empty_string_when_notes_field_null(self):
+        """Supabase returns the row but management_notes column is NULL."""
+        sb = self._sb_returning([{"management_notes": None}])
+        assert repo.get_management_notes(sb, "C1") == ""
+
+    def test_filters_by_campaign_and_buy_side(self):
+        sb = self._sb_returning([{"management_notes": "x"}])
+        repo.get_management_notes(sb, "MRVL")
+        eq_calls = [str(c) for c in sb.eq.call_args_list]
+        assert any("MRVL" in c for c in eq_calls)
+        assert any("BUY" in c for c in eq_calls)
 
 
 # ── get_open_campaign_for_symbol ───────────────────────────────────────────────
