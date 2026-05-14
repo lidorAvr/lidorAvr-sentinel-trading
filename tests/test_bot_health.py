@@ -1,7 +1,7 @@
 """
 Tests for bot_health.py — build_health_report().
 
-13-check system health report — uses patch.object on the module's bound
+14-check system health report — uses patch.object on the module's bound
 names (supabase, ec, get_account_settings) to verify outcomes.
 """
 import sys, os, json, types as py_types
@@ -87,9 +87,9 @@ class TestReportShape:
         result = _run_report()
         assert "תקין" in result and "אזהרה" in result and "שגיאה" in result
 
-    def test_has_13_check_lines(self):
+    def test_has_check_lines(self):
         result = _run_report()
-        # Each check produces 1 line; 4 header lines + 13 checks = 17 lines
+        # Each check produces 1 line; 4 header lines + 14 checks = 18 lines
         # (allow some flex since ALGO Positions may be skipped if df is empty)
         line_count = result.count("\n")
         assert line_count >= 14  # at least the 4 header + ~10 checks
@@ -168,6 +168,68 @@ class TestEnvChecks:
     def test_admin_id_present_shows_ok(self):
         result = _run_report(env={"TELEGRAM_ADMIN_ID": "12345"})
         assert "Telegram Admin" in result
+
+
+# ── Audit log accessibility (Sprint 7 check #14) ──────────────────────────────
+
+class TestAuditLogCheck:
+    """
+    Sprint 7 #4: check #14 surfaces missing migration 002 to the trader.
+    audit_logger is fail-open by design, so without this check a missing
+    audit_log table is silent — exactly the compliance gap Meeting 7 flagged.
+    """
+
+    def _make_sb_with_audit(self, audit_behaviour):
+        """Build a supabase mock where the audit_log table behaves per kwarg.
+
+        audit_behaviour:
+          "ok"      → select.execute returns empty data
+          "missing" → table().select() raises with 'does not exist'
+          "other"   → table().select() raises with a generic message
+        """
+        sb = MagicMock()
+
+        def _table(name):
+            chain = MagicMock()
+            chain.select.return_value = chain
+            chain.order.return_value = chain
+            chain.limit.return_value = chain
+            if name == "audit_log":
+                if audit_behaviour == "ok":
+                    chain.execute.return_value = MagicMock(data=[])
+                elif audit_behaviour == "missing":
+                    chain.execute.side_effect = Exception(
+                        'relation "audit_log" does not exist'
+                    )
+                else:  # other
+                    chain.execute.side_effect = Exception("network down")
+            else:
+                chain.execute.return_value = MagicMock(
+                    data=[{"trade_date": "2025-05-12"}]
+                )
+            return chain
+        sb.table.side_effect = _table
+        return sb
+
+    def test_audit_log_accessible_shows_ok(self):
+        result = _run_report(supabase_mock=self._make_sb_with_audit("ok"))
+        assert "Audit Log — טבלה נגישה" in result
+        # No bad/warning for audit log
+        assert "Audit Log — טבלה חסרה" not in result
+
+    def test_missing_table_shows_bad_with_migration_hint(self):
+        result = _run_report(supabase_mock=self._make_sb_with_audit("missing"))
+        assert "Audit Log — טבלה חסרה" in result
+        # Operator must see how to fix it
+        assert "002_audit_log.sql" in result
+
+    def test_other_error_shows_warn_not_bad(self):
+        """Non-schema errors (network blip, auth) get a softer warning,
+        not the migration-missing red."""
+        result = _run_report(supabase_mock=self._make_sb_with_audit("other"))
+        assert "Audit Log — שגיאת גישה" in result
+        # Hint must NOT appear for non-schema errors
+        assert "002_audit_log.sql" not in result.split("Audit Log")[-1].split("\n")[0]
 
 
 # ── RTL markers ───────────────────────────────────────────────────────────────
