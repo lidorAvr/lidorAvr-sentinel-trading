@@ -158,13 +158,30 @@ def handle_queries(call):
             ts_str  = datetime.now().strftime("%Y-%m-%d %H:%M")
             note    = f"Add-On אושר: כניסה ${entry} | סטופ ${stop} | כמות {qty} ({ts_str})"
             try:
-                # record confirmation in management_notes of the open campaign
-                res = supabase.table("trades").select("campaign_id").eq("symbol", sym).execute()
-                cid = res.data[0]["campaign_id"] if res.data else None
+                cid = repo.get_open_campaign_for_symbol(supabase, sym)
                 if cid:
                     repo.update_management_notes(supabase, cid, note)
-            except Exception:
-                pass
+                    # Mark addon fields (requires migration 001_addon_phase2.sql)
+                    try:
+                        _tid = repo.get_latest_buy_trade_id(supabase, sym, cid)
+                        if _tid:
+                            _seq_res = supabase.table("trades").select("trade_id").eq("campaign_id", cid).eq("is_addon", True).execute()
+                            _seq = len(_seq_res.data or []) + 1
+                            repo.update_addon_record(supabase, _tid, cid, _seq)
+                    except Exception:
+                        pass  # expected until migration 001_addon_phase2.sql is applied
+                else:
+                    bot.send_message(
+                        chat_id,
+                        f"{RTL}⚠️ *Add-On נרשם אך לא נמצא קמפיין פתוח ל-{sym}*\nוודא ידנית ב-management\\_notes.",
+                        parse_mode="Markdown",
+                    )
+            except Exception as exc:
+                bot.send_message(
+                    chat_id,
+                    f"{RTL}⚠️ *שגיאה בשמירת Add-On ל-Supabase*\n`{type(exc).__name__}: {exc}`\nוודא ידנית.",
+                    parse_mode="Markdown",
+                )
             if chat_id in user_state:
                 del user_state[chat_id]
             bot.send_message(

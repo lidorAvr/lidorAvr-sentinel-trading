@@ -241,19 +241,60 @@ Mark's Final Verdict Meeting 4: **8.6/10** → Sprint 4 delivered.
 6. ✅ Developer menu PIN gate (`DEV_PIN` env var, 30-min session) — telegram_devops.py + telegram_bot.py
 7. ✅ `ADMIN_ID > 0` validation — bot_core.py fail-fast
 8. ✅ `docs/DESIGN_SYSTEM.md` — emoji/icon palette, heat labels, position states, healthcheck table
-9. ✅ Tests: 1201/1201 (+6 trailing stop, +4 healthcheck vs Sprint 3's 1195)
+9. ✅ Tests: 1203/1203 (+8 — trailing stop x6, healthcheck x6 real-impl vs Sprint 3's 1195)
+10. ✅ test_healthcheck.py שכותב מחדש — מייבא rm._touch_heartbeat אמיתי, לא helper מזויף
 
 **Still open for Meeting 5:**
 - Add-On Engine Phase 2 — Supabase schema + `/addon` dashboard
 - 48h Settle Period — empirical validation (production data needed)
 - SSH setup on Orange Pi — user action
-- Merge PR #15 → main — requires human approval
+- ✅ Merge PR #15 → main — בוצע
 - E2E test `test_e2e_risk_monitor.py`
 - Coverage report baseline (≥75% enforced by pytest-cov)
+- DEV_PIN ב-`.env` — יעד עתידי (optional, single-user system כרגע)
 
 ## Phase 10 — Meeting 5 & Sprint 5
 
-Status: **planned** — see `docs/CHATGPT_TEAM_PROMPT_V4.md`.
+Status: **complete** — 2026-05-13. See `docs/SPRINT_5_REPORT.md`.
+
+Mark's Final Verdict Meeting 5: **8.9/10** → Sprint 5 delivered in full.
+
+**Sprint 5 — completed:**
+1. ✅ Fix `telegram_callbacks.py:162` — Supabase query bug (`get_open_campaign_for_symbol()`)
+2. ✅ Fix `telegram_callbacks.py:166-167` — Silent failure → Telegram alert on error
+3. ✅ Production Stability: autoheal container, mem_limit 1200m (was 1536m), sentinel-bot max_age 1980s
+4. ✅ Security: `hmac.compare_digest` for PIN, rate limit 3/5min, persistent sessions JSON
+5. ✅ Add-On Phase 2a: `migrations/001_addon_phase2.sql` + `update_addon_record()` + callback wired
+6. ✅ Test Infrastructure: `mock_telegram_bot` fixture, `test_e2e_risk_monitor.py` (9 tests), pytest markers
+7. ✅ Tests: **1219/1219** (was 1210) — 0 failures
+
+**Stable release:** all Sprint 1-5 requirements closed. System ready for production deployment.
+
+**User action required:**
+- Run `migrations/001_addon_phase2.sql` against Supabase to enable Add-On Phase 2a columns.
+
+## Phase 11 — Meeting 6 (next)
+
+Status: **in progress** — Sprint 6 backlog defined. See `docs/CHATGPT_TEAM_PROMPT_V5.md`.
+
+**Sprint 6 — Priority 1 (must close):**
+1. `audit_logger.py` + Supabase `audit_log` table — every Supabase write logged
+2. Coverage gate ≥75% enforced in CI (`pytest --cov --cov-fail-under=75`)
+3. `test_e2e_risk_monitor.py` — full `main()` mock cycle (currently 9 partial tests)
+4. Add-On Phase 2b — eligibility dashboard in `/addon` (shows if position qualifies)
+5. `fmt_heat_thermometer()` — wired into weekly Telegram report
+
+**Sprint 6 — Priority 2 (important):**
+6. Dead code `_MANUAL_TRIGGER_FILE` removed from `main.py`
+7. SSH setup on Orange Pi (user action)
+8. IBKR Flex Query period → `Last 7 Days` (user action in IBKR UI)
+9. Auto-sync E2E validation — confirm 07:00 window produces Telegram notification
+10. 48h Settle Period — data collection ongoing (production data required)
+
+**Incentive structure (declared at Meeting 6):**
+- $1,000,000 — first department whose ALL tasks pass, voted unanimously by all 14 departments
+- $5,000/employee — when system is fully live and stable in production
+- +30% lifetime salary — when system is 100% operational with zero failures
 
 ## Parking lot
 

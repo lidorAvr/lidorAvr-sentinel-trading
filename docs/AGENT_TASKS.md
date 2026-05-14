@@ -61,6 +61,134 @@ Rollback:
 - ...
 ```
 
+## Sprint 6 — Active tasks (Meeting 6)
+
+### TASK-20260513-001 — audit_logger.py + Supabase audit_log table
+
+Status: todo
+Risk: Medium
+Affected services: telegram-bot, telegram-callbacks
+
+Goal:
+- Log every Supabase write operation (update, insert) to a local audit trail and Supabase `audit_log` table.
+- Required for Compliance & Auditability department sign-off.
+
+Plan:
+1. Create `audit_logger.py` — `log_write(table, operation, row_id, fields, actor)`.
+2. Add `audit_log` migration SQL in `migrations/002_audit_log.sql`.
+3. Wire into `supabase_repository.py` write functions (update_trade, update_stop_for_campaign, update_management_notes, update_addon_record).
+
+Validation:
+- [ ] All Supabase writes produce an audit_log entry
+- [ ] audit_log table has: id, timestamp, table_name, operation, row_id, actor, fields_json
+- [ ] pytest -q green
+- [ ] Migration file ready for user to run
+
+---
+
+### TASK-20260513-002 — Coverage gate ≥75% enforced in CI
+
+Status: todo
+Risk: Low
+Affected services: CI only
+
+Goal:
+- `pytest --cov=engine_core --cov=adaptive_risk_engine --cov=analytics_engine --cov-fail-under=75` in GitHub Actions.
+
+Plan:
+1. Update `.github/workflows/tests.yml` to add coverage step.
+2. Run locally first to verify current coverage.
+3. If coverage < 75%, add targeted tests before enforcing.
+
+Validation:
+- [ ] CI fails if coverage drops below 75%
+- [ ] CI green on branch
+
+---
+
+### TASK-20260513-003 — test_e2e_risk_monitor.py — full main() mock cycle
+
+Status: todo
+Risk: Low
+Affected services: tests only
+
+Goal:
+- Expand `test_e2e_risk_monitor.py` (currently 9 tests) to cover a full `main()` loop cycle with mock Supabase and mock live prices.
+- Verify state transitions, alert firing, and cooldown logic end-to-end.
+
+Plan:
+1. Add `TestFullMainLoopCycle` class — mock Supabase + mock yfinance + mock send_telegram.
+2. Test: position enters RUNNER state → alert fired → second call within cooldown → no duplicate alert.
+3. Test: Supabase returns empty → no crash.
+
+Validation:
+- [ ] ≥5 new tests covering main() mock cycle
+- [ ] pytest -q green
+
+---
+
+### TASK-20260513-004 — Add-On Phase 2b — eligibility dashboard in /addon
+
+Status: todo
+Risk: Low
+Affected services: telegram-bot, telegram-callbacks
+
+Goal:
+- When user types `/addon SYMBOL`, show eligibility status before asking for entry/stop/qty.
+- Eligibility: open BUY campaign exists + `quality ≥ 7` (if set) + no existing add-on sequence > 1.
+
+Plan:
+1. `supabase_repository.py`: `get_addon_eligibility(sb, symbol)` — returns dict with `eligible`, `reason`, `campaign_id`.
+2. `telegram_callbacks.py`: before showing entry form, display eligibility card.
+3. Hebrew message: "✅ כשיר להוספה — קמפיין פתוח נמצא" / "⚠️ לא כשיר — [סיבה]".
+
+Validation:
+- [ ] Eligibility shown before confirming add-on
+- [ ] Ineligible positions show clear Hebrew reason
+- [ ] pytest -q green
+
+---
+
+### TASK-20260513-005 — fmt_heat_thermometer() wired to weekly report
+
+Status: todo
+Risk: Low
+Affected services: report-scheduler, report_renderer
+
+Goal:
+- `fmt_heat_thermometer()` output (already in `telegram_formatters.py`) included in the weekly PDF/Telegram report.
+
+Plan:
+1. `report_renderer.py`: call `fmt_heat_thermometer(heat_data)` and embed in weekly summary.
+2. `report_scheduler.py`: compute `heat_data` from `compute_adaptive_risk()` before rendering.
+
+Validation:
+- [ ] Weekly Telegram summary contains thermometer block
+- [ ] PDF weekly report contains thermometer section
+- [ ] pytest -q green
+
+---
+
+### TASK-20260513-006 — Remove dead _MANUAL_TRIGGER_FILE code from main.py
+
+Status: todo
+Risk: Low
+Affected services: sentinel-bot
+
+Goal:
+- `main.py:13` defines `MANUAL_TRIGGER_FILE = "/app/ibkr_manual_trigger"` and `_handle_manual_trigger()` (~25 lines) — never called.
+- Safe to delete: manual sync runs via `telegram_devops._run_manual_sync_thread` directly.
+
+Plan:
+1. Delete `MANUAL_TRIGGER_FILE` constant and `_handle_manual_trigger()` function.
+2. Remove the call site in the main loop.
+
+Validation:
+- [ ] pytest -q green
+- [ ] No references to `ibkr_manual_trigger` remain
+
+---
+
 ## Active tasks
 
 ### TASK-20260512-009 — Phase 4 Telegram refactor (sessions 9)

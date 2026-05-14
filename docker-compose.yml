@@ -14,14 +14,16 @@ services:
     volumes:
       - .:/app
       - sentinel_state:/app/state
-    mem_limit: 1536m
+    mem_limit: 1200m
+    labels:
+      - "autoheal=true"
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "5"
     healthcheck:
-      test: ["CMD", "python3", "-c", "import os,time,sys; p='/app/state/sentinel_bot_last_cycle'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p)<1920 else 1)"]
+      test: ["CMD", "python3", "-c", "import os,time,sys; p='/app/state/sentinel_bot_last_cycle'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p)<1980 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -42,7 +44,9 @@ services:
     volumes:
       - .:/app
       - sentinel_state:/app/state
-    mem_limit: 1536m
+    mem_limit: 1200m
+    labels:
+      - "autoheal=true"
     logging:
       driver: "json-file"
       options:
@@ -69,7 +73,9 @@ services:
       - 1.1.1.1
     volumes:
       - .:/app
-    mem_limit: 1536m
+    mem_limit: 1200m
+    labels:
+      - "autoheal=true"
     logging:
       driver: "json-file"
       options:
@@ -97,7 +103,9 @@ services:
     volumes:
       - .:/app
       - sentinel_state:/app/state
-    mem_limit: 1536m
+    mem_limit: 1200m
+    labels:
+      - "autoheal=true"
     logging:
       driver: "json-file"
       options:
@@ -127,7 +135,9 @@ services:
     volumes:
       - .:/app
       - sentinel_state:/app/state
-    mem_limit: 1536m
+    mem_limit: 1200m
+    labels:
+      - "autoheal=true"
     logging:
       driver: "json-file"
       options:
@@ -141,6 +151,17 @@ services:
       start_period: 30s
     depends_on:
       - telegram-bot
+
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: autoheal
+    restart: always
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=autoheal
+      - AUTOHEAL_INTERVAL=30
+      - AUTOHEAL_START_PERIOD=60
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
 
 volumes:
   sentinel_state:

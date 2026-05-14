@@ -129,7 +129,7 @@ dev_pin_is_configured() -> bool              # האם DEV_PIN הוגדר
 
 | מדד | לפני | עכשיו | שינוי |
 |---|---|---|---|
-| Tests passing | 1195 | **1201** | +6 |
+| Tests passing | 1195 | **1203** | +8 |
 | Healthcheck real | 1/5 | **5/5** | +4 |
 | CI branch coverage | main only | **main + claude/\*\*** | שיפור |
 | Trailing Stop function | אין | ✅ MA21/MA50/breakeven | חדש |
@@ -141,11 +141,22 @@ dev_pin_is_configured() -> bool              # האם DEV_PIN הוגדר
 
 ---
 
+## 🔧 תיקון Post-Sprint — test_healthcheck.py
+
+**ממצא:** `test_healthcheck.py` הגדיר `_touch_heartbeat` משלו במקום לייבא מהמודול האמיתי.  
+**תיקון:** שכתוב מלא — כעת מייבא `rm._touch_heartbeat` מ-`risk_monitor.py` ישירות,  
+עם `monkeypatch` על `rm._HEARTBEAT_DIR` לתיקיית זמנית.  
+נוספו 2 טסטים חדשים: `test_creates_dir_if_missing` + `test_silent_on_permission_error`.  
+**Tests: 1203/1203** (+2 נוספו)
+
+---
+
 ## 🔓 מה עדיין פתוח — לישיבה הבאה (Meeting 5)
 
-1. Merge PR #15 → main — דרוש אישור ידני
+1. ✅ Merge PR #15 → main — **בוצע על ידי המשתמש**
 2. Add-On Phase 2 — Supabase schema + dashboard view + alerts
 3. 48h Settle Period — אימות אמפירי עם נתוני ייצור
-4. SSH setup ל-Orange Pi — פעולת משתמש
+4. SSH setup ל-Orange Pi — פעולת משתמש (לא דחוף)
 5. E2E test `test_e2e_risk_monitor.py`
 6. Coverage baseline ≥75% (pytest-cov gate)
+7. DEV_PIN ב-`.env` — יעד עתידי (לא דחוף, רק אחד משתמש כרגע)

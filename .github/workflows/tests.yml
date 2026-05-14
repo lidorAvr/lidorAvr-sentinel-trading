@@ -28,4 +28,10 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Run tests
-        run: pytest -q
+        run: pytest --tb=short -q
+        env:
+          TELEGRAM_BOT_TOKEN: "ci-test-token"
+          TELEGRAM_ADMIN_ID: "12345"
+          SUPABASE_URL: "https://ci-test.supabase.co"
+          SUPABASE_KEY: "ci-test-key"
+          DEV_PIN: "0000"

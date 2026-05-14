@@ -69,6 +69,46 @@ def update_management_notes(sb, campaign_id, note):
     sb.table("trades").update({"management_notes": note}).eq("campaign_id", campaign_id).eq("side", "BUY").execute()
 
 
+def get_latest_buy_trade_id(sb, symbol: str, campaign_id: str) -> str | None:
+    """Return trade_id of the most recent BUY entry for this campaign (for addon marking)."""
+    res = (
+        sb.table("trades")
+        .select("trade_id")
+        .eq("campaign_id", campaign_id)
+        .eq("side", "BUY")
+        .order("trade_date", desc=True)
+        .limit(1)
+        .execute()
+    )
+    data = res.data if res and res.data else []
+    return data[0]["trade_id"] if data else None
+
+
+def update_addon_record(sb, trade_id: str, base_campaign_lot_id: str, addon_sequence: int) -> None:
+    """Mark a trade as an add-on and link it to the base campaign lot.
+    Requires migration 001_addon_phase2.sql to be applied first."""
+    sb.table("trades").update({
+        "is_addon": True,
+        "base_campaign_lot_id": base_campaign_lot_id,
+        "addon_sequence": addon_sequence,
+    }).eq("trade_id", trade_id).execute()
+
+
+def get_open_campaign_for_symbol(sb, symbol: str) -> str | None:
+    """Return campaign_id of the most recent open BUY campaign for symbol, or None."""
+    res = (
+        sb.table("trades")
+        .select("campaign_id")
+        .eq("symbol", symbol)
+        .eq("side", "BUY")
+        .order("trade_date", desc=True)
+        .limit(1)
+        .execute()
+    )
+    data = res.data if res and res.data else []
+    return data[0]["campaign_id"] if data else None
+
+
 def get_existing_trade_ids(sb) -> set:
     """Return the set of trade_id values already in Supabase (as strings)."""
     rows = sb.table("trades").select("trade_id").execute().data or []
