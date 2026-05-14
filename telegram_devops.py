@@ -143,17 +143,9 @@ def dev_pin_record_failure(chat_id: int) -> None:
 
 # ── Developer-menu constants ─────────────────────────────────────────────────
 _DEV_STATE_FILE      = "/app/ibkr_dev_state.json"
-_MANUAL_TRIGGER_FILE = "/app/ibkr_manual_trigger"  # unused — see TODO below
-_DEPLOY_TRIGGER_FILE = "/app/deploy_trigger"       # unused — placeholder
 
 _DEV_SYNC_MAX_PER_DAY    = 2
 _DEV_SYNC_COOLDOWN_HOURS = 3
-
-# NOTE: _MANUAL_TRIGGER_FILE is defined in main.py as the channel that
-# main.py watches to know when the developer menu triggered a sync.
-# However, _run_manual_sync_thread below calls run_ibkr_sync directly
-# instead of writing the trigger file — so the file is never created and
-# main.py's _handle_manual_trigger code path is dead. Resolution deferred.
 
 
 def _dev_sync_check() -> tuple:
