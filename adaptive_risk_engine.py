@@ -18,6 +18,15 @@ import pandas as pd
 import engine_core as ec
 
 RISK_LADDER = [0.25, 0.40, 0.60, 0.85, 1.15, 1.50, 2.00]  # uniform step cadence, removes non-monotonic 2.50 outlier
+
+# ── Drawdown auto-cut (Sprint 8 #9, Jordan/Risk Mgmt from Meeting 8) ─────────
+# When 30-day realised PnL drops below this percentage of NAV, force the
+# risk-pct down to a floor — overrides whatever heat score would otherwise
+# recommend. Mark in Trade Like a Champion ch.13: "stop the bleeding before
+# you analyze why it bled."
+DRAWDOWN_TRIGGER_PCT  = -8.0   # 30-day PnL ≤ -8% of NAV → cut
+DRAWDOWN_CUT_TO_PCT   = 0.40   # nearest RISK_LADDER step below Jordan's 0.50 target
+DRAWDOWN_WINDOW_DAYS  = 30     # rolling window for the PnL aggregation
 RECOMMENDATIONS_LOG_FILE = "risk_recommendations.json"
 RISK_JOURNAL_FILE = "risk_journal.json"
 SENTINEL_CONFIG_FILE = "sentinel_config.json"
@@ -181,6 +190,73 @@ def compute_closed_campaigns(trades_df: pd.DataFrame) -> list[dict]:
 
     closed.sort(key=lambda x: x["close_date"], reverse=True)
     return closed
+
+
+# ── Sprint 8 #9: drawdown auto-cut helpers ────────────────────────────────────
+
+def filter_closed_within_days(closed_campaigns: list, window_days: int = DRAWDOWN_WINDOW_DAYS,
+                               ref_date=None) -> list:
+    """Return only closed campaigns whose close_date is within the last `window_days`
+    relative to `ref_date` (default: now). Caller-friendly wrapper over a date filter
+    so multiple consumers (drawdown, weekly summary, etc.) don't reinvent it."""
+    from datetime import datetime, timedelta
+    ref = ref_date or datetime.now()
+    cutoff = ref - timedelta(days=window_days)
+    out = []
+    for c in closed_campaigns:
+        cd = c.get("close_date")
+        if cd is None:
+            continue
+        try:
+            cd_dt = pd.to_datetime(cd)
+            # Strip timezone so the comparison is naive-to-naive
+            if cd_dt.tzinfo is not None:
+                cd_dt = cd_dt.tz_localize(None)
+            if cd_dt >= cutoff:
+                out.append(c)
+        except Exception:
+            continue
+    return out
+
+
+def drawdown_auto_cut_recommendation(closed_campaigns: list, current_risk_pct: float,
+                                      nav: float) -> dict | None:
+    """Return a forced-cut recommendation when 30d PnL ≤ -8% of NAV.
+
+    Returns None when:
+      - drawdown isn't bad enough to trigger,
+      - current_risk_pct is already at or below the floor,
+      - NAV or inputs are invalid.
+
+    When triggered, the dict contains everything the caller needs to override
+    the heat-based recommendation:
+      force_cut_to_pct  — the new risk_pct (DRAWDOWN_CUT_TO_PCT)
+      drawdown_pct      — the actual 30d drawdown observed (negative)
+      pnl_30d_usd       — the dollar PnL over the window
+      reason            — human-readable Hebrew + English string
+      window_days       — for transparency in alerts
+    """
+    if not closed_campaigns or nav <= 0:
+        return None
+    recent = filter_closed_within_days(closed_campaigns, DRAWDOWN_WINDOW_DAYS)
+    if not recent:
+        return None
+    pnl_30d = sum(float(c.get("total_pnl_usd") or 0) for c in recent)
+    drawdown_pct = pnl_30d / nav * 100.0
+    if drawdown_pct > DRAWDOWN_TRIGGER_PCT:
+        return None  # not bad enough
+    if current_risk_pct <= DRAWDOWN_CUT_TO_PCT:
+        return None  # already at or below the floor
+    return {
+        "force_cut_to_pct": DRAWDOWN_CUT_TO_PCT,
+        "drawdown_pct":     round(drawdown_pct, 2),
+        "pnl_30d_usd":      round(pnl_30d, 2),
+        "n_trades":         len(recent),
+        "window_days":      DRAWDOWN_WINDOW_DAYS,
+        "reason":           (f"Drawdown {drawdown_pct:.1f}% over {DRAWDOWN_WINDOW_DAYS}d "
+                             f"(${pnl_30d:.0f}) ≤ trigger {DRAWDOWN_TRIGGER_PCT:.0f}% — "
+                             f"force cut to {DRAWDOWN_CUT_TO_PCT:.2f}%"),
+    }
 
 
 def _window_stats(camps: list) -> dict:
@@ -469,6 +545,28 @@ def compute_adaptive_risk(
         "heat_factors":     heat_factors,
         "what_to_improve":  what_to_improve,
     }
+
+    # Sprint 8 #9: drawdown auto-cut override.
+    # If the 30-day window shows ≤ -8% of NAV, the heat-based recommendation
+    # is overridden to a forced cut. Mark's "stop the bleeding" rule overrides
+    # any positive heat reading — the trader cannot recover into worse risk.
+    dd = drawdown_auto_cut_recommendation(closed_campaigns, current_risk_pct, nav)
+    if dd is not None:
+        result["override"]              = "drawdown_auto_cut"
+        result["drawdown_pct"]          = dd["drawdown_pct"]
+        result["drawdown_pnl_usd"]      = dd["pnl_30d_usd"]
+        result["drawdown_n_trades"]     = dd["n_trades"]
+        result["drawdown_window_days"]  = dd["window_days"]
+        result["recommended_risk_pct"]  = dd["force_cut_to_pct"]
+        result["recommended_risk_usd"]  = round(nav * dd["force_cut_to_pct"] / 100, 0)
+        result["direction"]             = "down_fast"
+        result["step_type"]             = "🚨 Drawdown auto-cut — קיצוץ מחויב"
+        result["heat_factors"]          = [f"⛔ {dd['reason']}"] + (heat_factors or [])
+        result["what_to_improve"]       = [
+            f"Drawdown 30d: {dd['drawdown_pct']:.1f}% (${dd['pnl_30d_usd']:.0f}) — "
+            f"מתחת לסף -8% של NAV. הרצה עם {dd['force_cut_to_pct']:.2f}% עד שהDD יחזור מעל -5%.",
+        ] + (what_to_improve or [])
+
     _log_recommendation(result)
     return result
 
