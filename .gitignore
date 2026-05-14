@@ -7,3 +7,9 @@ __pycache__/
 *.pyc
 deploy_trigger
 deploy_watcher.log
+
+# pytest-cov artifacts (Sprint 6 #4 added coverage gate)
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
