@@ -44,8 +44,22 @@ def _empty() -> dict:
     return {"snoozed": {}, "last_action": {}}
 
 
-def load_state(path: str = TASK_STATE_FILE) -> dict:
+def _resolve_path(path: Optional[str]) -> str:
+    """Resolve the state-file path. Defaulting to None and looking up
+    `TASK_STATE_FILE` at call time (instead of binding it as a function
+    default) makes the module variable monkey-patchable from tests and
+    overridable at runtime if/when a per-user state file is needed.
+
+    Python binds default arguments at function-definition time, so
+    `def f(path: str = TASK_STATE_FILE)` would freeze whatever value
+    TASK_STATE_FILE had at import. CI runners without /app/ would
+    silently write to a non-existent dir."""
+    return path if path is not None else TASK_STATE_FILE
+
+
+def load_state(path: Optional[str] = None) -> dict:
     """Return the persisted state or an empty skeleton on any failure."""
+    path = _resolve_path(path)
     try:
         if not os.path.exists(path):
             return _empty()
@@ -60,8 +74,9 @@ def load_state(path: str = TASK_STATE_FILE) -> dict:
         return _empty()
 
 
-def save_state(state: dict, path: str = TASK_STATE_FILE) -> bool:
+def save_state(state: dict, path: Optional[str] = None) -> bool:
     """Atomic write (tmp + os.replace). Returns True on success."""
+    path = _resolve_path(path)
     try:
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -77,7 +92,7 @@ def _purge_expired(snoozed: dict, now_ts: float) -> dict:
     return {k: v for k, v in snoozed.items() if v > now_ts}
 
 
-def get_snoozes(path: str = TASK_STATE_FILE,
+def get_snoozes(path: Optional[str] = None,
                  now_ts: Optional[float] = None) -> dict:
     """Return active snoozes (expired ones cleaned out)."""
     now_ts = now_ts if now_ts is not None else time.time()
@@ -86,7 +101,7 @@ def get_snoozes(path: str = TASK_STATE_FILE,
 
 
 def snooze_task(dedup_key: str, duration_sec: int,
-                path: str = TASK_STATE_FILE,
+                path: Optional[str] = None,
                 now_ts: Optional[float] = None) -> bool:
     """Snooze a task until now_ts + duration_sec. Also records the
     action in last_action for audit."""
@@ -101,7 +116,7 @@ def snooze_task(dedup_key: str, duration_sec: int,
     return save_state(state, path)
 
 
-def dismiss_task(dedup_key: str, path: str = TASK_STATE_FILE,
+def dismiss_task(dedup_key: str, path: Optional[str] = None,
                   now_ts: Optional[float] = None) -> bool:
     """Long snooze (30 days) — "❌ דלג"."""
     return snooze_task(dedup_key, SNOOZE_LONG, path, now_ts)
@@ -109,7 +124,7 @@ def dismiss_task(dedup_key: str, path: str = TASK_STATE_FILE,
 
 def approve_task(dedup_key: str, before: Optional[float],
                   after: Optional[float],
-                  path: str = TASK_STATE_FILE,
+                  path: Optional[str] = None,
                   now_ts: Optional[float] = None) -> bool:
     """Record an approve action. Does NOT auto-snooze — the underlying
     rule will re-fire next cycle if the position state still satisfies
@@ -135,7 +150,7 @@ def approve_task(dedup_key: str, before: Optional[float],
     return save_state(state, path)
 
 
-def last_action(dedup_key: str, path: str = TASK_STATE_FILE) -> Optional[dict]:
+def last_action(dedup_key: str, path: Optional[str] = None) -> Optional[dict]:
     """Return the last recorded action for a task, or None."""
     state = load_state(path)
     return state.get("last_action", {}).get(dedup_key)

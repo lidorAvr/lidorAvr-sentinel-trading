@@ -16,11 +16,14 @@ import task_engine as te
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 
 def _pos(**overrides):
-    """A reasonable open-position dict matching the engine_core campaign output."""
+    """A reasonable open-position dict matching the engine_core campaign
+    output. Default setup is VCP so the original Sprint 10 thresholds
+    (2R BE, 3R trail, 21d dead-money) apply. Sprint 11 added EP-specific
+    profiles — see TestEPProfileSpecific for EP-tuned tests."""
     base = {
         "campaign_id": "CAT_T1",
         "symbol":       "CAT",
-        "setup_type":   "EP",
+        "setup_type":   "VCP",   # was "EP" — changed for setup-aware Sprint 11
         "current_price": 900.0,
         "entry_price":   870.0,
         "stop_loss":     840.0,
