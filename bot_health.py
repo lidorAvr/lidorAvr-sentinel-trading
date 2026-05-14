@@ -1,7 +1,7 @@
 """
 System health check for Sentinel Trading.
 
-build_health_report() runs 13 data-integrity checks and returns a
+build_health_report() runs 14 data-integrity checks and returns a
 Telegram-formatted Hebrew/RTL string. No bot or Telegram dependency —
 the caller is responsible for sending the result.
 """
@@ -131,6 +131,19 @@ def build_health_report() -> str:
         ok(f"Risk Journal — {rec_count} המלצות")
     except Exception:
         warn("Risk Journal — קובץ לא נמצא (טרם נוצר)")
+
+    # 14. audit_log table accessible
+    # Sprint 7 #4: audit_logger fails-open, so missing migration 002 is
+    # silent. This check surfaces it before compliance needs the trail.
+    try:
+        supabase.table("audit_log").select("id").limit(1).execute()
+        ok("Audit Log — טבלה נגישה")
+    except Exception as e:
+        msg = str(e)[:50]
+        if "does not exist" in msg.lower() or "schema cache" in msg.lower():
+            bad("Audit Log — טבלה חסרה (החל migration 002_audit_log.sql)")
+        else:
+            warn(f"Audit Log — שגיאת גישה: {msg}")
 
     total  = len(checks)
     n_ok   = sum(1 for c in checks if c.startswith("✅"))
