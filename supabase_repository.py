@@ -6,6 +6,8 @@ No module-level state, no Telegram dependencies — safe to import anywhere.
 """
 from collections import defaultdict
 
+import audit_logger
+
 _INCOMPLETE_TRADES_QUERY = (
     "setup_type.is.null,"
     "quality.is.null,"
@@ -68,6 +70,12 @@ def update_stop_for_campaign(sb, campaign_id, stop_price):
 
 def update_management_notes(sb, campaign_id, note):
     sb.table("trades").update({"management_notes": note}).eq("campaign_id", campaign_id).eq("side", "BUY").execute()
+    # Audit: addon confirmations and stop adjustments flow through here.
+    # log_action is fail-open — never raises, prints to stderr on failure.
+    audit_logger.log_action(
+        sb, audit_logger.ACTION_ADDON_CONFIRM,
+        after={"campaign_id": campaign_id, "note": note},
+    )
 
 
 def get_latest_buy_trade_id(sb, symbol: str, campaign_id: str) -> str | None:
