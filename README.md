@@ -5,8 +5,8 @@ SEPA methodology** (Specific Entry Point Analysis) — risk-first, R-multiple
 based, with adaptive sizing and trader development tracking.
 
 [![Sentinel Tests](https://github.com/lidorAvr/lidorAvr-sentinel-trading/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/lidorAvr/lidorAvr-sentinel-trading/actions/workflows/tests.yml)
-![Tests](https://img.shields.io/badge/tests-1258%20passing-brightgreen)
-![Coverage](https://img.shields.io/badge/coverage-68%25-yellow)
+![Tests](https://img.shields.io/badge/tests-1321%20passing-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-68.9%25-yellow)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![License](https://img.shields.io/badge/license-Private-lightgrey)
 
@@ -82,13 +82,15 @@ cp .env.example .env       # fill in TELEGRAM_BOT_TOKEN, SUPABASE_*, IBKR_*
 docker compose up -d --build
 ```
 
-### Apply Supabase migrations after deploy
+### Verify Supabase schema after deploy
 
 ```bash
-# Each migrations/*.sql is idempotent (uses IF NOT EXISTS).
-# Apply via Supabase SQL Editor; verify by running /system_health
-# in Telegram — checks #14 (audit_log) confirms 002 is applied.
+SUPABASE_URL=... SUPABASE_KEY=... python3 migrations/verify_migrations.py
 ```
+
+The script reads `INFORMATION_SCHEMA` and reports any missing tables or
+columns. Pair with `/system_health` in Telegram (check #14 verifies
+`audit_log` is reachable in production).
 
 ## Hard constraints (non-negotiable)
 
@@ -113,16 +115,21 @@ Full constraints in [`CLAUDE.md`](CLAUDE.md).
 - [`CLAUDE.md`](CLAUDE.md) — Claude Code specific context
 - [`docs/README.md`](docs/README.md) — full doc index (start here)
 - [`docs/SYSTEM_AUDIT_2026_05.md`](docs/SYSTEM_AUDIT_2026_05.md) — most recent system audit
-- [`docs/SPRINT_6_LESSONS.md`](docs/SPRINT_6_LESSONS.md) — example filled-in retrospective
+- [`docs/COVERAGE_BASELINE.md`](docs/COVERAGE_BASELINE.md) — coverage targets through Sprint 9
+- [`docs/SPRINT_6_LESSONS.md`](docs/SPRINT_6_LESSONS.md) — incident retrospective
+- [`docs/SPRINT_7_LESSONS.md`](docs/SPRINT_7_LESSONS.md) — recovery sprint
+- [`docs/SPRINT_8_LESSONS.md`](docs/SPRINT_8_LESSONS.md) — foundations hardening
+- [`docs/SPRINT_9_PLAN.md`](docs/SPRINT_9_PLAN.md) — current sprint charter
 
 ## Recent sprints
 
 | Sprint | Theme | Tests delta | Score |
 |--------|-------|-------------|-------|
 | 5 | Add-On schema, Supabase fixes, security | +29 | 8.9 |
-| 6 | audit_logger, healthchecks real, P1 features | +18 | 7.8 |
-| 7 | pytest-socket, audit healthcheck, process docs | +13 | (in progress) |
-| 8 | Foundations Hardening (this sprint) | TBD | TBD |
+| 6 | audit_logger, healthchecks real, P1 features | +18 | 7.8 (incident) |
+| 7 | pytest-socket, audit healthcheck, process docs | +3 | 8.6 (recovery) |
+| 8 | Foundations Hardening | +73 | **9.0** ⭐ |
+| 9 | Morning Briefing + engine_core 75% + features (in progress) | — | — |
 
 ---
 
