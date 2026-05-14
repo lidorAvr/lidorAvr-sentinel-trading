@@ -337,8 +337,13 @@ def fmt_addon_card(plan: dict, symbol: str = "") -> str:
 
 # ── Heat Thermometer ──────────────────────────────────────────────────────────
 
-_HEAT_FILLED  = "█"
-_HEAT_EMPTY   = "░"
+# Sprint 8 #10 (Mobile UX from Sarah, Meeting 6 backlog #28).
+# Block characters (█░) are bidirectional in Hebrew RTL contexts and visually
+# flip on iOS Telegram, so a 70%-filled bar can read as 30%-filled. Coloured
+# emoji circles render left-to-right inside RTL lines on every Telegram client
+# (iOS, Android, web, desktop) — verified by Sarah on iPhone 14 + Pixel 7.
+_HEAT_FILLED  = "🟢"
+_HEAT_EMPTY   = "⚪"
 _HEAT_BLOCKS  = 10
 
 _HEAT_LABEL_MAP = [
