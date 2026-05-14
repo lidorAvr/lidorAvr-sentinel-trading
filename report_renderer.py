@@ -96,9 +96,20 @@ def render_monthly(
     return _render("monthly_report.html.j2", ctx, output_dir, filename)
 
 
-def build_summary_text(analytics: dict, period_label: str, period_type: str = "weekly") -> str:
+def build_summary_text(
+    analytics: dict,
+    period_label: str,
+    period_type: str = "weekly",
+    risk_rec: Optional[dict] = None,
+) -> str:
     """
     Build the short Telegram summary message sent before the PDF.
+
+    risk_rec: optional adaptive-risk recommendation dict (from
+    adaptive_risk_engine.compute_adaptive_risk). When provided, a heat-score
+    thermometer with threshold legend is appended after the KPI block so the
+    trader sees the same heat visualization in the scheduled summary as in
+    the interactive Telegram drilldowns.
     """
     from analytics_engine import compute_verdict
     verdict, _ = compute_verdict(analytics)
@@ -120,6 +131,10 @@ def build_summary_text(analytics: dict, period_label: str, period_type: str = "w
         f"⚙️ Missing Stop: `{analytics.get('missing_stop_rate', 0)*100:.1f}%`  |  "
         f"Oversized: `{analytics.get('oversized_rate', 0)*100:.1f}%`",
     ]
+    if risk_rec is not None:
+        from telegram_formatters import fmt_heat_thermometer
+        lines.append("")
+        lines.append(fmt_heat_thermometer(risk_rec, include_legend=True))
     return "\n".join(lines)
 
 
