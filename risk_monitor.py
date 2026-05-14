@@ -9,6 +9,60 @@ import adaptive_risk_engine as are
 
 _HEARTBEAT_DIR = "/app/state"
 
+# File-mirror destination — same path the Telegram developer-menu log
+# viewer reads ("📋 לוגים → risk-monitor"). Without this, the menu shows
+# "_(קובץ לא קיים: /app/logs/sentinel_risk.log)_" (github issue #33).
+# docker logs risk-monitor continues to work because we tee, not replace.
+_LOG_FILE      = "/app/logs/sentinel_risk.log"
+_LOG_MAX_LINES = 2000
+
+
+class _StdoutTee:
+    """Mirror writes to stdout AND to a rotating file. Failures on the file
+    side are silently swallowed — we never want logging to break the engine."""
+    def __init__(self, stream, path):
+        self._stream = stream
+        self._path = path
+
+    def write(self, text):
+        try:
+            self._stream.write(text)
+        except Exception:
+            pass
+        if not text:
+            return
+        try:
+            os.makedirs(os.path.dirname(self._path), exist_ok=True)
+            with open(self._path, "a", encoding="utf-8") as f:
+                f.write(text)
+        except Exception:
+            pass
+
+    def flush(self):
+        try:
+            self._stream.flush()
+        except Exception:
+            pass
+
+    def __getattr__(self, name):
+        # Forward probes (isatty, fileno, etc.) to the underlying stream.
+        return getattr(self._stream, name)
+
+
+def _rotate_log_file() -> None:
+    """Keep only the last _LOG_MAX_LINES of the log file."""
+    try:
+        if not os.path.exists(_LOG_FILE):
+            return
+        with open(_LOG_FILE, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        if len(lines) > _LOG_MAX_LINES:
+            with open(_LOG_FILE, "w", encoding="utf-8") as f:
+                f.writelines(lines[-_LOG_MAX_LINES:])
+    except Exception:
+        pass
+
+
 def _touch_heartbeat(name: str) -> None:
     """Write current timestamp to /app/state/{name}_last_cycle so healthchecks can verify liveness."""
     try:
@@ -1061,10 +1115,20 @@ def _graceful_shutdown(signum, frame):
 
 if __name__ == "__main__":
     _require_env()
+    # Mirror stdout to /app/logs/sentinel_risk.log so the developer-menu log
+    # viewer has something to read (github issue #33). stdout is still
+    # written, so docker logs risk-monitor is unaffected. Only when run as
+    # __main__ — tests import the module without the tee.
+    sys.stdout = _StdoutTee(sys.stdout, _LOG_FILE)
+    sys.stderr = _StdoutTee(sys.stderr, _LOG_FILE)
     signal.signal(signal.SIGTERM, _graceful_shutdown)
     signal.signal(signal.SIGINT,  _graceful_shutdown)
     print("🛡️ Sentinel Risk Monitor Active")
+    import random as _rnd
     while True:
         try: main()
         except Exception as e: print(f"🚨 Risk Monitor Crash: {e}")
+        # Probabilistic log rotation — ~5% per outer loop ≈ once an hour at 300s cadence
+        if _rnd.random() < 0.05:
+            _rotate_log_file()
         time.sleep(300)
