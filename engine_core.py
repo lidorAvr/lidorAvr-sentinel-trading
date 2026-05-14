@@ -1884,9 +1884,28 @@ def get_ma_levels(symbol: str) -> dict:
     return {"ma21": ma21, "ma50": ma50}
 
 
-_TRAIL_MA_BUFFER_PCT      = 0.02   # 2% buffer between MA and suggested stop
+_TRAIL_MA_BUFFER_PCT      = 0.02   # default 2% buffer between MA and suggested stop
+_TRAIL_ATR_BUFFER_FACTOR  = 0.008  # buffer = max(default, factor * atr_pct)
 _TRAIL_TIGHT_R_THRESHOLD  = 8.0    # open_r >= 8R → trail under MA21 (tight)
 _TRAIL_LOOSE_R_THRESHOLD  = 5.0    # open_r >= 5R → trail under MA50 (loose)
+
+
+def _trail_buffer(atr_pct: "float | None") -> float:
+    """
+    Buffer between MA and suggested stop. ATR-aware so high-volatility
+    names (MNST, MARA at ~4% ATR) get a wider buffer than placid ones
+    (NVDA at ~2.5% ATR), matching Sarah/Daria's Meeting 5 spec:
+        buffer = max(2%, 0.008 × atr_pct)
+    where atr_pct is in percentage points (4.2, not 0.042).
+
+    Examples:
+        atr_pct=2.5 → max(0.02, 0.020) = 0.02 (NVDA: floor wins)
+        atr_pct=4.2 → max(0.02, 0.0336) = 0.0336 (MNST: ATR wins, ~3.4%)
+        atr_pct=None → 0.02 (default; safe fallback when ATR unavailable)
+    """
+    if atr_pct is None or atr_pct <= 0:
+        return _TRAIL_MA_BUFFER_PCT
+    return max(_TRAIL_MA_BUFFER_PCT, _TRAIL_ATR_BUFFER_FACTOR * atr_pct)
 
 
 def compute_suggested_trail_stop(
@@ -1896,9 +1915,14 @@ def compute_suggested_trail_stop(
     ma50: "float | None",
     open_r: float,
     entry_price: float = 0.0,
+    atr_pct: "float | None" = None,
 ) -> dict:
     """
     Suggest a trailing stop level for a RUNNER position.
+
+    atr_pct: ATR as a percentage of price (e.g. 2.5 means 2.5%).
+    When provided, the buffer scales with volatility — high-ATR names
+    get a wider buffer to avoid whipsaws. When None, uses 2% default.
 
     Returns:
         suggested_stop  float | None
@@ -1906,7 +1930,7 @@ def compute_suggested_trail_stop(
         note            str (Hebrew)
     """
     is_long = str(side).upper() in ("BUY", "LONG")
-    buf = _TRAIL_MA_BUFFER_PCT
+    buf = _trail_buffer(atr_pct)
 
     if is_long:
         if open_r >= _TRAIL_TIGHT_R_THRESHOLD and ma21 is not None:
