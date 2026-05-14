@@ -275,15 +275,27 @@ def handle_portfolio_room(chat_id):
                 locked_profit_usd = 0
                 giveback_risk_usd = 0
 
-            total_campaign_r = (total_pos_profit / target_risk_usd) if str(setup).upper() == 'ALGO' and target_risk_usd > 0 else ((total_pos_profit / original_campaign_risk) if original_campaign_risk > 0 else 0)
-            open_r_val = (open_pnl_usd / target_risk_usd) if str(setup).upper() == 'ALGO' and target_risk_usd > 0 else ((open_pnl_usd / original_campaign_risk) if original_campaign_risk > 0 else 0)
+            # B1 (2026-05-14 feedback) — campaign target is LOCKED at the
+            # rate active when the trade was opened. Computed from the
+            # snapshot fields engine_core attaches to each campaign row
+            # from its FIRST BUY trade (migration 003). Falls back to the
+            # current target when the campaign predates the snapshot.
+            _rp_entry  = row.get('risk_pct_at_entry')
+            _nav_entry = row.get('nav_at_entry')
+            if _rp_entry and _nav_entry and _rp_entry > 0 and _nav_entry > 0:
+                target_risk_usd_at_entry = _nav_entry * (_rp_entry / 100.0)
+            else:
+                target_risk_usd_at_entry = target_risk_usd  # legacy fallback
+
+            total_campaign_r = (total_pos_profit / target_risk_usd_at_entry) if str(setup).upper() == 'ALGO' and target_risk_usd_at_entry > 0 else ((total_pos_profit / original_campaign_risk) if original_campaign_risk > 0 else 0)
+            open_r_val = (open_pnl_usd / target_risk_usd_at_entry) if str(setup).upper() == 'ALGO' and target_risk_usd_at_entry > 0 else ((open_pnl_usd / original_campaign_risk) if original_campaign_risk > 0 else 0)
             open_r_vals.append(open_r_val)
 
             engine_res = ec.evaluate_position_engine(
                 symbol=sym, entry_price=entry, entry_date_str=entry_date,
                 current_stop=sl, setup_type=setup, mgt_state=mgt_state,
                 weight_pct=weight_pct, total_r=total_campaign_r,
-                target_risk_usd=target_risk_usd,
+                target_risk_usd=target_risk_usd_at_entry,
                 actual_risk_usd=original_campaign_risk, spy_hist=spy_hist
             )
             if not engine_res["ok"]:

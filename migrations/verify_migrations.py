@@ -38,6 +38,11 @@ MIGRATIONS: list[tuple[str, str, list[str] | None]] = [
         "audit_log",
         None,  # whole table is new — existence is the test
     ),
+    (
+        "003_trade_entry_snapshots.sql",
+        "trades",
+        ["risk_pct_at_entry", "nav_at_entry"],
+    ),
 ]
 
 

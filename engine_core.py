@@ -510,12 +510,23 @@ def get_open_positions_campaign(df):
             db_mgt_state = last_row.get("management_state")
             mgt_state = "runner_mode" if has_sells else (db_mgt_state if pd.notna(db_mgt_state) and db_mgt_state else "full_position")
             
+            # Migration 003 — surface the entry-time risk_pct and NAV
+            # snapshot from the campaign's FIRST BUY trade so the portfolio
+            # display can compute the original (locked) campaign target,
+            # not the moving current target. NULL when the trade was
+            # imported before migration 003.
+            _first_buy = first_day_buys.iloc[0]
+            _risk_pct_entry = _first_buy.get("risk_pct_at_entry")
+            _nav_entry      = _first_buy.get("nav_at_entry")
+
             open_positions.append({
                 "campaign_id": cid, "symbol": sym, "quantity": net_qty, "initial_qty": initial_qty,
                 "base_qty": base_qty, "base_price": base_price, "add_on_count": add_on_count,
                 "price": avg_price, "stop_loss": sl, "initial_stop": init_sl,
-                "setup_type": first_day_buys.iloc[0].get("setup_type", "Unknown"), "trade_id": first_day_buys.iloc[0].get("trade_id"),
+                "setup_type": _first_buy.get("setup_type", "Unknown"), "trade_id": _first_buy.get("trade_id"),
                 "entry_date": first_date, "management_state": mgt_state, "realized_pnl": realized_pnl,
+                "risk_pct_at_entry": _risk_pct_entry if pd.notna(_risk_pct_entry) else None,
+                "nav_at_entry":      _nav_entry      if pd.notna(_nav_entry)      else None,
             })
         if not open_positions: return {"ok": True, "error": None, "data": pd.DataFrame()}
         return {"ok": True, "error": None, "data": pd.DataFrame(open_positions).sort_values("symbol")}

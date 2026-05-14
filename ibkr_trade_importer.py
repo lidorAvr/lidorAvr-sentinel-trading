@@ -12,12 +12,48 @@ Key conventions (must match engine_core.get_open_positions_campaign):
   production format observed in Supabase). Add-on BUYs join the
   currently-open campaign for the symbol; the next BUY after a campaign
   closes (net=0) starts a new campaign.
+- `risk_pct_at_entry` and `nav_at_entry` snapshot the user's effective
+  risk setting and account NAV at the time of insert (migration 003).
+  Used by the portfolio display so the "campaign target" reflects what
+  was planned when the trade was opened, not the moving current target.
 
 Pure functions — no Telegram, no logging side-effects. Caller is
 responsible for sending notifications about the result.
 """
+import json
+import os
 import xml.etree.ElementTree as ET
 import supabase_repository as repo
+
+_CONFIG_PATH = "/app/sentinel_config.json"
+
+
+def _load_entry_snapshot() -> dict:
+    """Read the active risk_pct + NAV from sentinel_config.json. Returns
+    {"risk_pct_at_entry": float|None, "nav_at_entry": float|None}. Missing
+    file or unparseable values → both None (importer continues; columns
+    remain NULL on the inserted row, display falls back to current target)."""
+    snap = {"risk_pct_at_entry": None, "nav_at_entry": None}
+    try:
+        with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return snap
+    rp = cfg.get("risk_pct_input")
+    nav = cfg.get("nav") or cfg.get("total_deposited")
+    # Parse each independently so a bad risk_pct doesn't void a valid NAV
+    # (or vice versa). Either field can be NULL in the row.
+    if rp is not None:
+        try:
+            snap["risk_pct_at_entry"] = float(rp)
+        except (ValueError, TypeError):
+            pass
+    if nav is not None:
+        try:
+            snap["nav_at_entry"] = float(nav)
+        except (ValueError, TypeError):
+            pass
+    return snap
 
 
 def parse_trades_from_xml(xml_text: str) -> list:
@@ -83,7 +119,22 @@ def parse_trades_from_xml(xml_text: str) -> list:
             "price":      price,
             "trade_date": trade_date,
             "pnl_usd":    pnl_usd,
+            # Migration 003 snapshot — populated after the loop with the
+            # current risk_pct + NAV (sentinel_config.json). Pre-set to
+            # None so the keys always exist even if the config is missing.
+            "risk_pct_at_entry": None,
+            "nav_at_entry":      None,
         })
+
+    # Stamp snapshot once per import call — every row in this batch gets
+    # the same risk_pct + NAV that were active at import time. Defensive:
+    # if sentinel_config.json is missing or unreadable, leave the columns
+    # NULL (display falls back to current target with an approx tag).
+    snap = _load_entry_snapshot()
+    if snap["risk_pct_at_entry"] is not None or snap["nav_at_entry"] is not None:
+        for row in parsed:
+            row["risk_pct_at_entry"] = snap["risk_pct_at_entry"]
+            row["nav_at_entry"]      = snap["nav_at_entry"]
     return parsed
 
 
