@@ -381,8 +381,10 @@ def handle_all_messages(message):
     if text.startswith("/analyze "):
         symbol = text.split(" ")[1].upper()
         bot.send_message(chat_id, f"⏳ מנתח נתונים עבור {symbol}...", parse_mode="Markdown")
-        report_res = ec.get_minervini_analysis(symbol)
-        report = report_res["data"][0] if report_res["ok"] else str(report_res.get("error", "Error")).replace("_", " ")
+        # Sprint 11 P4 — migrated from legacy 5-criterion get_minervini_analysis
+        # to the full 8-criterion compute_trend_template_full + formatter.
+        tt_res = ec.compute_trend_template_full(symbol)
+        report = tf.fmt_minervini_trend_template(symbol, tt_res)
         bot.send_message(chat_id, report, parse_mode="Markdown")
         return
 
@@ -461,8 +463,9 @@ def handle_all_messages(message):
         if action == 'analyze_symbol':
             symbol = text.strip().upper()
             bot.send_message(chat_id, f"⏳ מושך נתונים טכניים ומנתח את {symbol}...", parse_mode="Markdown")
-            report_res = ec.get_minervini_analysis(symbol)
-            report = report_res["data"][0] if report_res["ok"] else str(report_res.get("error", "Error")).replace("_", " ")
+            # Sprint 11 P4 — migrated from legacy 5-criterion to full 8-criterion.
+            tt_res = ec.compute_trend_template_full(symbol)
+            report = tf.fmt_minervini_trend_template(symbol, tt_res)
             bot.send_message(chat_id, report, reply_markup=get_analysis_menu(), parse_mode="Markdown")
             del user_state[chat_id]
             return

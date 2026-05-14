@@ -70,6 +70,23 @@ _repo_mock.get_earlier_buys_for_campaign.return_value = []
 
 _ec_mock = MagicMock()
 _ec_mock.get_minervini_analysis.return_value = {"ok": True, "data": ["VCP analysis report"]}
+# Sprint 11 P4 — the VCP backlog flow now calls compute_trend_template_full
+# (8-criterion) and feeds tt_result into tf.fmt_minervini_trend_template.
+# Return a realistically-shaped dict so the formatter doesn't blow up.
+_ec_mock.compute_trend_template_full.return_value = {
+    "ok": True, "error": None,
+    "data": {
+        "close": 100.0, "ma50": 95.0, "ma150": 90.0, "ma200": 88.0,
+        "low_52w": 70.0, "high_52w": 110.0,
+        "criteria": {
+            "c1_price_above_ma150_ma200": True, "c2_ma150_above_ma200": True,
+            "c3_ma200_uptrend_1m": True, "c4_ma50_above_ma150_ma200": True,
+            "c5_price_above_ma50": True, "c6_above_30pct_52w_low": True,
+            "c7_below_25pct_52w_high": True, "c8_rs_above_spy_12m": True,
+        },
+        "passed": 8, "score_10": 10.0,
+    },
+}
 
 _menus_mock = MagicMock()
 _menus_mock.get_main_menu.return_value      = "MAIN_MENU"
@@ -86,6 +103,20 @@ def _run(chat_id, trade_rows=None):
     _repo_mock.update_trade.reset_mock()
     _ec_mock.reset_mock()
     _ec_mock.get_minervini_analysis.return_value = {"ok": True, "data": ["VCP analysis report"]}
+    _ec_mock.compute_trend_template_full.return_value = {
+        "ok": True, "error": None,
+        "data": {
+            "close": 100.0, "ma50": 95.0, "ma150": 90.0, "ma200": 88.0,
+            "low_52w": 70.0, "high_52w": 110.0,
+            "criteria": {
+                "c1_price_above_ma150_ma200": True, "c2_ma150_above_ma200": True,
+                "c3_ma200_uptrend_1m": True, "c4_ma50_above_ma150_ma200": True,
+                "c5_price_above_ma50": True, "c6_above_30pct_52w_low": True,
+                "c7_below_25pct_52w_high": True, "c8_rs_above_spy_12m": True,
+            },
+            "passed": 8, "score_10": 10.0,
+        },
+    }
 
     with patch.object(tb, 'bot', _fake_bot), \
          patch.object(tb, 'supabase', _fake_sb), \
@@ -158,7 +189,8 @@ class TestQualityMissing:
 
     def test_vcp_triggers_minervini_analysis(self):
         _run(1003, [self._trade("VCP")])
-        _ec_mock.get_minervini_analysis.assert_called_once_with("CCC")
+        # Sprint 11 P4 — migrated to the full 8-criterion compute_trend_template_full
+        _ec_mock.compute_trend_template_full.assert_called_once_with("CCC")
 
     def test_vcp_sends_rating_keyboard(self):
         _run(1003, [self._trade("VCP")])

@@ -721,6 +721,15 @@ def compute_market_regime(spy_hist, qqq_hist=None):
     except Exception as e: return {"ok": False, "error": str(e), "data": {"status": "Unknown", "color": "⚪", "text": f"שגיאה: {e}"}}
 
 def get_minervini_analysis(symbol):
+    """DEPRECATED (Sprint 11 P4, 2026-05-14) — legacy 5-criterion
+    Trend Template. Telegram callers (analyze, mentor, backlog) have
+    been migrated to compute_trend_template_full + tf.fmt_minervini_trend_template
+    which evaluates the full 8 criteria.
+
+    This function is preserved for any external/legacy callers but
+    must NOT be used in new code. Will be removed in Sprint 13 if no
+    callers remain.
+    """
     try:
         hist = get_cached_history(symbol, "1y", "1d")
         if hist is None or len(hist) < 200: 

@@ -6,6 +6,7 @@ Dependencies are passed via module-level singletons from bot_core.
 """
 from telebot import types
 import engine_core as ec
+import telegram_formatters as tf
 import supabase_repository as repo
 from bot_core import bot, supabase, user_state
 from telegram_menus import get_main_menu, get_setup_keyboard, get_rating_keyboard
@@ -74,8 +75,9 @@ def get_next_missing(chat_id):
         if t.get('quality') is None:
             if str(t.get('setup_type')).upper() == 'VCP':
                 bot.send_message(chat_id, f"⏳ מנתח Trend Template עבור {symbol}...", parse_mode="Markdown")
-                report_res = ec.get_minervini_analysis(symbol)
-                report = report_res["data"][0] if report_res["ok"] else str(report_res.get("error", "Error")).replace("_", " ")
+                # Sprint 11 P4 — full 8-criterion (was: legacy 5-criterion get_minervini_analysis).
+                tt_res = ec.compute_trend_template_full(symbol)
+                report = tf.fmt_minervini_trend_template(symbol, tt_res)
                 bot.send_message(chat_id, f"{card}\n{report}\n\n💎 *מה הציון הסופי שלך? (1-10):*",
                                  reply_markup=get_rating_keyboard(t_id, 'quality'), parse_mode="Markdown")
             else:
