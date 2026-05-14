@@ -362,9 +362,13 @@ def _heat_label(score: float) -> str:
     return "❄️ קר מאוד"
 
 
-def fmt_heat_thermometer(risk_rec: dict) -> str:
+def fmt_heat_thermometer(risk_rec: dict, include_legend: bool = False) -> str:
     """
     Visual heat thermometer for Telegram — S9 / M21 / L50 window breakdown.
+
+    include_legend: append a threshold legend (useful in scheduled reports
+    where the user sees the thermometer infrequently and needs the scale
+    reminded).
 
     Returns a ready-to-send Markdown string.
     """
@@ -407,5 +411,8 @@ def fmt_heat_thermometer(risk_rec: dict) -> str:
     arrow = "⬆️" if direction == "up" else ("⬇️" if direction in ("down", "down_fast") else "➡️")
     change = f" (כרגע: `{curr_pct:.2f}%`)" if rec_pct != curr_pct else " ← ללא שינוי"
     lines.append(f"\n{RTL}{arrow} סיכון מומלץ: `{rec_pct:.2f}%`{change}")
+
+    if include_legend:
+        lines.append(f"\n{RTL}_סולם:_ 🔥 ≥80 חם מאוד | 🟠 60-79 חם | 🟡 40-59 מתון | 🔵 20-39 קר | ❄️ <20 קר מאוד")
 
     return "\n".join(lines)

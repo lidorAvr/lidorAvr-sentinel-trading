@@ -166,6 +166,24 @@ def _build_system_health() -> dict:
     }
 
 
+def _compute_risk_rec(df, account: dict) -> dict:
+    """
+    Best-effort adaptive-risk computation for the scheduled summary heat
+    thermometer. Returns the same dict shape as
+    adaptive_risk_engine.compute_adaptive_risk; on any failure (import error,
+    empty df, <3 closed campaigns) returns {ok: False, ...} which the
+    formatter renders as "אין מספיק נתונים".
+    """
+    try:
+        from adaptive_risk_engine import compute_closed_campaigns, compute_adaptive_risk
+        closed = compute_closed_campaigns(df) if df is not None and not df.empty else []
+        risk_pct = float(account.get("risk_pct_input", 0.5))
+        nav      = float(account.get("nav", 0))
+        return compute_adaptive_risk(closed, risk_pct, nav)
+    except Exception as e:
+        return {"ok": False, "error": "compute_failed", "message": str(e)}
+
+
 # ── Report runners ─────────────────────────────────────────────────────────────
 
 def _run_weekly(now: datetime):
@@ -209,7 +227,8 @@ def _run_weekly(now: datetime):
         snap_save("weekly", period_start, period_end, analytics, account, pdf_path)
 
         period_label = f"{period_start.strftime('%d/%m')}–{period_end.strftime('%d/%m/%Y')}"
-        summary_text = build_summary_text(analytics, period_label, "weekly")
+        risk_rec     = _compute_risk_rec(df, account)
+        summary_text = build_summary_text(analytics, period_label, "weekly", risk_rec=risk_rec)
         caption      = f"📊 Sentinel Weekly Report | {period_label}"
 
         token   = os.environ.get("TELEGRAM_TOKEN", "")
@@ -271,7 +290,8 @@ def _run_monthly(now: datetime):
         month_names = ["ינואר","פברואר","מרץ","אפריל","מאי","יוני",
                        "יולי","אוגוסט","ספטמבר","אוקטובר","נובמבר","דצמבר"]
         period_label = f"{month_names[period_start.month - 1]} {period_start.year}"
-        summary_text = build_summary_text(analytics, period_label, "monthly")
+        risk_rec     = _compute_risk_rec(df, account)
+        summary_text = build_summary_text(analytics, period_label, "monthly", risk_rec=risk_rec)
         caption      = f"📊 Sentinel Monthly Report | {period_label}"
 
         token   = os.environ.get("TELEGRAM_TOKEN", "")
