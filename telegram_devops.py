@@ -31,10 +31,9 @@ import ibkr_trade_importer as _importer
 _DEV_PIN              = os.getenv("DEV_PIN", "")
 _PIN_SESSION_DURATION = 1800          # 30 minutes
 _PIN_SESSIONS_FILE    = "/app/state/dev_pin_sessions.json"
+_PIN_FAILED_FILE      = "/app/state/dev_pin_failed.json"
 _PIN_RATE_LIMIT_COUNT  = 3            # max failed attempts
 _PIN_RATE_LIMIT_WINDOW = 300          # within 5 minutes
-
-_PIN_FAILED_ATTEMPTS: dict = {}       # {chat_id: [ts1, ts2, ...]}
 
 
 def _load_pin_sessions() -> dict:
@@ -57,7 +56,33 @@ def _save_pin_sessions() -> None:
         pass
 
 
+def _load_pin_failures() -> dict:
+    """Load PIN failed-attempt timestamps from disk; drop entries older than the window."""
+    try:
+        with open(_PIN_FAILED_FILE) as f:
+            raw = json.load(f)
+        cutoff = time.time() - _PIN_RATE_LIMIT_WINDOW
+        cleaned = {}
+        for k, ts_list in raw.items():
+            kept = [float(t) for t in ts_list if float(t) > cutoff]
+            if kept:
+                cleaned[int(k)] = kept
+        return cleaned
+    except Exception:
+        return {}
+
+
+def _save_pin_failures() -> None:
+    try:
+        os.makedirs(os.path.dirname(_PIN_FAILED_FILE), exist_ok=True)
+        with open(_PIN_FAILED_FILE, "w") as f:
+            json.dump({str(k): v for k, v in _PIN_FAILED_ATTEMPTS.items()}, f)
+    except Exception:
+        pass
+
+
 _pin_sessions: dict = _load_pin_sessions()
+_PIN_FAILED_ATTEMPTS: dict = _load_pin_failures()
 
 
 def dev_pin_session_active(chat_id: int) -> bool:
@@ -93,8 +118,11 @@ def dev_pin_rate_limited(chat_id: int) -> bool:
 
 
 def dev_pin_record_failure(chat_id: int) -> None:
-    """Record a failed PIN attempt timestamp for rate limiting."""
+    """Record a failed PIN attempt timestamp and persist to disk.
+    Without persistence, a container restart would reset the rate-limit
+    window and let an attacker resume brute-forcing immediately."""
     _PIN_FAILED_ATTEMPTS.setdefault(chat_id, []).append(time.time())
+    _save_pin_failures()
 
 
 # ── Developer-menu constants ─────────────────────────────────────────────────
