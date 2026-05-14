@@ -43,10 +43,29 @@ def handle_document_upload(message):
     _process_uploaded_ibkr_xml(chat_id, message)
 
 
+# Slash shortcuts (C1 from 2026-05-14 UX feedback — "יותר מדי לחיצות").
+# Each maps to the canonical button text the existing dispatcher already
+# handles, so this is a pure alias layer — no duplication of business logic.
+_SLASH_SHORTCUTS = {
+    "/p":     "📊 חדר מצב (פוזיציות)",   # portfolio room
+    "/m":     "🌡️ משטר שוק וסיכונים",    # market regime
+    "/j":     "/next",                    # journal next
+    "/h":     "❓ עזרה",                  # help
+    "/d":     "🛠️ מפתח",                 # developer menu
+    "/r":     "/stats",                   # risk adherence stats
+    "/home":  "⬅️ חזרה לתפריט ראשי",     # back to main
+}
+
+
 @bot.message_handler(func=lambda m: True, content_types=['text', 'photo'])
 def handle_all_messages(message):
     chat_id = message.chat.id
     text = message.text if message.text else ""
+
+    # Slash shortcut → canonical button — applied before any other dispatch
+    # so power users can /p, /m, /r, /j, /h, /d without navigating menus.
+    if text in _SLASH_SHORTCUTS:
+        text = _SLASH_SHORTCUTS[text]
 
     if text in ["ביטול", "cancel", "/cancel", "❌ ביטול"]:
         if chat_id in user_state: del user_state[chat_id]
@@ -269,16 +288,25 @@ def handle_all_messages(message):
         help_txt = (
             f"{RTL}🛡️ *Sentinel — מדריך פקודות*\n"
             f"{RTL}───────────────\n"
-            f"{RTL}📊 *מצב תיק* — פוזיציות ומשטר שוק\n"
-            f"{RTL}🔬 *ניתוח* — סקירת מניה ו-Trend Template\n"
-            f"{RTL}📚 *יומן* — מילוי יומן וארכיון\n"
+            f"{RTL}⚡ *קיצורי דרך* (טייפ אחד):\n"
+            f"{RTL}  `/p` — חדר מצב (פוזיציות)\n"
+            f"{RTL}  `/m` — משטר שוק וסיכונים\n"
+            f"{RTL}  `/r` — סטטיסטיקת ציות לסיכון\n"
+            f"{RTL}  `/j` — יומן הבא (Backlog)\n"
+            f"{RTL}  `/d` — תפריט מפתח\n"
+            f"{RTL}  `/h` — מדריך זה\n"
+            f"{RTL}  `/home` — חזרה לתפריט ראשי\n"
             f"{RTL}───────────────\n"
-            f"{RTL}/portfolio — חדר מצב\n"
-            f"{RTL}/trade SYMBOL — ניתוח עומק לפוזיציה\n"
-            f"{RTL}/mentor SYMBOL — Trend Template מלא\n"
-            f"{RTL}/analyze SYMBOL — ניתוח VCP מינרביני\n"
-            f"{RTL}/next — יומן (הבא)\n"
-            f"{RTL}/stats — סטטיסטיקת ציות להמלצות סיכון\n"
+            f"{RTL}🔍 *פקודות מתקדמות:*\n"
+            f"{RTL}  /portfolio — חדר מצב (גרסה ארוכה)\n"
+            f"{RTL}  /trade SYMBOL — ניתוח עומק לפוזיציה\n"
+            f"{RTL}  /mentor SYMBOL — Trend Template מלא\n"
+            f"{RTL}  /analyze SYMBOL — ניתוח VCP מינרביני\n"
+            f"{RTL}  /next — יומן (הבא)\n"
+            f"{RTL}  /stats — סטטיסטיקת ציות להמלצות סיכון\n"
+            f"{RTL}───────────────\n"
+            f"{RTL}📂 *תפריטים* — לחיצה על כפתור:\n"
+            f"{RTL}  📊 מצב תיק | 🔬 ניתוח | 📚 יומן | 🛠️ מפתח\n"
         )
         return bot.send_message(chat_id, help_txt, reply_markup=get_main_menu(), parse_mode="Markdown")
 
