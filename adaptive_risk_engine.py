@@ -32,6 +32,13 @@ RISK_JOURNAL_FILE = "risk_journal.json"
 SENTINEL_CONFIG_FILE = "sentinel_config.json"
 RISK_SETTLE_HOURS = 48.0  # hours to hold at new risk level before next recommendation fires
 
+# B3 (2026-05-14 feedback) — closed-campaigns gate. Stepping UP the
+# RISK_LADDER also requires at least this many stat-countable closed
+# campaigns since the last confirmed risk change. Without this gate,
+# heat alone could ladder 0.35% → 2.00% in 12 days with no real evidence
+# of edge persisting. Down steps are NOT gated (safety net stays fast).
+RISK_STEP_UP_MIN_CLOSED_CAMPAIGNS = 5
+
 
 def _closest_ladder_index(pct: float) -> int:
     diffs = [abs(pct - r) for r in RISK_LADDER]
@@ -68,6 +75,44 @@ def update_risk_pct(new_pct: float) -> bool:
         return True
     except Exception:
         return False
+
+
+def _last_risk_change_ts() -> float:
+    """Read the unix timestamp of the most recent confirmed risk change.
+    Returns 0.0 if config is missing, unreadable, or the key is absent —
+    in which case the B3 closed-campaigns gate is bypassed (we can't
+    measure progress without an anchor)."""
+    try:
+        with open(SENTINEL_CONFIG_FILE, "r", encoding="utf-8") as f:
+            return float(json.load(f).get("risk_changed_ts", 0.0))
+    except Exception:
+        return 0.0
+
+
+def _count_stat_countable_closed_since(closed_campaigns: list,
+                                        since_ts: float) -> int:
+    """Count stat-countable closed campaigns whose close_date is at or
+    after `since_ts` (unix seconds). ALGO_OBSERVED + DATA_INCOMPLETE are
+    excluded because they don't represent "user discretion tested" —
+    they're either external or unverifiable. close_date can be a pandas
+    Timestamp or a datetime; both are handled."""
+    if not closed_campaigns or since_ts <= 0:
+        return 0
+    count = 0
+    for c in closed_campaigns:
+        if not ec.is_stat_countable(c.get("stat_bucket", "")):
+            continue
+        cd = c.get("close_date")
+        if cd is None:
+            continue
+        try:
+            ts = cd.timestamp() if hasattr(cd, "timestamp") else \
+                 pd.to_datetime(cd).timestamp()
+            if ts >= since_ts:
+                count += 1
+        except Exception:
+            continue
+    return count
 
 
 def get_risk_settle_info() -> dict:
@@ -488,9 +533,28 @@ def compute_adaptive_risk(
         heat_label, heat_color, direction = "נייטרל", "➖", "hold"
 
     curr_idx = _closest_ladder_index(current_risk_pct)
+    # B3 — closed-campaigns gate. Only applied to UP steps (down stays fast).
+    gate_block_reason = None
     if direction == "up":
+        _last_change_ts = _last_risk_change_ts()
+        if _last_change_ts > 0:
+            _closed_since = _count_stat_countable_closed_since(
+                closed_campaigns, _last_change_ts
+            )
+            if _closed_since < RISK_STEP_UP_MIN_CLOSED_CAMPAIGNS:
+                gate_block_reason = (
+                    f"גייט קמפיינים סגורים: דרושים "
+                    f"{RISK_STEP_UP_MIN_CLOSED_CAMPAIGNS} קמפיינים סגורים "
+                    f"מאז העלאה אחרונה (נסגרו {_closed_since})"
+                )
+
+    if direction == "up" and gate_block_reason is None:
         new_idx   = min(curr_idx + 1, len(RISK_LADDER) - 1)
         step_type = "העלאת סיכון הדרגתית"
+    elif direction == "up":  # gate blocked the up step
+        new_idx   = curr_idx
+        step_type = gate_block_reason
+        direction = "hold"
     elif direction == "down_fast":
         new_idx   = max(curr_idx - 2, 0)
         step_type = "צמצום סיכון מהיר"
