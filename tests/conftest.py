@@ -3,12 +3,39 @@ Shared pytest fixtures for Sentinel Trading test suite.
 
 Provides reusable mocks for external dependencies (Supabase, yfinance)
 and sample data structures used across multiple test modules.
+
+# Network isolation (Sprint 7, post-Meeting-7 incident)
+
+`pytest-socket` blocks all socket calls by default. Any test that
+silently relied on a real yfinance/Supabase/Telegram fetch will now
+fail loudly with `SocketBlockedError` instead of returning whatever
+the network happened to send back.
+
+The Sprint 6 CI incident traced to exactly this gap:
+test_returns_none_when_history_empty passed an empty DataFrame and
+expected None, but the production code fell through to a real
+yfinance fetch — invisible in sandboxed local runs, fatal in CI.
+
+If a test legitimately needs the loopback interface, decorate with
+`@pytest.mark.enable_socket` (provided by pytest-socket). No test
+should ever talk to a public host.
 """
 import sys
 import types
 import pandas as pd
 import pytest
 from unittest.mock import MagicMock, patch
+from pytest_socket import disable_socket
+
+
+def pytest_runtest_setup():
+    """Disable network sockets before every test (pytest-socket hook).
+
+    Tests that need a local socket (e.g. an in-process HTTP server)
+    can opt in with `@pytest.mark.enable_socket`. No exemptions for
+    public hosts — that's the whole point.
+    """
+    disable_socket()
 
 
 @pytest.fixture

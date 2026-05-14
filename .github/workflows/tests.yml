@@ -27,8 +27,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
-      - name: Run tests
-        run: pytest --tb=short -q
+      - name: Run tests with coverage
+        # Coverage gate: 67% across the 4 core modules (current baseline: 68.58%).
+        # Acts as a ratchet — prevents regression with a small buffer so adding a
+        # few unrelated lines without tests doesn't break unrelated PRs.
+        # Per-module today: analytics 99%, adaptive_risk 87%, addon 86%, engine_core 57%.
+        # Targets: Sprint 7 → 68% (baseline+); Sprint 8 → 75% (Mark's Meeting 6 target,
+        # requires engine_core branch-coverage sweep).
+        # See docs/COVERAGE_BASELINE.md for full rationale.
+        run: |
+          pytest --tb=short -q \
+            --cov=engine_core \
+            --cov=adaptive_risk_engine \
+            --cov=analytics_engine \
+            --cov=addon_risk_engine \
+            --cov-report=term \
+            --cov-fail-under=67
         env:
           TELEGRAM_BOT_TOKEN: "ci-test-token"
           TELEGRAM_ADMIN_ID: "12345"
