@@ -23,6 +23,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import ibkr_sync_runner as m
 
 
+@pytest.fixture(autouse=True)
+def _isolated_sendrequest_state(tmp_path, monkeypatch):
+    """Isolate each test from any prior _record_sendrequest_ts() side effect.
+
+    Without this, the 120s SendRequest cooldown introduced in the 2026-05-14
+    IBKR fixes leaks state across tests in this module: test #1 records a
+    timestamp, test #2 hits the cooldown and gets rate_limit instead of the
+    asserted status.
+    """
+    monkeypatch.setattr("ibkr_sync_runner._SENDREQ_STATE_FILE",
+                        str(tmp_path / "sendreq_ts.json"))
+
+
 # ── XML helpers ────────────────────────────────────────────────────────────────
 
 def _error_xml(code):

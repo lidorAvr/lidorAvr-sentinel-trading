@@ -140,10 +140,27 @@ def _handle_manual_trigger(t_token, c_id):
     result = run_ibkr_sync(log_fn=log)
     result["triggered_at"] = datetime.now().isoformat()
     try:
-        with open(MANUAL_RESULT_FILE, "w") as f:
+        # Write result atomically so the telegram-bot poller never reads a
+        # half-written file (rare but breaks the dev menu when it happens).
+        tmp = MANUAL_RESULT_FILE + ".tmp"
+        with open(tmp, "w") as f:
             json.dump(result, f)
+        os.replace(tmp, MANUAL_RESULT_FILE)
     except Exception as e:
         log(f"Could not write manual result: {e}")
+    # Bump scheduled-sync state so the scheduled block this loop tick will not
+    # fire SendRequest a second time (would otherwise hit Sentinel cooldown +
+    # waste an IBKR slot). On success, also short-circuit further attempts today.
+    try:
+        _now = datetime.now(ISRAEL_TZ)
+        _state = load_sync_state()
+        _state["last_attempt_hour"] = _now.hour
+        if result.get("status") == "success":
+            _state["sync_date"]  = _now.strftime("%Y-%m-%d")
+            _state["fail_count"] = 0
+        save_sync_state(_state)
+    except Exception as e:
+        log(f"State bump after manual trigger failed: {e}")
     if t_token and c_id:
         emoji = "✅" if result["status"] == "success" else (
             "🚨" if result["status"] == "fatal" else "⚠️"

@@ -27,6 +27,13 @@ from ibkr_sync_runner import (run_ibkr_sync, MANUAL_RESULT_FILE,
                                _REPORTS_DIR, _REPORTS_TO_KEEP, _CONFIG_PATH)
 import ibkr_trade_importer as _importer
 
+# Trigger handoff file — written here, consumed by main.py inside the
+# sentinel-bot container. Single SendRequest entry-point eliminates the
+# cross-container race that was driving error 1001.
+_MANUAL_TRIGGER_FILE   = "/app/ibkr_manual_trigger"
+_MANUAL_TRIGGER_TIMEOUT = 300   # 5 min — covers SendRequest + 15s wait + 3×60s retries
+_MANUAL_POLL_INTERVAL   = 5
+
 # ── Developer PIN gate ────────────────────────────────────────────────────────
 _DEV_PIN              = os.getenv("DEV_PIN", "")
 _PIN_SESSION_DURATION = 1800          # 30 minutes
@@ -230,38 +237,87 @@ def _import_and_notify(chat_id: int, xml_text: str):
             _bot_log(f"Notify-new-trades error: {e}")
 
 
+def _write_manual_trigger(chat_id: int) -> None:
+    """Atomic trigger-file write — two near-simultaneous button presses can't
+    both observe the file mid-write because main.py only checks os.path.exists.
+    """
+    tmp = _MANUAL_TRIGGER_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(str(chat_id))
+    os.rename(tmp, _MANUAL_TRIGGER_FILE)
+
+
+def _poll_manual_result(deadline_ts: float):
+    """Block until MANUAL_RESULT_FILE appears or deadline passes.
+    Returns parsed dict, or None on timeout."""
+    while time.time() < deadline_ts:
+        time.sleep(_MANUAL_POLL_INTERVAL)
+        if os.path.exists(MANUAL_RESULT_FILE):
+            try:
+                with open(MANUAL_RESULT_FILE) as f:
+                    return json.load(f)
+            except Exception:
+                # Half-written or corrupt — wait one more interval, then bail
+                time.sleep(_MANUAL_POLL_INTERVAL)
+                try:
+                    with open(MANUAL_RESULT_FILE) as f:
+                        return json.load(f)
+                except Exception:
+                    return None
+    return None
+
+
 def _run_manual_sync_thread(chat_id: int):
-    """Background thread: runs IBKR sync and reports back to Telegram."""
+    """Background thread: trigger main.py to run the sync, poll for the result.
+
+    Previous version called run_ibkr_sync() in-process inside telegram-bot,
+    which made two containers (telegram-bot + sentinel-bot) racing on the same
+    Flex Query token. The cross-container race surfaced as IBKR ErrorCode
+    1001. Routing through main.py via the trigger file ensures one
+    SendRequest source.
+    """
     _bot_log(f"Manual IBKR sync started by chat_id={chat_id}")
+    # Clear stale result so we don't read yesterday's outcome
     try:
-        result = run_ibkr_sync(log_fn=_bot_log)
-        status  = result["status"]
-        message = result["message"]
-        nav     = result.get("nav")
-        try:
-            result["triggered_at"] = datetime.now().isoformat()
-            with open(MANUAL_RESULT_FILE, "w") as f:
-                json.dump(result, f)
-        except Exception:
-            pass
-        emoji = "✅" if status == "success" else ("🚨" if status == "fatal" else "⚠️")
-        status_heb = {"success": "הצליח", "fatal": "שגיאה חמורה",
-                      "rate_limit": "Rate Limit", "temporary": "זמני"}.get(status, status)
-        nav_line = f"\n{RTL}NAV מעודכן: `${nav:,.0f}`" if nav else ""
+        os.remove(MANUAL_RESULT_FILE)
+    except OSError:
+        pass
+    try:
+        _write_manual_trigger(chat_id)
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ לא ניתן לכתוב trigger לסנכרון: {e}",
+                         reply_markup=get_developer_menu(), parse_mode="Markdown")
+        _bot_log(f"Manual trigger write failed: {e}")
+        return
+
+    _bot_log(f"Trigger written; polling result file (timeout {_MANUAL_TRIGGER_TIMEOUT}s)")
+    result = _poll_manual_result(time.time() + _MANUAL_TRIGGER_TIMEOUT)
+
+    if result is None:
         bot.send_message(
             chat_id,
-            f"{RTL}{emoji} *IBKR Manual Sync — {status_heb}*\n{RTL}{message}{nav_line}",
+            f"{RTL}⚠️ סנכרון ידני לא חזר תוך {_MANUAL_TRIGGER_TIMEOUT // 60} דקות.\n"
+            f"{RTL}בדוק את לוגי sentinel-bot: `docker logs --tail=50 sentinel-bot`",
             reply_markup=get_developer_menu(), parse_mode="Markdown",
         )
-        _bot_log(f"Manual IBKR sync result: {status} — {message}")
+        _bot_log("Manual IBKR sync timed out waiting for result file")
+        return
 
-        # Import new trades to Supabase + notify if any
-        if status == "success":
-            _import_and_notify(chat_id, _latest_report_xml())
-    except Exception as e:
-        bot.send_message(chat_id, f"❌ שגיאה בסנכרון ידני: {e}",
-                         reply_markup=get_developer_menu(), parse_mode="Markdown")
-        _bot_log(f"Manual IBKR sync error: {e}")
+    status  = result.get("status", "temporary")
+    message = result.get("message", "")
+    nav     = result.get("nav")
+    emoji = "✅" if status == "success" else ("🚨" if status == "fatal" else "⚠️")
+    status_heb = {"success": "הצליח", "fatal": "שגיאה חמורה",
+                  "rate_limit": "Rate Limit", "temporary": "זמני"}.get(status, status)
+    nav_line = f"\n{RTL}NAV מעודכן: `${nav:,.0f}`" if nav else ""
+    bot.send_message(
+        chat_id,
+        f"{RTL}{emoji} *IBKR Manual Sync — {status_heb}*\n{RTL}{message}{nav_line}",
+        reply_markup=get_developer_menu(), parse_mode="Markdown",
+    )
+    _bot_log(f"Manual IBKR sync result: {status} — {message}")
+    # main.py runs import_trades_and_notify() itself on success, so no extra
+    # import call here — avoids double-importing trades.
 
 
 def _process_uploaded_ibkr_xml(chat_id: int, message):
