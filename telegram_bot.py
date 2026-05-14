@@ -10,6 +10,7 @@ import addon_risk_engine as addon_eng
 import supabase_repository as repo
 import task_engine as te
 import task_state as ts
+import setup_performance as sp
 from bot_core import bot, supabase, user_state, RTL, ADMIN_ID, TOKEN
 from bot_helpers import (_bot_log, _read_last_log_lines, _write_runner_decision,
                          get_account_settings, get_nav_and_risk,
@@ -56,6 +57,7 @@ _SLASH_SHORTCUTS = {
     "/d":     "🛠️ מפתח",                 # developer menu
     "/r":     "/stats",                   # risk adherence stats
     "/t":     "📋 סקירת משימות",         # task review (2026-05-14 feature)
+    "/s":     "/setup_stats",            # per-setup performance dashboard
     "/home":  "⬅️ חזרה לתפריט ראשי",     # back to main
 }
 
@@ -305,6 +307,7 @@ def handle_all_messages(message):
             f"{RTL}  `/r` — סטטיסטיקת ציות לסיכון\n"
             f"{RTL}  `/j` — יומן הבא (Backlog)\n"
             f"{RTL}  `/d` — תפריט מפתח\n"
+            f"{RTL}  `/s` — ביצועי setup (VCP/EP/SWING breakdown)\n"
             f"{RTL}  `/h` — מדריך זה\n"
             f"{RTL}  `/home` — חזרה לתפריט ראשי\n"
             f"{RTL}───────────────\n"
@@ -431,6 +434,24 @@ def handle_all_messages(message):
 
     if text in ["📋 סקירת משימות", "/tasks"]:
         handle_tasks_review(chat_id)
+        return
+
+    if text in ["📊 ביצועי Setup", "/setup_stats"]:
+        try:
+            trades = repo.get_all_trades(supabase)
+            df = pd.DataFrame(trades)
+            if df.empty:
+                bot.send_message(chat_id, f"{RTL}📊 אין נתונים להצגה.",
+                                 reply_markup=get_main_menu(), parse_mode="Markdown")
+                return
+            closed = are.compute_closed_campaigns(df)
+            breakdown = sp.compute_setup_breakdown(closed)
+            text_out = sp.render_breakdown(breakdown)
+            bot.send_message(chat_id, text_out,
+                             reply_markup=get_main_menu(), parse_mode="Markdown")
+        except Exception as _e:
+            bot.send_message(chat_id, f"{RTL}❌ שגיאה: `{_e}`",
+                             reply_markup=get_main_menu(), parse_mode="Markdown")
         return
 
     if chat_id in user_state:

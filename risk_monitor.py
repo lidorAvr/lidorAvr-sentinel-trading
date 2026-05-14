@@ -98,6 +98,13 @@ DAILY_DIGEST_UTC_HOUR_START = 21     # Daily digest window: 21:00 UTC (US market
 DAILY_DIGEST_UTC_HOUR_END   = 22     # End of window — fires once in this hour per day
 SIZING_LEAK_THRESHOLD = 0.65         # < 65% of target risk → Sizing Leak alert (one-time)
 
+# Morning Briefing — Sprint 11 feature.
+# Fires once per weekday in the 07:00–08:00 Israel-time window (forward-
+# looking pre-market summary, complements the close-of-day digest).
+MORNING_BRIEFING_IL_HOUR_START = 7
+MORNING_BRIEFING_IL_HOUR_END   = 8
+_ISRAEL_TZ_NAME = "Asia/Jerusalem"
+
 # Phase 5 — Anti-Spam: state-transition cooldowns (prevents oscillation re-alerts)
 STATE_ALERT_COOLDOWN = {
     "RUNNER":     4 * 3600,   # 4h — price can oscillate around 5R threshold
@@ -468,6 +475,173 @@ def _daily_digest_text(rows: list, date_str: str) -> str:
     lines.append(f"{RTL_M}───────────────────")
     lines.append(f"{RTL_M}_(ללא פעולה נוספת? הדאשבורד עדכני)_")
     return "\n".join(lines)
+
+
+def _israel_now() -> datetime:
+    """Israel-local datetime — uses zoneinfo so DST is handled correctly."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo(_ISRAEL_TZ_NAME))
+    except Exception:
+        # Fallback: UTC+3 (Israel DST). Acceptable approximation if zoneinfo
+        # is somehow missing — only used for the briefing window check.
+        from datetime import timedelta
+        return datetime.utcnow() + timedelta(hours=3)
+
+
+def _morning_briefing_text(date_str: str,
+                            regime_status: str,
+                            n_positions: int,
+                            total_exposure_pct: float,
+                            total_pnl_usd: float,
+                            urgent_tasks: list,
+                            pending_risk_count: int = 0) -> str:
+    """Compose the pre-market morning briefing. `urgent_tasks` is a list
+    of (sym, title) tuples — top N to surface. The briefing is read in
+    the first 60 seconds after the user opens Telegram in the morning,
+    so it must be scannable."""
+    RTL_M = "‏"
+    lines = [
+        f"{RTL_M}🌅 *Sentinel — בריפינג בוקר | {date_str}*",
+        f"{RTL_M}───────────────────",
+    ]
+    pnl_icon = "🟢" if total_pnl_usd >= 0 else "🔴"
+    lines.append(
+        f"{RTL_M}🌡️ שוק: *{regime_status or 'מחושב…'}* | "
+        f"חשיפה: `{total_exposure_pct:.1f}%`"
+    )
+    lines.append(
+        f"{RTL_M}📊 `{n_positions}` פוזיציות פתוחות | "
+        f"רווח צף: {pnl_icon} `${total_pnl_usd:,.0f}`"
+    )
+    if urgent_tasks:
+        lines.append(f"{RTL_M}───────────────────")
+        lines.append(f"{RTL_M}⚡ *משימות דחופות:* ({len(urgent_tasks)})")
+        for sym, title in urgent_tasks[:5]:
+            lines.append(f"{RTL_M}• *{sym}* — {title}")
+        if len(urgent_tasks) > 5:
+            lines.append(f"{RTL_M}_(+{len(urgent_tasks) - 5} נוספות — לחץ /t)_")
+    else:
+        lines.append(f"{RTL_M}✅ אין משימות דחופות.")
+    if pending_risk_count > 0:
+        lines.append(f"{RTL_M}───────────────────")
+        lines.append(
+            f"{RTL_M}🎯 `{pending_risk_count}` המלצות סיכון פתוחות — /r"
+        )
+    lines.append(f"{RTL_M}───────────────────")
+    lines.append(f"{RTL_M}_שוק נפתח ב-16:30 IL. /p לפרטים מלאים._")
+    return "\n".join(lines)
+
+
+def _gather_morning_briefing_data() -> dict:
+    """Pull the data the briefing needs. Best-effort — partial data
+    returns a partial briefing rather than no briefing at all.
+
+    Imports are inline so the rest of risk_monitor doesn't take a hard
+    dependency on supabase_repository, task_engine, task_state — those
+    are pulled only when the briefing actually fires."""
+    out = {
+        "regime_status": "",
+        "n_positions": 0,
+        "total_exposure_pct": 0.0,
+        "total_pnl_usd": 0.0,
+        "urgent_tasks": [],
+        "pending_risk_count": 0,
+    }
+    try:
+        import supabase_repository as _repo
+        trades = _repo.get_all_trades(supabase)
+        df = pd.DataFrame(trades)
+        pos_res = ec.get_open_positions_campaign(df) if not df.empty else {"ok": False}
+        if not pos_res.get("ok") or pos_res["data"].empty:
+            return out
+        # Account size
+        try:
+            with open("/app/sentinel_config.json") as f:
+                cfg = json.load(f)
+            nav = float(cfg.get("nav") or cfg.get("total_deposited", 7500.0))
+        except Exception:
+            nav = 7500.0
+        # Market regime
+        try:
+            spy_hist = ec.get_cached_history("SPY", "1y", "1d")
+            regime = ec.compute_market_regime(spy_hist)
+            out["regime_status"] = regime["data"]["status"] if regime.get("ok") else ""
+        except Exception:
+            pass
+        # Positions + exposure + pnl
+        total_exposure = 0.0
+        total_pnl      = 0.0
+        n_pos          = 0
+        for row in pos_res["data"].to_dict("records"):
+            try:
+                sym  = row["symbol"]
+                qty  = float(row.get("quantity") or 0)
+                entry = float(row.get("price") or 0)
+                curr  = ec.get_live_price(sym) or entry
+                total_exposure += curr * qty
+                total_pnl      += (curr - entry) * qty
+                n_pos += 1
+            except Exception:
+                continue
+        out["n_positions"]        = n_pos
+        out["total_exposure_pct"] = (total_exposure / nav * 100) if nav > 0 else 0.0
+        out["total_pnl_usd"]      = total_pnl
+        # Urgent tasks
+        try:
+            import task_engine as _te
+            import task_state as _ts
+            import telegram_tasks as _tt
+            positions = _tt._build_task_input(df, nav)
+            snoozed = _ts.get_snoozes()
+            tasks = _te.compute_open_tasks(positions, snoozed=snoozed)
+            # Surface top-N by urgency
+            out["urgent_tasks"] = [(t.symbol, t.title) for t in tasks if t.urgency >= 55][:5]
+        except Exception:
+            pass
+        # Pending risk recommendations
+        try:
+            import adaptive_risk_engine as _are
+            stats = _are.compute_adherence_stats()
+            if stats.get("ok"):
+                total = stats.get("total_recommendations", 0)
+                evaluated = stats.get("evaluated", 0)
+                out["pending_risk_count"] = max(0, total - evaluated)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return out
+
+
+def _send_morning_briefing_if_due(state: dict, now_ts: float) -> None:
+    """Send one morning briefing per weekday, 07:00–08:00 IL. Uses
+    `last_morning_briefing_date` (Israel-local date string) in state to
+    enforce once-per-day."""
+    now_il = _israel_now()
+    if now_il.weekday() >= 5:  # Sat/Sun in Israel — markets closed
+        return
+    if not (MORNING_BRIEFING_IL_HOUR_START <= now_il.hour < MORNING_BRIEFING_IL_HOUR_END):
+        return
+    today_str = now_il.strftime("%Y-%m-%d")
+    if state.get("last_morning_briefing_date") == today_str:
+        return
+    data = _gather_morning_briefing_data()
+    if data["n_positions"] == 0 and not data["urgent_tasks"]:
+        # Nothing to say. Mark sent anyway to avoid spamming on the next
+        # cycle, but skip the send.
+        state["last_morning_briefing_date"] = today_str
+        return
+    send_telegram(_morning_briefing_text(
+        date_str=now_il.strftime("%d/%m/%Y"),
+        regime_status=data["regime_status"],
+        n_positions=data["n_positions"],
+        total_exposure_pct=data["total_exposure_pct"],
+        total_pnl_usd=data["total_pnl_usd"],
+        urgent_tasks=data["urgent_tasks"],
+        pending_risk_count=data["pending_risk_count"],
+    ))
+    state["last_morning_briefing_date"] = today_str
 
 
 def _send_daily_digest_if_due(state: dict, rows: list, now_ts: float) -> None:
@@ -982,6 +1156,7 @@ def main():
 
     # ── Daily Digest (US market close, once per day) ──────────────────────────
     try:
+        _send_morning_briefing_if_due(state, now_ts)
         _send_daily_digest_if_due(state, daily_digest_rows, now_ts)
     except Exception as e:
         print(f"Daily digest error: {e}")
