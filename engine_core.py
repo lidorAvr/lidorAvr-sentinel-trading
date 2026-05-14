@@ -1798,7 +1798,13 @@ def compute_follow_through(
     except Exception:
         return None
 
-    if hist_df is None or getattr(hist_df, "empty", True):
+    # Semantic distinction:
+    #   hist_df is None  → caller wants us to fetch (production path)
+    #   hist_df is empty → caller already tried and got nothing (tests, or
+    #                      live code that already saw an empty fetch)
+    # Without this split, CI (with internet) silently fetches yfinance for
+    # tests that intentionally pass an empty DataFrame.
+    if hist_df is None:
         hist_df = get_cached_history(symbol, "6mo", "1d")
     if hist_df is None or hist_df.empty:
         return None
