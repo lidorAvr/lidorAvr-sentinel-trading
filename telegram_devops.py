@@ -94,6 +94,13 @@ def dev_pin_activate_session(chat_id: int) -> None:
     """Grant a 30-minute developer session and persist it to disk."""
     _pin_sessions[chat_id] = time.time() + _PIN_SESSION_DURATION
     _save_pin_sessions()
+    # Audit: successful PIN entry — high-signal security event.
+    import audit_logger
+    audit_logger.log_action(
+        supabase, audit_logger.ACTION_DEV_PIN_ACTIVATE,
+        chat_id=chat_id,
+        metadata={"session_duration_sec": _PIN_SESSION_DURATION},
+    )
 
 
 def dev_pin_validate(entered: str) -> bool:
@@ -123,6 +130,15 @@ def dev_pin_record_failure(chat_id: int) -> None:
     window and let an attacker resume brute-forcing immediately."""
     _PIN_FAILED_ATTEMPTS.setdefault(chat_id, []).append(time.time())
     _save_pin_failures()
+    # Audit: failed PIN attempt — security-critical, every one recorded.
+    import audit_logger
+    fail_count = len(_PIN_FAILED_ATTEMPTS.get(chat_id, []))
+    audit_logger.log_action(
+        supabase, audit_logger.ACTION_DEV_PIN_FAIL,
+        chat_id=chat_id,
+        metadata={"fail_count_in_window": fail_count,
+                  "window_sec": _PIN_RATE_LIMIT_WINDOW},
+    )
 
 
 # ── Developer-menu constants ─────────────────────────────────────────────────
