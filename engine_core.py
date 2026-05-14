@@ -189,7 +189,33 @@ def classify_trade_stage(total_r, days_held):
     if total_r < 4.0: return "advanced"
     return "runner"
 
-def map_time_efficiency(days_held, total_r):
+def map_time_efficiency(days_held, total_r, setup_type=None):
+    """Classify a position's time efficiency: dead_money / slow / ok.
+
+    Sprint 11 P3 — MEDIUM 10: when `setup_type` is provided, the
+    dead_money threshold comes from setup_profile (EP: 10d/1.5R,
+    VCP: 21d/0.3R, SWING: 14d/0.5R) — same as task_engine. The
+    old fixed 8d/0.5R threshold is preserved as a fallback for
+    callers that don't pass setup_type, but the canonical answer
+    when setup is known comes from setup_profile.
+
+    Three dead-money definitions used to disagree in the engine
+    (8d/0.5R here, 8d+weak FT in compute_position_state, 21d/0.3R
+    in task_engine pre-Sprint 11). This function now agrees with
+    task_engine when setup_type is known.
+    """
+    if setup_type is not None:
+        try:
+            import setup_profile as _sp
+            prof = _sp.get_profile(setup_type)
+            if days_held > prof.dead_money_days and total_r < prof.dead_money_r:
+                return "dead_money"
+            # "slow" threshold is between dead_money and "ok"
+            if days_held >= 15 and total_r < 1.0:
+                return "slow"
+            return "ok"
+        except ImportError:
+            pass  # fallback to legacy thresholds below
     if days_held >= 8 and total_r < 0.5: return "dead_money"
     if days_held >= 15 and total_r < 1.0: return "slow"
     return "ok"
@@ -232,8 +258,15 @@ def compute_behavior_features(symbol, df, days_held, spy_hist=None):
         "atr20": atr20, "atr_pct": atr_pct, "atr_regime": atr_regime,
         "stretch_ma10_atr": stretch_ma10_atr, "stretch_ma20_atr": stretch_ma20_atr, "down_move_atr": down_move_atr,
         "daily_move": daily_move, "is_down_day": is_down_day,
-        "dist_8d": int(df["DistributionDay"].tail(8).sum()),
+        "dist_8d":  int(df["DistributionDay"].tail(8).sum()),
         "dist_12d": int(df["DistributionDay"].tail(12).sum()),
+        # Sprint 11 P3 — MEDIUM 11 — Mark's "20-25 sessions" cluster
+        # window: a cluster of 4+ distribution days within 25 sessions
+        # is the classic Minervini market-distribution signal. Surfacing
+        # the 25d count + a boolean lets `evaluate_hard_rules` and
+        # downstream coaching reference it directly.
+        "dist_25d":              int(df["DistributionDay"].tail(25).sum()),
+        "distribution_cluster":  int(df["DistributionDay"].tail(25).sum()) >= 4,
         "accum_10d": int(df["AccumulationDay"].tail(10).sum()),
         "good_closes_10": int(df["GoodClose"].tail(10).sum()),
         "bad_closes_10": int(df["BadClose"].tail(10).sum()),
@@ -354,19 +387,38 @@ def score_position(features, stage):
         if features.get("stretch_ma20_atr") is not None and features["stretch_ma20_atr"] > 3.0: score -= 4
     return max(0, min(95, score))
 
-def map_score_to_status(score, hard_rule=None, features=None):
+def map_score_to_status(score, hard_rule=None, features=None, days_held=999):
+    """Map raw position score (0-100) to a 5-tier visual status label.
+
+    `hard_rule` overrides everything (e.g., distribution-cluster fail).
+
+    `days_held` gates early-stage labels (Sprint 11 P3 / HIGH 9 from
+    research audit 2026-05-14): a 2-day-old position can score 88 on a
+    single up-day and earn "🔥 Power", or 35 on a single ATR shake and
+    earn "🟠 Weak". Both are noise-driven — labels stabilize only after
+    real time + price action. Gate:
+      days_held <  10 → downgrade Power     → 🟢 Healthy
+      days_held <  15 → downgrade Weak      → 🔍 Proving
+    Broken stays — hard rules need to surface regardless of age.
+    """
     if hard_rule is not None: return hard_rule["status"]
-    
+
     status = "🔴 Broken"
     if score >= 85: status = "🔥 Power"
     elif score >= 70: status = "🟢 Healthy"
     elif score >= 55: status = "🟡 Yellow Flag"
     elif score >= 40: status = "🟠 Weak"
-    
+
+    # Age gates — see docstring
+    if status == "🔥 Power" and days_held < 10:
+        status = "🟢 Healthy"
+    elif status == "🟠 Weak" and days_held < 15:
+        status = "🔍 Proving"
+
     if status == "🟢 Healthy" and features is not None:
         if features.get("bad_closes_10", 0) > features.get("good_closes_10", 0):
             status = "🟡 תקין אך במעקב"
-            
+
     return status
 
 def build_management_action(status, features, stage, current_stop, total_r, mgt_state):
@@ -421,7 +473,8 @@ def evaluate_position_engine(symbol, entry_price, entry_date_str, current_stop, 
         except: days_held = 0
         stage = classify_trade_stage(total_r, days_held)
         features = compute_behavior_features(symbol, df, days_held=days_held, spy_hist=spy_hist)
-        features["time_efficiency"] = map_time_efficiency(days_held, total_r)
+        features["time_efficiency"] = map_time_efficiency(days_held, total_r,
+                                                           setup_type=setup_type)
         
         sizing_status = "✅ תקין"
         if str(setup_type).upper() != "ALGO" and target_risk_usd > 0 and actual_risk_usd > 0:
@@ -448,7 +501,7 @@ def evaluate_position_engine(symbol, entry_price, entry_date_str, current_stop, 
             return {"ok": True, "error": None, "data": {"status": hard_rule["status"], "sizing_status": sizing_status, "issues": issues, "action": action, "trigger": hard_rule["trigger"], "suggested_stop": current_stop, "score": None, "stage": stage, "features": features, "management_mode": mgmt_mode, "risk_basis": risk_basis, "risk_visibility_score": risk_vis}}
 
         score = score_position(features, stage)
-        status = map_score_to_status(score, features=features)
+        status = map_score_to_status(score, features=features, days_held=days_held)
         mgmt_mode = classify_management_mode(setup_type, symbol)
         risk_basis = classify_risk_basis(current_stop, entry_price, setup_type, target_risk_usd)
         risk_vis = compute_risk_visibility_score(setup_type, current_stop, entry_price, target_risk_usd)
@@ -531,6 +584,97 @@ def get_open_positions_campaign(df):
         if not open_positions: return {"ok": True, "error": None, "data": pd.DataFrame()}
         return {"ok": True, "error": None, "data": pd.DataFrame(open_positions).sort_values("symbol")}
     except Exception as e: return {"ok": False, "error": str(e), "data": pd.DataFrame()}
+
+def compute_market_ftd(spy_hist, lookback_days: int = 30) -> dict:
+    """Minervini / IBD Follow-Through Day market signal.
+
+    Sprint 11 P3 — HIGH 6 from the research audit. The existing
+    `compute_follow_through` is per-POSITION breakout follow-through
+    (Minervini wizard score) — NOT this market-level signal.
+
+    Algorithm (simplified from IBD/Minervini canon):
+      1. Find the lowest low in the past `lookback_days` SPY sessions.
+      2. Define correction = `lookback_days` window contains ≥3 sessions
+         below MA50 (a soft proxy for "confirmed downtrend").
+      3. Find "day 1" = the first up-day after the low.
+      4. On days 4-7 after day 1, look for an FTD: today's close is
+         up ≥ 1.7% on volume ≥ prior day's volume.
+      5. Surface `ftd_today` (today is the FTD), `ftd_recent` (an FTD
+         fired within the past 5 sessions — fresh signal still useful).
+
+    Returns:
+        {
+            "ok":             bool,
+            "is_correction":  bool,
+            "days_since_low": int | None,
+            "day_one_idx":    int | None,
+            "ftd_today":      bool,
+            "ftd_recent":     bool,
+            "summary":        str (Hebrew, one-liner for daily digest)
+        }
+    """
+    if spy_hist is None or len(spy_hist) < lookback_days + 5:
+        return {"ok": False, "is_correction": False, "days_since_low": None,
+                "day_one_idx": None, "ftd_today": False, "ftd_recent": False,
+                "summary": ""}
+    try:
+        df = spy_hist.tail(lookback_days + 50).copy()
+        df["MA50"] = df["Close"].rolling(50).mean()
+        df_window = df.tail(lookback_days)
+        # 1. Find the lowest low's position in the window
+        low_pos = int(df_window["Low"].values.argmin())
+        days_since_low = len(df_window) - 1 - low_pos
+        # 2. Correction proxy: ≥3 of last `lookback_days` closed below MA50
+        below_ma50 = (df_window["Close"] < df_window["MA50"]).fillna(False).sum()
+        is_correction = bool(below_ma50 >= 3)
+        # 3. Find "day 1" — first up day after the low (low's pct change > 0)
+        day_one_idx = None
+        for j in range(low_pos + 1, len(df_window)):
+            if df_window["Close"].iloc[j] > df_window["Close"].iloc[j - 1]:
+                day_one_idx = j
+                break
+        # 4. FTD scan — days 4-7 after day_one
+        ftd_today = False
+        ftd_recent = False
+        if day_one_idx is not None:
+            for offset in range(3, 8):  # day 4..7 (0-indexed: offsets 3..7)
+                k = day_one_idx + offset
+                if k >= len(df_window):
+                    break
+                prev_close = df_window["Close"].iloc[k - 1]
+                today_close = df_window["Close"].iloc[k]
+                today_vol  = df_window["Volume"].iloc[k]
+                prev_vol   = df_window["Volume"].iloc[k - 1]
+                pct = (today_close - prev_close) / prev_close * 100 if prev_close > 0 else 0
+                if pct >= 1.7 and today_vol >= prev_vol:
+                    # k is the FTD session position in df_window
+                    distance_from_today = len(df_window) - 1 - k
+                    if distance_from_today == 0:
+                        ftd_today = True
+                    if distance_from_today <= 5:
+                        ftd_recent = True
+        # 5. Build summary
+        if ftd_today:
+            summary = "📈 Follow-Through Day היום — אישור התחזקות שוק"
+        elif ftd_recent:
+            summary = "📈 FTD לאחרונה — סביבה תומכת כניסות"
+        elif is_correction and day_one_idx is not None:
+            summary = f"⏳ תיקון: יום 1 + {len(df_window) - 1 - day_one_idx}, ממתינים ל-FTD"
+        elif is_correction:
+            summary = "⏳ תיקון פעיל, ממתינים ל-day-1"
+        else:
+            summary = ""
+        return {"ok": True, "is_correction": is_correction,
+                "days_since_low": int(days_since_low),
+                "day_one_idx": (None if day_one_idx is None else int(day_one_idx)),
+                "ftd_today": bool(ftd_today),
+                "ftd_recent": bool(ftd_recent),
+                "summary": summary}
+    except Exception:
+        return {"ok": False, "is_correction": False, "days_since_low": None,
+                "day_one_idx": None, "ftd_today": False, "ftd_recent": False,
+                "summary": ""}
+
 
 def compute_market_regime(spy_hist, qqq_hist=None):
     try:

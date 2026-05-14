@@ -494,6 +494,26 @@ def compute_adaptive_risk(
 
     base_heat = s9_score * 0.50 + m21_score * 0.30 + l50_score * 0.20
 
+    # Sprint 11 P3 — HIGH 7 — Per-bucket heat scoring (EP vs VCP)
+    # A winning VCP cohort can mask a bleeding EP edge. Compute separate
+    # short-window heat for each bucket; gate UP-step on weakest bucket.
+    # Buckets with <3 stat-countable campaigns are deemed "not enough
+    # data" and skipped (don't block on small sample).
+    def _bucket(c):
+        st = str(c.get("setup_type", "")).upper()
+        if st in ("VCP", "VCP_MANUAL"):
+            return "VCP"
+        if st in ("EP", "EP_MANUAL"):
+            return "EP"
+        return None
+    _ep_camps  = [c for c in disc_camps if _bucket(c) == "EP"]
+    _vcp_camps = [c for c in disc_camps if _bucket(c) == "VCP"]
+    bucket_scores = {}
+    if len(_ep_camps) >= 3:
+        bucket_scores["EP"] = _window_heat_score(_window_stats(_ep_camps[:9]))
+    if len(_vcp_camps) >= 3:
+        bucket_scores["VCP"] = _window_heat_score(_window_stats(_vcp_camps[:9]))
+
     # Open position adjustment — ALGO positions at 0.25x weight
     disc_open_r = 0.0
     algo_open_r = 0.0
@@ -547,6 +567,40 @@ def compute_adaptive_risk(
                     f"{RISK_STEP_UP_MIN_CLOSED_CAMPAIGNS} קמפיינים סגורים "
                     f"מאז העלאה אחרונה (נסגרו {_closed_since})"
                 )
+
+    # Sprint 11 P3 — HIGH 5 — Market regime gating
+    # When SPY/QQQ are below their MAs (Cold regime), the market is in
+    # distribution and the user should NOT be laddering up regardless of
+    # heat. Down moves stay fast (safety net). Best-effort: if the
+    # regime check fails, fall back to allowing the step (don't trap
+    # the user behind a stale data source).
+    if direction == "up" and gate_block_reason is None:
+        try:
+            spy_hist = ec.get_cached_history("SPY", "1y", "1d")
+            regime  = ec.compute_market_regime(spy_hist)
+            status_str = regime["data"]["status"] if regime.get("ok") else ""
+            is_cold = ("Cold" in status_str) or ("🔴" in status_str)
+        except Exception:
+            is_cold = False
+        if is_cold:
+            gate_block_reason = (
+                "משטר שוק קר (SPY/QQQ מתחת לממוצעים) — "
+                "לא מעלים סיכון במצב distribution"
+            )
+
+    # Sprint 11 P3 — HIGH 7 — Per-bucket heat gate
+    # When both EP and VCP have stat-countable samples (≥3 each), require
+    # BOTH bucket-scores to be ≥60 before stepping up. Otherwise, a
+    # winning VCP cohort can keep the ladder climbing while EP edge is
+    # silently dying. Single-bucket portfolios are not gated here.
+    if direction == "up" and gate_block_reason is None and len(bucket_scores) >= 2:
+        weakest_bucket = min(bucket_scores, key=bucket_scores.get)
+        weakest_score  = bucket_scores[weakest_bucket]
+        if weakest_score < 60.0:
+            gate_block_reason = (
+                f"גייט חום per-bucket: {weakest_bucket} חום `{weakest_score:.0f}` "
+                f"מתחת לסף 60 — אדג' חלש בקטגוריה זו, ממתינים להתאוששות"
+            )
 
     if direction == "up" and gate_block_reason is None:
         new_idx   = min(curr_idx + 1, len(RISK_LADDER) - 1)

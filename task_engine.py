@@ -173,7 +173,11 @@ def _task_trail_up_3r(row: dict) -> Optional[Task]:
     before). For EP this fires at 2.5R (profit_protect 1.5 + 1).
 
     Skipped if break_even_2r still pending (we want stops to climb
-    monotonically)."""
+    monotonically). Also skipped when open_r ≥ runner_r — the higher-R
+    territory is owned by engine_core.compute_suggested_trail_stop
+    (MA50@runner_r, MA21@runner_r+3) so we don't suggest a tighter level
+    that contradicts the MA-based RUNNER guidance (HIGH 8 from research
+    audit 2026-05-14)."""
     open_r       = float(row.get("open_r") or 0)
     stop         = float(row.get("stop_loss") or 0)
     entry        = float(row.get("entry_price") or 0)
@@ -181,6 +185,9 @@ def _task_trail_up_3r(row: dict) -> Optional[Task]:
     profile      = sp.get_profile(row.get("setup_type", ""))
     trail_trigger_r = profile.profit_protect_r + 1.0
     if open_r < trail_trigger_r or entry <= 0 or initial_stop <= 0 or initial_stop >= entry:
+        return None
+    # HIGH 8 — defer to engine_core's MA-based trail in RUNNER territory
+    if open_r >= profile.runner_r:
         return None
     one_r_dollars = entry - initial_stop
     target_stop = round(entry + one_r_dollars, 2)
