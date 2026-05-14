@@ -1,5 +1,56 @@
 # Current System State
 
+> **2026-05-14 EOD: this file's older sections are still valid, but the most
+> current state is summarized in [`NEXT_SESSION_BRIEF.md`](NEXT_SESSION_BRIEF.md)
+> and [`SPRINT_10_11_LESSONS.md`](SPRINT_10_11_LESSONS.md).**
+> Read those first; this file remains as the running ledger of historical
+> changes.
+
+## Changes — 2026-05-14 (session 11: Task Review + methodology audit + 12/17 fixes)
+
+**Branch**: `claude/integration-pi-and-main-2026-05-14` (15 commits ahead of main, all pushed)
+
+**8 commits in this session (`67d0507` → `72f920c`)**:
+- Sprint 10 — Task Review feature (3 new modules, 75 tests)
+- Sprint 11 P1 — Morning Briefing + Setup Performance + Research Audit doc
+- Sprint 11 P2 — SetupProfile + 2 BLOCKERs + CI default-arg-binding fix
+- Sprint 11 P3 — 5 HIGH + 2 MEDIUM items closed
+- Sprint 11 P4 — Trend Template 5→8 criteria migration
+
+**5 new production modules**:
+- `task_engine.py` / `task_state.py` / `telegram_tasks.py` — Task Review
+- `setup_profile.py` / `setup_performance.py` — per-setup methodology
+
+**1 new migration applied to Supabase**:
+- `003_trade_entry_snapshots.sql` — `risk_pct_at_entry` + `nav_at_entry` columns
+
+**Tests**: 1,321 → **1,622** (+301, +22.8%)
+**Coverage**: 68.9% → **71.4%** on the 4 core modules (CI gate: 67%)
+**Regressions**: 0
+
+**User-visible new features**:
+- 📋 סקירת משימות (Task Review) — 5 task types, 2-step confirm flow
+- 🌅 בריפינג בוקר (Morning Briefing) — 07:00–08:00 IL pre-market
+- /setup_stats — per-setup performance breakdown
+- /t, /s slash shortcuts
+- 4 new adaptive-risk gates (closed-campaigns, Cold-regime, per-bucket heat, drawdown)
+- EP-aware management rules (10d/1.5R dead-money, 1.5R BE, 3R runner)
+- 8-criterion Trend Template (was 5)
+- 15 health checks (was 14 — added Flex Period validator)
+
+**Methodology audit closed**:
+- 2/3 BLOCKERs (setup-aware dead-money, initial-stop validator)
+- 5/6 HIGH items (regime gate, FTD, per-bucket heat, trail reconcile, age gate)
+- 3/8 MEDIUM items (dead-money reconcile, distribution 25d, Trend Template migration)
+- See `SPRINT_11_RESEARCH_AUDIT_2026_05_14.md` for full ranked list.
+
+**Still open** (Sprint 12 candidates):
+- 🟠 BLOCKER #1 — SetupProfile threading through `engine_core.evaluate_position_engine`
+- 🟠 HIGH 4 — VCP entry detector
+- 🟠 5 other HIGH/MEDIUM items
+
+---
+
 ## Changes — 2026-05-12 (session 9: Phase 4 split + trade auto-import + DNS hardening)
 
 ### New modules (branch `claude/review-dev-roadmap-6K19V`)

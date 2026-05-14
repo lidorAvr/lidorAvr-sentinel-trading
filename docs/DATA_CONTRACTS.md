@@ -10,32 +10,68 @@ If a value is computed from fallback data, cached data, default config, or incom
 
 ## Trade row contract
 
-Trade rows are stored in Supabase, usually in a `trades` table.
+Trade rows are stored in Supabase, in the `trades` table.
 
-Common fields observed in the system:
+### Core fields (always populated by importer)
 
-- `trade_id`
+- `trade_id` (PK, IBKR `tradeID`)
 - `symbol`
-- `trade_date`
-- `side`
-- `quantity`
-- `price`
-- `pnl_usd`
-- `commission`
-- `stop_loss`
-- `initial_stop`
-- `setup_type`
-- `quality`
-- `score`
+- `trade_date` (`YYYY-MM-DD`)
+- `side` (`BUY` / `SELL`)
+- `quantity` (signed: BUY positive, SELL negative)
+- `price` (`tradePrice` from IBKR)
+- `pnl_usd` (from IBKR `fifoPnlRealized` on SELL rows)
+- `campaign_id` (format `{SYMBOL}_{tradeID of first BUY}`)
+
+### Fields populated by user via backlog/dashboard
+
+- `setup_type` (`VCP` / `EP` / `SWING` / `ALGO`)
+- `quality` (1–10 score)
+- `score` (1–10 score)
+- `stop_loss` (current stop, may be updated via Task Review)
+- `initial_stop` (entry-time stop, locked)
 - `image_url`
-- `management_notes`
-- `campaign_id`
+- `management_notes` (APPEND not REPLACE per Sprint 8 — every confirm prepends `[YYYY-MM-DD HH:MM]`)
+
+### Migration 001 — addon Phase 2 (Sprint 5)
+
+- `is_addon` (bool)
+- `base_campaign_lot_id`
+- `addon_sequence` (int)
+
+### Migration 003 — entry snapshots (Sprint 11, 2026-05-14)
+
+- `risk_pct_at_entry` (numeric, nullable) — `risk_pct_input` from sentinel_config at insert time
+- `nav_at_entry` (numeric, nullable) — `nav` (or `total_deposited` fallback) from sentinel_config at insert time
+
+These let the portfolio display compute the ORIGINAL campaign target
+(the one in effect when the trade was opened), not the moving CURRENT
+target that drifts every time the user changes their adaptive risk.
+Existing trades (pre-Sprint 11) have NULL → fallback to current target
+silently. `ibkr_trade_importer._load_entry_snapshot()` stamps the
+snapshot once per import batch.
+
+Surfaced via `engine_core.get_open_positions_campaign` — each campaign
+row inherits the snapshot from its FIRST BUY trade.
+
+### Runtime / advisory fields (computed or stored, not always populated)
+
 - `parent_trade_id`
 - `management_state`
 - `management_flags`
 - `target_risk_usd`
 
 Do not assume every field is always populated. Existing code often handles missing values.
+
+### Apply migration 003
+
+```sql
+ALTER TABLE trades
+    ADD COLUMN IF NOT EXISTS risk_pct_at_entry numeric,
+    ADD COLUMN IF NOT EXISTS nav_at_entry      numeric;
+```
+
+Verify with `python3 migrations/verify_migrations.py`.
 
 ## Side and quantity rules
 
@@ -285,6 +321,62 @@ Rules:
 - `last_digest_date` prevents the digest from firing more than once per calendar day.
 - All keys must be carried over between monitor cycles via the carry-over key list.
 - Adding a new one-time alert requires adding its dedup key here and to the carry-over list in `risk_monitor.py`.
+
+## task_state.json contract (Sprint 10)
+
+Persistent state for the 📋 Task Review feature. Located at
+`/app/task_state.json` (override via `task_state.TASK_STATE_FILE` —
+resolved at call time, NOT as default argument).
+
+```json
+{
+  "snoozed": {
+    "<campaign_id>|<kind>": <unix_ts_until_active_again>
+  },
+  "last_action": {
+    "<campaign_id>|<kind>": {
+      "action": "approve" | "snooze" | "dismiss",
+      "ts": <unix>,
+      "before": <value_or_null>,
+      "after":  <value_or_null>,
+      "duration_sec": <only_for_snooze>
+    }
+  }
+}
+```
+
+Dedup key: `f"{campaign_id}|{kind}"` where kind ∈ {`stop_breach`,
+`dead_money`, `break_even_2r`, `trail_up_3r`, `loose_stop`,
+`tighten_to_ma21`}.
+
+Snooze durations:
+- `SNOOZE_SHORT = 24h` — user pressed ⏰ דחה
+- `SNOOZE_LONG = 30d` — user pressed ❌ דלג
+- `1h grace` — auto, after every approve (prevents re-fire before
+  Supabase write propagates)
+
+All writes are atomic (tmp + os.replace). Never raises — returns
+False / empty skeleton on failure.
+
+---
+
+## ibkr_last_sendrequest.json contract (Sprint 11 IBKR fix)
+
+Sentinel-side SendRequest cooldown state. Located at
+`/app/state/ibkr_last_sendrequest.json`.
+
+```json
+{"last_ts": <unix_seconds>}
+```
+
+Read by `ibkr_sync_runner._last_sendrequest_ts()`. Written by
+`_record_sendrequest_ts()` ONLY when SendRequest produced a valid
+`<ReferenceCode>` — failed requests (1001, etc.) do NOT consume the
+cooldown slot.
+
+Cooldown: `IBKR_SENDREQ_COOLDOWN_SEC` env var (default 120s).
+
+---
 
 ## Sizing Leak contract
 

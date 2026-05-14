@@ -262,9 +262,79 @@ When splitting long files:
 Recommended future splits:
 
 - `telegram_handlers.py`
-- `telegram_formatters.py`
-- `telegram_backlog.py`
+- `telegram_formatters.py` ✅ done (Phase 4)
+- `telegram_backlog.py` ✅ done (Phase 4)
 - `portfolio_reports.py`
-- `supabase_repository.py`
+- `supabase_repository.py` ✅ done (Phase 4)
 - `risk_formatters.py`
 - `config.py`
+
+---
+
+## Lessons from Sprint 10 / 11 (2026-05-14)
+
+### Default-arg binding to module constants — DON'T
+
+When writing functions that need to read a module-level constant for a path,
+**don't bind the constant as a default argument**. Python evaluates default
+arguments at function-definition time, which freezes the value. Subsequent
+`monkeypatch.setattr` on the module constant becomes a no-op. This caused
+2 silent CI failures (Sprint 11 P1).
+
+❌ Wrong:
+```python
+TASK_STATE_FILE = "/app/task_state.json"
+def load_state(path: str = TASK_STATE_FILE) -> dict:
+    ...
+```
+
+✅ Right:
+```python
+TASK_STATE_FILE = "/app/task_state.json"
+def load_state(path: Optional[str] = None) -> dict:
+    if path is None:
+        path = TASK_STATE_FILE
+    ...
+```
+
+The second form is `monkeypatch`-friendly AND supports runtime overrides.
+
+### sys.modules stubbing leaks globally — DON'T (selectively)
+
+`sys.modules.setdefault("real_module", MagicMock())` in a test file pollutes
+the global module registry for the entire pytest session. Other tests that
+need the real `real_module` will get the mock instead. Cost us 104 false
+failures in Sprint 11 C1.
+
+✅ Right: only stub truly-external deps (`telebot`, `supabase`, `dotenv`).
+Real internal modules (`engine_core`, `telegram_formatters`, etc.) must
+stay real.
+
+### Setup-aware thresholds via `setup_profile.get_profile()`
+
+Sprint 11 introduced `setup_profile.SetupProfile` as the source of truth for
+thresholds that differ by setup type. When adding a new threshold:
+
+1. Add it to the dataclass (`SetupProfile`).
+2. Set per-setup values in the VCP / EP / SWING / ALGO instances.
+3. Use `get_profile(setup_type)` in the consuming function.
+4. Add tests that pin the VCP-vs-EP ordering (e.g., `EP.X < VCP.X`).
+
+DO NOT hardcode `if setup == "EP": ... else: ...` in the engine — the
+profile dataclass is the only acceptable place to encode setup differences.
+
+### Gates must be fail-open
+
+Adaptive risk gates (Cold-regime, per-bucket-heat, etc.) MUST catch data-
+fetch failures and fall through to "no block". Trapping the user behind a
+stale `yfinance` error or a broken Supabase query is worse than allowing a
+potentially-questionable UP step.
+
+```python
+try:
+    is_cold = check_external_signal()
+except Exception:
+    is_cold = False   # fail-open
+if is_cold:
+    block_with_explanation()
+```

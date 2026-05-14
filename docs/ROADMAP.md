@@ -1,6 +1,35 @@
 # Sentinel Trading Roadmap
 
+> **2026-05-14 EOD: Sprint 10 + Sprint 11 complete.** Current state in
+> [`NEXT_SESSION_BRIEF.md`](NEXT_SESSION_BRIEF.md) and
+> [`SPRINT_10_11_LESSONS.md`](SPRINT_10_11_LESSONS.md). Sprint 12 plan below.
+
 This roadmap keeps future development focused and prevents scattered AI-agent work.
+
+## Sprint 12 candidates (open work, audit-driven)
+
+Ranked by methodology research audit severity (2026-05-14):
+
+1. **🟠 BLOCKER #1** — SetupProfile threaded through `engine_core.evaluate_position_engine`
+   and `compute_position_state`. Currently `_R_RUNNER = 5.0` / `_R_PROFIT_PROTECT = 2.0`
+   are fixed; task_engine alone is setup-aware.
+2. **🟠 HIGH 4** — VCP entry detector. `evaluate_vcp_entry_quality(symbol, date, price)`
+   returning contraction_count / pivot_price / breakout_vol_ratio / grade. Requires
+   chart-pattern detection — biggest open item.
+3. **🟠 HIGH 6 follow-through** — wire `compute_market_ftd` output into the Morning
+   Briefing daily message. (Function exists, not yet displayed.)
+4. **🟡 MEDIUM 14** — Catalyst metadata for EP: `catalyst_date`, `catalyst_type`
+   (earnings / FDA / M&A), `gap_pct`. Migration 004. Foundational for EP entry quality.
+5. **🟡 MEDIUM 15** — Structured `intent` enum instead of `management_state`
+   text matching in `engine_core.classify_intent`.
+6. **🟡 MEDIUM 16** — ALGO add-on gating by Power-state requirement in
+   `addon_risk_engine.check_addon_eligibility`.
+7. **🟡 MEDIUM 17** — Mistake-classification structured codes (regex/substring
+   matching on `management_notes` is fragile).
+8. **🟢 LOW 18-20** — Document magic numbers (RUNNER_FOLLOW_THROUGH_MIN, etc.),
+   disambiguate Hebrew labels.
+
+---
 
 ## Guiding principle
 

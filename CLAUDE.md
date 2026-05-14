@@ -10,12 +10,19 @@ Your job is to improve the system without breaking existing flows.
 
 ## Mandatory reading order
 
+**Fast-track (single doc, recommended for first read after Sprint 11):**
+
+1. `docs/NEXT_SESSION_BRIEF.md` — current state, open work items, hard constraints
+
+**Full reading (after fast-track or when going deep into core changes):**
+
 1. `AGENTS.md`
 2. `docs/AI_AGENT_CONTEXT.md`
 3. `docs/MODULE_MAP.md`
 4. `docs/DATA_CONTRACTS.md`
 5. `docs/SAFE_CHANGE_PROTOCOL.md`
 6. `docs/TESTING_AND_DEPLOYMENT.md`
+7. `docs/SPRINT_11_RESEARCH_AUDIT_2026_05_14.md` — methodology gap analysis
 
 Do not make non-trivial changes before reading these files.
 
@@ -54,20 +61,29 @@ For each task:
 
 ## Most fragile areas
 
-- `engine_core.py`: math, market data, campaign aggregation.
-- `telegram_bot.py`: long file with many workflows and Supabase writes.
-- `docker-compose.yml`: production service commands.
-- NAV/account config: can distort risk and exposure if stale.
+- `engine_core.py`: math, market data, campaign aggregation, FTD, Trend Template
+- `adaptive_risk_engine.py`: 4 ladder gates (closed-campaigns / cold-regime / per-bucket / drawdown)
+- `risk_monitor.py`: anti-spam state machine + Morning Briefing + Daily Digest
+- `task_engine.py`: 5 setup-aware management rules (BE/trail/dead-money/breach/loose-stop)
+- `telegram_bot.py`: top-level router (already extracted to 9 sub-modules)
+- `docker-compose.yml`: production service commands
+- NAV/account config: can distort risk and exposure if stale
 
 ## Preferred refactor direction
 
-Do not make a giant rewrite. Instead split gradually:
+The Phase 4 refactor (Sprint 9-era) split `telegram_bot.py` from 2000+ to 458
+lines across 9 modules. The Sprint 10/11 work continued that pattern:
 
-- extract Telegram formatting helpers
-- extract Supabase repository layer
-- extract portfolio report builder
-- extract risk/NAV config helper
-- add tests for each extraction
+- `task_engine.py` / `task_state.py` / `telegram_tasks.py` — Task Review
+- `setup_profile.py` / `setup_performance.py` — per-setup methodology
+
+When adding new features, follow this pattern:
+- pure-logic module (engine-like) at root
+- UI module (`telegram_<feature>.py`) under root
+- state persistence (`<feature>_state.py`) if applicable
+- dedicated test file per module
+
+DO NOT bundle UI + logic + state in one file.
 
 ## Output style for Telegram
 

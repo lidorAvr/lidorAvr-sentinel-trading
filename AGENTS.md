@@ -40,12 +40,14 @@ Do not bypass `telegram_bot_secure_runner.py` unless you intentionally replace i
 ## Critical code areas
 
 - `engine_core.py`: technical/risk engine. Highest risk for math regressions.
-- `telegram_bot.py`: user-facing Telegram workflows and Supabase write flows. High UX and safety risk.
+- `telegram_bot.py`: user-facing Telegram workflows. Already extracted to 9 sub-modules (Sprint 9); do not regrow.
 - `telegram_bot_secure_runner.py`: runtime guard for Telegram access, spam protection, and data-source disclosure.
-- `main.py`: sync layer and account/config updates.
+- `main.py`: sync layer and account/config updates. Single SendRequest entry-point (Sprint 11 IBKR fix).
 - `dashboard.py`: visual inspection layer. Contains Trader Edge Panel and Adaptive Risk sidebar.
-- `risk_monitor.py`: monitoring and automated risk alerts. Contains anti-spam state machine.
-- `adaptive_risk_engine.py`: stat_bucket classification and adaptive risk recommendation.
+- `risk_monitor.py`: monitoring and automated risk alerts. Contains anti-spam state machine + Morning Briefing.
+- `adaptive_risk_engine.py`: 4 ladder gates (closed-campaigns / Cold-regime / per-bucket-heat / drawdown).
+- `task_engine.py` + `task_state.py` + `telegram_tasks.py`: Task Review feature (Sprint 10/11).
+- `setup_profile.py`: per-setup methodology parameters. Source of truth for thresholds that differ by VCP/EP/SWING.
 - `docker-compose.yml`: production service wiring.
 
 ## Required workflow for any change

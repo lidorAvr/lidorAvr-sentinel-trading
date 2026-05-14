@@ -1,5 +1,11 @@
 # AI Agent Context — Sentinel Trading
 
+> **Updated 2026-05-14 (end of Sprint 11 P4).**
+> **For fastest onboarding, read [`docs/NEXT_SESSION_BRIEF.md`](NEXT_SESSION_BRIEF.md) first.**
+> It contains the current branch state, the 15 unmerged commits, the methodology coverage
+> matrix, and the open work items. This file (AI_AGENT_CONTEXT.md) provides the deeper
+> background — read AFTER the brief if you need it.
+
 ## What this system is
 
 Sentinel Trading is a personal trading operations system. It connects trade records, portfolio/risk analysis, Telegram workflows, market data, and monitoring into one decision-support stack.

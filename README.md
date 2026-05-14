@@ -5,8 +5,8 @@ SEPA methodology** (Specific Entry Point Analysis) — risk-first, R-multiple
 based, with adaptive sizing and trader development tracking.
 
 [![Sentinel Tests](https://github.com/lidorAvr/lidorAvr-sentinel-trading/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/lidorAvr/lidorAvr-sentinel-trading/actions/workflows/tests.yml)
-![Tests](https://img.shields.io/badge/tests-1321%20passing-brightgreen)
-![Coverage](https://img.shields.io/badge/coverage-68.9%25-yellow)
+![Tests](https://img.shields.io/badge/tests-1622%20passing-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-71.4%25-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![License](https://img.shields.io/badge/license-Private-lightgrey)
 
@@ -17,18 +17,37 @@ based, with adaptive sizing and trader development tracking.
 Sentinel watches a personal trading account in real time and:
 
 - **Sizes risk** adaptively from a 7-step ladder driven by recent performance
-  (S9 / M21 / L50 weighted heat score, 0-100)
+  (S9 / M21 / L50 weighted heat score, 0-100), gated by 4 conditions:
+  closed-campaigns count, market regime (Cold blocks UP), per-bucket heat
+  (EP & VCP must both be ≥60), and drawdown auto-cut at -8% NAV
 - **Manages campaigns** through a 10-state machine (NEW → PROVING → WORKING →
-  RUNNER → BROKEN, plus DEAD_MONEY, PROFIT_PROTECTION, etc.)
-- **Suggests trailing stops** that scale with ATR (2-8% buffer depending on
-  volatility — tight on NVDA, wide on MNST)
+  RUNNER → BROKEN, plus DEAD_MONEY, PROFIT_PROTECTION, etc.) with **age-gated
+  labels** (no "Power" before day 10, no "Weak" before day 15)
+- **Differentiates VCP from EP** via `SetupProfile`: EP gets 10d/1.5R
+  dead-money (vs VCP's 21d/0.3R), 1.5R BE (vs 2R), 3R runner (vs 5R)
+- **Surfaces tasks** via 📋 סקירת משימות — 5 setup-aware rules (BE@profit_protect,
+  trail+1R, dead-money, stop-breach, loose-stop) with 2-step confirm flow:
+  approve → confirm value OR edit OR cancel → Supabase update + audit log
+- **Suggests trailing stops** that scale with ATR (2-8% buffer); task_engine
+  owns 3R..5R band, engine_core's MA21/MA50 trail owns ≥5R (single guidance
+  per band)
+- **Validates initial stops** against 5-8% Minervini rule (`setup_profile.validate_initial_stop`):
+  in-spec/marginal/out-of-spec/missing → out-of-spec surfaces as a 🔴 task
+- **Locks campaign target at entry** (migration 003 `risk_pct_at_entry` +
+  `nav_at_entry`): R-multiple math uses the rate active when trade was opened,
+  not current drifting rate
 - **Validates add-on entries** against 5 eligibility gates (data, ALGO, cushion,
   open-risk, chase) before the trader commits
-- **Reports weekly/monthly** PDF + Telegram summary with heat-score thermometer
-  and trader development score
+- **Reports** weekly/monthly PDF + Telegram summary with heat-score thermometer,
+  trader development score, and per-setup breakdown (`/setup_stats`)
+- **Briefs daily** at 07:00–08:00 IL pre-market (Morning Briefing) with
+  market regime, exposure, floating PnL, urgent tasks, and pending risk
+  decisions
+- **Detects Minervini Follow-Through Day** market signal (`compute_market_ftd`)
+  for index-level re-entry timing after corrections
 - **Audits every state-changing action** to a Supabase `audit_log` table
-- **Self-monitors** via 14 health checks accessible from `/system_health` in
-  Telegram
+- **Self-monitors** via 15 health checks accessible from 🏥 בריאות מערכת in
+  Telegram (now includes IBKR Query ID + Flex Period validators)
 
 ## Architecture (one-line tour)
 
@@ -53,11 +72,17 @@ Supabase (truth)  →  engine_core (math)  →  risk_monitor (1-min cycle)
 
 ## Repo orientation
 
-- **Production code:** root-level `.py` files (`engine_core.py`, `risk_monitor.py`, etc.)
-- **Telegram surface:** `telegram_bot.py` + `telegram_*.py` extracted modules
-- **Tests:** `tests/` (1258 passing)
-- **Docs:** `docs/` — start with [`docs/README.md`](docs/README.md) for the AI-agent reading order
+- **Production code:** root-level `.py` files (`engine_core.py`, `risk_monitor.py`,
+  `adaptive_risk_engine.py`, `task_engine.py`, `setup_profile.py`, etc.)
+- **Telegram surface:** `telegram_bot.py` + 9 extracted modules
+  (`telegram_callbacks/menus/portfolio/backlog/devops/tasks/formatters` +
+  `bot_core/helpers/health`)
+- **Tests:** `tests/` (**1,622 passing**, 71.4% coverage on core modules)
+- **Docs:** `docs/` — start with [`docs/NEXT_SESSION_BRIEF.md`](docs/NEXT_SESSION_BRIEF.md)
+  for the fastest entry point, then [`docs/README.md`](docs/README.md) for the
+  full AI-agent reading order
 - **Infrastructure:** `docker-compose.yml`, `.github/workflows/`, `migrations/`
+  (3 schema versions applied)
 
 ## Quick start
 
@@ -111,15 +136,18 @@ Full constraints in [`CLAUDE.md`](CLAUDE.md).
 
 ## Documentation map
 
+- [`docs/NEXT_SESSION_BRIEF.md`](docs/NEXT_SESSION_BRIEF.md) — **single best entry point** for new AI agent
 - [`AGENTS.md`](AGENTS.md) — operating rules for AI coding agents
 - [`CLAUDE.md`](CLAUDE.md) — Claude Code specific context
-- [`docs/README.md`](docs/README.md) — full doc index (start here)
-- [`docs/SYSTEM_AUDIT_2026_05.md`](docs/SYSTEM_AUDIT_2026_05.md) — most recent system audit
+- [`docs/README.md`](docs/README.md) — full doc index
+- [`docs/SPRINT_11_RESEARCH_AUDIT_2026_05_14.md`](docs/SPRINT_11_RESEARCH_AUDIT_2026_05_14.md) — methodology audit (3 BLOCKERs, 6 HIGH, 8 MEDIUM)
+- [`docs/IBKR_CONFIG_REFERENCE.md`](docs/IBKR_CONFIG_REFERENCE.md) — broker integration spec
 - [`docs/COVERAGE_BASELINE.md`](docs/COVERAGE_BASELINE.md) — coverage targets through Sprint 9
 - [`docs/SPRINT_6_LESSONS.md`](docs/SPRINT_6_LESSONS.md) — incident retrospective
 - [`docs/SPRINT_7_LESSONS.md`](docs/SPRINT_7_LESSONS.md) — recovery sprint
 - [`docs/SPRINT_8_LESSONS.md`](docs/SPRINT_8_LESSONS.md) — foundations hardening
-- [`docs/SPRINT_9_PLAN.md`](docs/SPRINT_9_PLAN.md) — current sprint charter
+- [`docs/SPRINT_9_PLAN.md`](docs/SPRINT_9_PLAN.md) — partially superseded by Sprint 10/11
+- [`docs/SPRINT_10_11_LESSONS.md`](docs/SPRINT_10_11_LESSONS.md) — Task Review + methodology gap closure
 
 ## Recent sprints
 
@@ -129,7 +157,9 @@ Full constraints in [`CLAUDE.md`](CLAUDE.md).
 | 6 | audit_logger, healthchecks real, P1 features | +18 | 7.8 (incident) |
 | 7 | pytest-socket, audit healthcheck, process docs | +3 | 8.6 (recovery) |
 | 8 | Foundations Hardening | +73 | **9.0** ⭐ |
-| 9 | Morning Briefing + engine_core 75% + features (in progress) | — | — |
+| 9 | (planned: Morning Briefing + engine_core 75%) — partially folded into 10/11 | — | — |
+| 10 | **📋 Task Review feature** (5 task types, 2-step confirm) | +75 | **9.2** ⭐ |
+| 11 | **Methodology audit + 12/17 findings closed** (4 commits P1-P4) | +117 | **9.3** ⭐⭐ |
 
 ---
 

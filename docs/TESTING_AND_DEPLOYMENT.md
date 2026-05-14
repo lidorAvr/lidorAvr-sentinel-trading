@@ -15,7 +15,24 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
-Current passing test count: **1107 tests**.
+Current passing test count: **1,622 tests** (as of Sprint 11 P4, 2026-05-14).
+
+Test growth across recent sprints:
+- Sprint 9 baseline: 1,321
+- Sprint 10 (Task Review): +75 → 1,396 (1,505 at start of P1 due to bundled commits)
+- Sprint 11 P1 (Morning Briefing + Setup Performance): +43 → 1,548
+- Sprint 11 P2 (SetupProfile + 2 BLOCKERs): +24 → 1,572
+- Sprint 11 P3 (5 HIGH + 2 MEDIUM): +42 → 1,614 (then 1,622 with the morning-briefing fix-up)
+- Sprint 11 P4 (Trend Template 5→8): 0 new (existing test rewired)
+
+Coverage on the 4 core modules (`engine_core`, `adaptive_risk_engine`,
+`analytics_engine`, `addon_risk_engine`): **71.4%** (CI gate: 67%).
+
+```bash
+pytest --cov=engine_core --cov=adaptive_risk_engine \
+       --cov=analytics_engine --cov=addon_risk_engine \
+       --cov-fail-under=67
+```
 
 ## CI
 
