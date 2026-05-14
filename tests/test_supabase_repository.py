@@ -207,11 +207,49 @@ class TestUpdateManagementNotes:
 
 @pytest.mark.unit
 class TestGetOpenCampaignForSymbol:
-    def test_returns_campaign_id_when_found(self):
+    """
+    Sprint 6: closed-campaign filter.
+
+    Convention (matches adaptive_risk_engine.compute_closed_campaigns):
+      BUY  → quantity > 0
+      SELL → quantity < 0
+    Campaign is OPEN when net SUM(quantity) > 0.
+    """
+
+    def test_returns_open_campaign_when_net_qty_positive(self):
         sb = _sb()
-        sb.execute.return_value.data = [{"campaign_id": "CID-123"}]
-        result = repo.get_open_campaign_for_symbol(sb, "NVDA")
-        assert result == "CID-123"
+        sb.execute.return_value.data = [
+            {"campaign_id": "CID-OPEN", "quantity": 100, "trade_date": "2026-05-10"},
+            {"campaign_id": "CID-OPEN", "quantity": -50, "trade_date": "2026-05-11"},
+        ]
+        assert repo.get_open_campaign_for_symbol(sb, "NVDA") == "CID-OPEN"
+
+    def test_excludes_fully_closed_campaign(self):
+        sb = _sb()
+        sb.execute.return_value.data = [
+            {"campaign_id": "CID-CLOSED", "quantity": 100, "trade_date": "2026-05-10"},
+            {"campaign_id": "CID-CLOSED", "quantity": -100, "trade_date": "2026-05-12"},
+        ]
+        assert repo.get_open_campaign_for_symbol(sb, "NVDA") is None
+
+    def test_returns_open_when_open_and_closed_coexist(self):
+        sb = _sb()
+        sb.execute.return_value.data = [
+            # Closed campaign (older)
+            {"campaign_id": "CID-OLD", "quantity": 50, "trade_date": "2026-04-01"},
+            {"campaign_id": "CID-OLD", "quantity": -50, "trade_date": "2026-04-15"},
+            # Open campaign (newer)
+            {"campaign_id": "CID-NEW", "quantity": 80, "trade_date": "2026-05-01"},
+        ]
+        assert repo.get_open_campaign_for_symbol(sb, "NVDA") == "CID-NEW"
+
+    def test_picks_most_recent_open_campaign(self):
+        sb = _sb()
+        sb.execute.return_value.data = [
+            {"campaign_id": "CID-A", "quantity": 100, "trade_date": "2026-05-01"},
+            {"campaign_id": "CID-B", "quantity": 100, "trade_date": "2026-05-08"},
+        ]
+        assert repo.get_open_campaign_for_symbol(sb, "NVDA") == "CID-B"
 
     def test_returns_none_when_no_data(self):
         sb = _sb()
@@ -225,26 +263,27 @@ class TestGetOpenCampaignForSymbol:
 
     def test_filters_by_symbol(self):
         sb = _sb()
-        sb.execute.return_value.data = [{"campaign_id": "CID-999"}]
+        sb.execute.return_value.data = [
+            {"campaign_id": "CID-X", "quantity": 50, "trade_date": "2026-05-01"},
+        ]
         repo.get_open_campaign_for_symbol(sb, "MRVL")
         eq_calls = [str(c) for c in sb.eq.call_args_list]
         assert any("MRVL" in c for c in eq_calls)
 
-    def test_filters_by_buy_side(self):
+    def test_ignores_rows_without_campaign_id(self):
         sb = _sb()
-        sb.execute.return_value.data = [{"campaign_id": "CID-999"}]
-        repo.get_open_campaign_for_symbol(sb, "MRVL")
-        eq_calls = [str(c) for c in sb.eq.call_args_list]
-        assert any("BUY" in c for c in eq_calls)
+        sb.execute.return_value.data = [
+            {"campaign_id": None, "quantity": 100, "trade_date": "2026-05-01"},
+            {"campaign_id": "CID-VALID", "quantity": 50, "trade_date": "2026-05-02"},
+        ]
+        assert repo.get_open_campaign_for_symbol(sb, "NVDA") == "CID-VALID"
 
-    def test_applies_limit_1(self):
+    def test_excludes_campaign_with_negative_net_qty(self):
+        # Edge case: bookkeeping anomaly — more sold than bought (overshoot).
+        # Should not be returned as "open".
         sb = _sb()
-        sb.execute.return_value.data = [{"campaign_id": "CID-999"}]
-        repo.get_open_campaign_for_symbol(sb, "MRVL")
-        sb.limit.assert_called_with(1)
-
-    def test_orders_by_trade_date_desc(self):
-        sb = _sb()
-        sb.execute.return_value.data = [{"campaign_id": "CID-999"}]
-        repo.get_open_campaign_for_symbol(sb, "MRVL")
-        sb.order.assert_called_with("trade_date", desc=True)
+        sb.execute.return_value.data = [
+            {"campaign_id": "CID-OVER", "quantity": 100, "trade_date": "2026-05-01"},
+            {"campaign_id": "CID-OVER", "quantity": -120, "trade_date": "2026-05-05"},
+        ]
+        assert repo.get_open_campaign_for_symbol(sb, "NVDA") is None

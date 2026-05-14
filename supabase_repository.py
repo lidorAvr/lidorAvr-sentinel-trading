@@ -4,6 +4,7 @@ Supabase data-access layer for Sentinel Trading.
 All functions receive a Supabase client as first argument (dependency injection).
 No module-level state, no Telegram dependencies — safe to import anywhere.
 """
+from collections import defaultdict
 
 _INCOMPLETE_TRADES_QUERY = (
     "setup_type.is.null,"
@@ -95,18 +96,43 @@ def update_addon_record(sb, trade_id: str, base_campaign_lot_id: str, addon_sequ
 
 
 def get_open_campaign_for_symbol(sb, symbol: str) -> str | None:
-    """Return campaign_id of the most recent open BUY campaign for symbol, or None."""
-    res = (
+    """Return campaign_id of the most recent OPEN campaign for symbol, or None.
+
+    A campaign is "open" when its net quantity (signed sum of all BUY/SELL rows)
+    is strictly positive. Closed campaigns (net qty ≤ 0) are excluded so that
+    add-on flows never bind to a campaign that was already fully sold.
+
+    Per Supabase schema: BUY rows store positive quantity, SELL rows store
+    negative quantity (matches adaptive_risk_engine.compute_closed_campaigns
+    grouping logic).
+    """
+    rows = (
         sb.table("trades")
-        .select("campaign_id")
+        .select("campaign_id, quantity, trade_date")
         .eq("symbol", symbol)
-        .eq("side", "BUY")
-        .order("trade_date", desc=True)
-        .limit(1)
         .execute()
+        .data or []
     )
-    data = res.data if res and res.data else []
-    return data[0]["campaign_id"] if data else None
+    if not rows:
+        return None
+
+    net_qty: dict = defaultdict(float)
+    latest_date: dict = {}
+    for r in rows:
+        cid = r.get("campaign_id")
+        if not cid:
+            continue
+        net_qty[cid] += float(r.get("quantity") or 0)
+        d = r.get("trade_date") or ""
+        if d > latest_date.get(cid, ""):
+            latest_date[cid] = d
+
+    open_cids = [cid for cid, q in net_qty.items() if q > 0]
+    if not open_cids:
+        return None
+
+    open_cids.sort(key=lambda c: latest_date.get(c, ""), reverse=True)
+    return open_cids[0]
 
 
 def get_existing_trade_ids(sb) -> set:
