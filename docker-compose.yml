@@ -8,6 +8,7 @@ services:
       - .env
     environment:
       - TZ=Asia/Jerusalem
+      - PYTHONUNBUFFERED=1
     dns:
       - 8.8.8.8
       - 1.1.1.1
@@ -38,6 +39,7 @@ services:
       - .env
     environment:
       - TZ=Asia/Jerusalem
+      - PYTHONUNBUFFERED=1
     dns:
       - 8.8.8.8
       - 1.1.1.1
@@ -97,6 +99,7 @@ services:
       - .env
     environment:
       - TZ=Asia/Jerusalem
+      - PYTHONUNBUFFERED=1
     dns:
       - 8.8.8.8
       - 1.1.1.1
@@ -129,6 +132,7 @@ services:
       - .env
     environment:
       - TZ=Asia/Jerusalem
+      - PYTHONUNBUFFERED=1
     dns:
       - 8.8.8.8
       - 1.1.1.1

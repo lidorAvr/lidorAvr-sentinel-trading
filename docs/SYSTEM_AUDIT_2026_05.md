@@ -749,6 +749,23 @@ def _write_runner_decision(campaign_id: str, decision: str) -> None:
 
 ---
 
+### 5.10 Issue O (NEW, MEDIUM) — Observability: Python stdout unbuffered
+
+**Discovered:** Day 1 evening shift, during smoke test on production Orange Pi.
+
+**תיאור:** ארבעת שירותי הפייתון (`sentinel-bot`, `telegram-bot`, `risk-monitor`, `reporting-service`) רצים עם stdout מאופן רגיל (block-buffered כש-stdout אינו TTY). מצב זה גורם לכך ש-`docker logs <service>` מציג פלט ריק כל עוד ה-buffer לא מתמלא או שהפרוסס לא יוצא.
+
+**ראיות:**
+- `docker-compose.yml` שורה 95 (לפני התיקון): `command: python risk_monitor.py` — ללא `-u` ולא `PYTHONUNBUFFERED=1`
+- `docker exec risk-monitor env | grep -i python` החזיר רק `PYTHON_VERSION` ו-`PYTHON_SHA256` — אישור שאין `PYTHONUNBUFFERED`
+- Healthcheck (`docker-compose.yml:115`) בודק mtime של `/app/state/risk_monitor_last_cycle`, **לא לוגים** — לכן הקונטיינר "healthy" גם כשאין שום פלט גלוי
+
+**Severity: MEDIUM.** אין השפעה על חישובים או trading logic — אבל מסכה את כל ה-`print()` ו-`logger.info()` שמתבצעים בקוד. מתחבר לשכבת ה-"silent failures" של V1 §5.1 (שתוקנה מבחינת alerts) אך משאיר שכבת observability שלמה במצב סלינט.
+
+**Status: RESOLVED (Day 1).** Commit `<see git log>` הוסיף `PYTHONUNBUFFERED=1` ל-`environment:` בארבעת השירותים. נדרש `docker compose up -d --force-recreate` בפריסה הבאה כדי להחיל.
+
+---
+
 ## 6. מפת סינרגיה בין שירותים
 
 ```
