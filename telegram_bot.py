@@ -8,6 +8,8 @@ import telegram_formatters as tf
 import adaptive_risk_engine as are
 import addon_risk_engine as addon_eng
 import supabase_repository as repo
+import task_engine as te
+import task_state as ts
 from bot_core import bot, supabase, user_state, RTL, ADMIN_ID, TOKEN
 from bot_helpers import (_bot_log, _read_last_log_lines, _write_runner_decision,
                          get_account_settings, get_nav_and_risk,
@@ -53,6 +55,7 @@ _SLASH_SHORTCUTS = {
     "/h":     "❓ עזרה",                  # help
     "/d":     "🛠️ מפתח",                 # developer menu
     "/r":     "/stats",                   # risk adherence stats
+    "/t":     "📋 סקירת משימות",         # task review (2026-05-14 feature)
     "/home":  "⬅️ חזרה לתפריט ראשי",     # back to main
 }
 
@@ -74,6 +77,14 @@ def handle_all_messages(message):
 
     # ── טיפול ב-state פעיל ─────────────────────────────────────────────
     active_state = user_state.get(chat_id, {})
+
+    # Task Review manual-edit text input — must run BEFORE the dev PIN
+    # branch so the user can type a numeric value without colliding with
+    # other input modes.
+    if active_state.get("action") == "task_edit_value":
+        import telegram_tasks as _tasks
+        _tasks.apply_manual_edit_value(chat_id, text, user_state)
+        return
 
     if active_state.get("action") == "awaiting_dev_pin":
         del user_state[chat_id]
@@ -416,6 +427,10 @@ def handle_all_messages(message):
 
     if text in ["📊 חדר מצב (פוזיציות)", "/portfolio"]:
         handle_portfolio_room(chat_id)
+        return
+
+    if text in ["📋 סקירת משימות", "/tasks"]:
+        handle_tasks_review(chat_id)
         return
 
     if chat_id in user_state:

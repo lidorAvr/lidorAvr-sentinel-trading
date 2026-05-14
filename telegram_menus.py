@@ -9,29 +9,28 @@ _SETUPS = ["VCP", "ALGO", "SWING", "EP"]
 
 
 def get_main_menu():
-    """תפריט ראשי — flat layout (post-2026-05-14 UX feedback).
-
-    The 4 most-frequent actions are direct buttons; nested categories
-    (analysis, journal-submenu, dev) remain available but pushed lower.
-    Slash shortcuts /p /m /r /j /h /d work everywhere for power users.
-    """
+    """תפריט ראשי — flat layout (post-2026-05-14 UX feedback)."""
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    # Row 1: the two most-requested screens
+    # Row 1: portfolio + task review (the daily-management pair)
     markup.add(
         telebot.types.KeyboardButton("📊 חדר מצב (פוזיציות)"),
+        telebot.types.KeyboardButton("📋 סקירת משימות"),
+    )
+    # Row 2: market overview + journal
+    markup.add(
         telebot.types.KeyboardButton("🌡️ משטר שוק וסיכונים"),
-    )
-    # Row 2: secondary common actions
-    markup.add(
         telebot.types.KeyboardButton("📚 יומן"),
-        telebot.types.KeyboardButton("📊 סטטיסטיקת ציות"),
     )
-    # Row 3: less-frequent
+    # Row 3: stats + help
     markup.add(
-        telebot.types.KeyboardButton("🔬 ניתוח"),
+        telebot.types.KeyboardButton("📊 סטטיסטיקת ציות"),
         telebot.types.KeyboardButton("❓ עזרה"),
     )
-    markup.add(telebot.types.KeyboardButton("🛠️ מפתח"))
+    # Row 4: less-frequent
+    markup.add(
+        telebot.types.KeyboardButton("🔬 ניתוח"),
+        telebot.types.KeyboardButton("🛠️ מפתח"),
+    )
     return markup
 
 

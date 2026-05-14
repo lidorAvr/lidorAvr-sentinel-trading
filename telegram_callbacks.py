@@ -51,6 +51,42 @@ def handle_queries(call):
         _tb.get_next_missing(chat_id)
         return
 
+    if data.startswith("task|"):
+        bot.answer_callback_query(call.id)
+        import telegram_tasks as _tasks
+        parts = data.split("|")
+        sub = parts[1] if len(parts) > 1 else ""
+
+        if sub == "back":
+            _tasks.handle_tasks_review(chat_id)
+        elif sub == "sym":
+            sym = parts[2] if len(parts) > 2 else ""
+            _tasks.show_symbol_tasks(chat_id, sym)
+        elif sub == "view" and len(parts) >= 4:
+            cid, kind = parts[2], parts[3]
+            _tasks.show_task_detail(chat_id, cid, kind)
+        elif sub == "approve" and len(parts) >= 4:
+            cid, kind = parts[2], parts[3]
+            _tasks.show_approve_confirm(chat_id, cid, kind)
+        elif sub == "confirm" and len(parts) >= 5:
+            cid, kind = parts[2], parts[3]
+            try:
+                value = float(parts[4])
+            except ValueError:
+                bot.send_message(chat_id, f"{RTL}⚠️ ערך לא תקין בכפתור.")
+                return
+            _tasks.apply_confirmed_value(chat_id, cid, kind, value)
+        elif sub == "edit" and len(parts) >= 4:
+            cid, kind = parts[2], parts[3]
+            _tasks.start_manual_edit(chat_id, cid, kind, user_state)
+        elif sub == "snooze" and len(parts) >= 4:
+            cid, kind = parts[2], parts[3]
+            _tasks.snooze_short(chat_id, cid, kind)
+        elif sub == "dismiss" and len(parts) >= 4:
+            cid, kind = parts[2], parts[3]
+            _tasks.dismiss_long(chat_id, cid, kind)
+        return
+
     if data == "start_trail_flow":
         if chat_id in user_state and 'temp_positions' in user_state[chat_id]:
             count = len(user_state[chat_id]['temp_positions'])
