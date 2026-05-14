@@ -42,6 +42,20 @@ def update_risk_pct(new_pct: float) -> bool:
         cfg["risk_changed_dir"] = "up" if new_pct > old_pct else "down_fast"
         with open(SENTINEL_CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
+        # Audit: risk-level change is the highest-signal trading event.
+        # Lazy import of bot_core — this module is also imported in CLI/test
+        # contexts where bot_core may fail to load due to missing env vars.
+        try:
+            from bot_core import supabase as _sb
+            import audit_logger
+            audit_logger.log_action(
+                _sb, audit_logger.ACTION_RISK_PCT_CHANGE,
+                before={"risk_pct": old_pct},
+                after={"risk_pct": cfg["risk_pct_input"],
+                       "direction": cfg["risk_changed_dir"]},
+            )
+        except ImportError:
+            pass  # bot_core not loadable in this context — audit silently skipped
         return True
     except Exception:
         return False
