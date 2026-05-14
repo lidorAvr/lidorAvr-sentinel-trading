@@ -19,6 +19,23 @@ yfinance fetch — invisible in sandboxed local runs, fatal in CI.
 If a test legitimately needs the loopback interface, decorate with
 `@pytest.mark.enable_socket` (provided by pytest-socket). No test
 should ever talk to a public host.
+
+# Marker auto-tagging (Sprint 8 #4)
+
+`pytest.ini` declares three markers (unit / integration / slow) but they
+were never applied to the existing 1258 tests — `pytest -m unit` returned
+zero results. Chris (QA) flagged this in Meeting 8.
+
+Rather than touching every one of the 42 test files, the
+`pytest_collection_modifyitems` hook below tags every collected test by
+filename. Files explicitly marked already keep their marker; everything
+else falls through to a sensible default.
+
+Run the slices:
+    pytest -m unit             # pure math, fastest
+    pytest -m integration      # cross-module flows with mocks
+    pytest -m slow             # heavy I/O or chart generation
+    pytest -m "not slow"       # CI-default — excludes the slow tier
 """
 import sys
 import types
@@ -36,6 +53,59 @@ def pytest_runtest_setup():
     public hosts — that's the whole point.
     """
     disable_socket()
+
+
+# ── Marker auto-tagging by filename (Sprint 8 #4) ─────────────────────────────
+
+# Files that exercise cross-module flows or patch heavy deps (supabase mocks,
+# bot fixtures, multi-module wiring). These need the integration tier.
+_INTEGRATION_FILES = frozenset({
+    "test_e2e_risk_monitor.py",
+    "test_integration.py",
+    "test_bot_health.py",
+    "test_developer_menu.py",
+    "test_healthcheck.py",
+    "test_secure_runner.py",
+    "test_telegram_portfolio.py",
+    "test_telegram_backlog.py",
+    "test_supabase_repository.py",
+    "test_audit_logger.py",
+    "test_phase3_state_alerts.py",
+    "test_phase4_algo_oversight.py",
+    "test_phase5_anti_spam.py",
+    "test_phase6_context_export.py",
+    "test_dev_pin_persistence.py",
+})
+
+# Files that take noticeable time or do heavy I/O — chart generation,
+# IBKR sync end-to-end. Excluded from CI default with `-m "not slow"`.
+_SLOW_FILES = frozenset({
+    "test_ibkr_sync_full.py",
+    "test_ibkr_trade_importer.py",
+    "test_ibkr_error_handling.py",
+    "test_chart_generator.py",
+    "test_report_scheduler.py",
+})
+
+
+def pytest_collection_modifyitems(config, items):
+    """Auto-apply marker to every collected test based on its filename.
+
+    Tests with an explicit marker on the function/class keep it — this hook
+    only fills in the gap for files that never declared one.
+    """
+    for item in items:
+        # Respect any explicit marker the test/class already declares
+        existing = {m.name for m in item.iter_markers()}
+        if {"unit", "integration", "slow"} & existing:
+            continue
+        fname = item.fspath.basename
+        if fname in _INTEGRATION_FILES:
+            item.add_marker(pytest.mark.integration)
+        elif fname in _SLOW_FILES:
+            item.add_marker(pytest.mark.slow)
+        else:
+            item.add_marker(pytest.mark.unit)
 
 
 @pytest.fixture
