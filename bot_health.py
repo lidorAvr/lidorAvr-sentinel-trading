@@ -113,8 +113,15 @@ def build_health_report() -> str:
     # 10. IBKR Token
     ok("IBKR Token — מוגדר") if os.getenv("IBKR_TOKEN") else bad("IBKR Token — חסר IBKR_TOKEN!")
 
-    # 11. IBKR Query ID
-    ok(f"IBKR Query ID — {os.getenv('IBKR_QUERY_ID', 'default')}") if os.getenv("IBKR_QUERY_ID") else warn("IBKR Query ID — משתמש ב-default")
+    # 11. IBKR Query ID — surface explicitly so operator can cross-check vs
+    # IBKR Account Management → Flex Queries → "Sentinel_Trades" → Query ID.
+    # Default is intentionally bad (different account) so a missing env var
+    # is loud, not silent.
+    _qid_env = os.getenv("IBKR_QUERY_ID")
+    if _qid_env:
+        ok(f"IBKR Query ID — {_qid_env}")
+    else:
+        bad("IBKR Query ID — IBKR_QUERY_ID חסר ב-.env! (יורט ל-default ולא יקרא את החשבון שלך)")
 
     # 12. Risk Monitor State
     try:
@@ -144,6 +151,38 @@ def build_health_report() -> str:
             bad("Audit Log — טבלה חסרה (החל migration 002_audit_log.sql)")
         else:
             warn(f"Audit Log — שגיאת גישה: {msg}")
+
+    # 15. Flex Query Period — read fromDate/toDate from the most recent XML
+    # report. Narrow Periods (Today / MonthToDate) systematically trigger
+    # IBKR error 1001 during batch windows. The 2026-05-14 IBKR investigation
+    # established 'Last 30 Calendar Days' as the recommended setting.
+    try:
+        import xml.etree.ElementTree as _ET
+        if reports:
+            _root = _ET.parse(reports[-1]).getroot()
+            _fs = _root.find(".//FlexStatement")
+            if _fs is not None:
+                _from = _fs.get("fromDate", "")
+                _to   = _fs.get("toDate", "")
+                if _from and _to:
+                    _df = datetime.strptime(_from, "%Y%m%d")
+                    _dt = datetime.strptime(_to,   "%Y%m%d")
+                    _span = (_dt - _df).days
+                    if _span < 6:
+                        bad(f"Flex Period — צר מדי: {_span} ימים ({_from}→{_to}). "
+                            f"שנה ל-'Last 30 Calendar Days' ב-IBKR (גורם ל-1001)")
+                    elif _span < 14:
+                        warn(f"Flex Period — {_span} ימים ({_from}→{_to})")
+                    else:
+                        ok(f"Flex Period — {_span} ימים ({_from}→{_to})")
+                else:
+                    warn("Flex Period — אין fromDate/toDate ב-XML")
+            else:
+                warn("Flex Period — אין FlexStatement ב-XML")
+        else:
+            warn("Flex Period — אין דוחות לבדוק")
+    except Exception as _e:
+        warn(f"Flex Period — לא נבדק: {str(_e)[:30]}")
 
     total  = len(checks)
     n_ok   = sum(1 for c in checks if c.startswith("✅"))

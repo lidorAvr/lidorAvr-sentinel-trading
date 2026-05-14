@@ -137,6 +137,13 @@ def run_ibkr_sync(log_fn=print) -> dict:
     log_fn("IBKR Sync — started")
     token    = os.getenv("IBKR_TOKEN")
     query_id = os.getenv("IBKR_QUERY_ID", "1501352")
+    # Surface effective IBKR config every sync so the operator can verify
+    # the Query ID against IBKR Account Management without SSH (visible via
+    # Telegram dev menu → 📋 לוגים → sentinel-main). Token redacted.
+    _is_default_query = "IBKR_QUERY_ID" not in os.environ
+    _q_tag = f"{query_id} (DEFAULT — set IBKR_QUERY_ID env)" if _is_default_query else query_id
+    _t_tag = f"...{token[-4:]}" if token and len(token) > 4 else "(missing!)"
+    log_fn(f"IBKR Sync — config: query_id={_q_tag}, token={_t_tag}")
     send_url = (
         "https://www.interactivebrokers.com/Universal/servlet/"
         "FlexStatementService.SendRequest"
