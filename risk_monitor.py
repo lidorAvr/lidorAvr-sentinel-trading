@@ -782,10 +782,15 @@ def main():
                             _ma_lvls = ec.get_ma_levels(sym)
                         except Exception:
                             pass
+                        # Pass ATR so the buffer scales with volatility (Sprint 8 #6).
+                        # atr_pct is in the engine_res features dict — high-ATR
+                        # names get a wider buffer, preventing whipsaws.
+                        _atr_pct = (engine.get("features") or {}).get("atr_pct")
                         _trail = ec.compute_suggested_trail_stop(
                             side=_side_pos, current_price=curr,
                             ma21=_ma_lvls.get("ma21"), ma50=_ma_lvls.get("ma50"),
                             open_r=open_r, entry_price=entry,
+                            atr_pct=_atr_pct,
                         )
                         send_telegram_with_keyboard(
                             _runner_state_alert(sym, setup, open_r,
