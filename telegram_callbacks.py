@@ -75,6 +75,16 @@ def handle_queries(call):
         )
         return
 
+    # Sprint-12 / Mark §3 — non-tappable honest price-fallback note row.
+    if data == "promote_price_fallback_note":
+        import telegram_formatters as _tf
+        bot.answer_callback_query(
+            call.id,
+            text=_tf.PRICE_FALLBACK_LABEL,
+            show_alert=True,
+        )
+        return
+
     # ── Open Tasks (Action-Items) — pull-only view + lifecycle ──────────────
     if data == "task_algo_noop":
         bot.answer_callback_query(
@@ -166,6 +176,13 @@ def handle_queries(call):
         bot.answer_callback_query(call.id)
         approved = data.split("|", 1)[1] == "yes"
         _tb.finalize_pending_loosen(chat_id, approved)
+        return
+
+    # ── /clean defaulted-NO confirmation (Sprint-12 / Mark §2) ──────────────
+    if data.startswith("clean_confirm|"):
+        bot.answer_callback_query(call.id)
+        approved = data.split("|", 1)[1] == "yes"
+        _tb.finalize_pending_clean(chat_id, approved)
         return
 
     if data == "start_trail_flow":

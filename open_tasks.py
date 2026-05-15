@@ -65,6 +65,72 @@ STATUS_SKIPPED = "skipped"
 # A P0 BROKEN exit "skip" is NEVER a silent drop — spec §3 / G8.
 _SKIPPED_CRITICAL_EXIT = "skipped_critical_exit"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# T7 — portfolio-level drawdown-acknowledgement task (Sprint-12; Mark §1).
+#
+# STRUCTURAL RED LINE (Mark §1.7 / SPRINT12_DESIGN §1.1): T7 has NO
+# engine_core.POSITION_STATE_* state. It MUST NOT be added to ``_RULESET`` nor
+# to the §6 ```yaml block nor emitted by ``derive_tasks``'s position loop —
+# doing so would add a key to exactly one side of the bidirectional
+# ``set(_RULESET)==set(spec §6 yaml)`` drift test and break CI. T7 is a
+# SEPARATE, parallel derivation (``derive_portfolio_tasks``) that joins the
+# SAME lifecycle table + the SAME list/cache/render. The drift test only
+# guards ``_RULESET``; it is untouched by construction.
+#
+# It is read-only over ``adaptive_risk_engine.drawdown_auto_cut_recommendation``
+# (the SAME engine call risk_monitor already consumes — zero new R/NAV/PnL
+# math; constants live in adaptive_risk_engine, never copied here). PULL-ONLY:
+# T7 emits ZERO Telegram push (the push channel is risk_monitor.py:938-997
+# exclusively — Mark §1.5 HARD rule). Firewalled from every stat: the
+# ``__PORTFOLIO__`` campaign_id is never a real campaign, never enters
+# compute_position_state / WR / Expectancy / PF / total_r (Mark §1.6).
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Reserved synthetic campaign_id (Mark §1.6). NOT a real {SYMBOL}_{tradeID}
+# (DEC-20260512-004 format) so it can never collide with a campaign and any
+# stat aggregator that filters this value out stays correct.
+PORTFOLIO_CID = "__PORTFOLIO__"
+
+# Mark §1.6/§1.7 — the verbatim task_type for the ack lifecycle row.
+TASK_ACK_DRAWDOWN_CUT = "ACK_DRAWDOWN_CUT"
+
+# Snapshot label string ONLY (TriggerSnapshot.state) — NEVER an
+# engine_core.POSITION_STATE_* and NEVER a _RULESET key. It exists only so the
+# "why" block can show a human label; it does not drive any lookup.
+_PORTFOLIO_DRAWDOWN_STATE_LABEL = "PORTFOLIO_DRAWDOWN"
+
+# Mark §1.3 — urgency is P3, reusing ALERT_PRIORITY["adaptive_risk"] verbatim
+# (risk_monitor.py:77). Held as a literal here (open_tasks is a leaf and must
+# NOT import risk_monitor — G5/import discipline); it mirrors that constant and
+# invents no new severity scale (Mark §1.3 / spec §4 G7).
+_T7_URGENCY = "P3"
+
+# Mark §1.7 spec-bullet: T7 is "info_only:false" ack-task. It is NOT
+# info-only. It is nonetheless firewalled from every stat by being a
+# __PORTFOLIO__-keyed task that never reaches compute_position_state / any
+# campaign stat (Mark §1.6); info_only is NOT T7's firewall mechanism.
+_T7_INFO_ONLY = False
+
+# Mark §1.6 ⟨MARK: T7 audit kind⟩ — surface-able kind so the ack shows in the
+# user's "🧾 הפעולות שלי" review (DEC-008 SURFACE list: task lifecycle done).
+# mark_done() already writes audit_kind="open_task_done" for the lifecycle row;
+# this constant is the metadata.kind used when the task auto-clears as
+# condition_cleared (never status=done — Mark §1.4 honesty).
+_T7_CONDITION_CLEARED_KIND = "portfolio_drawdown_condition_cleared"
+
+# Mark §1.2 — VERBATIM ack Hebrew (descriptive; zero imperative trading verb;
+# states the cut already happened automatically). {drawdown_pct} is the
+# engine's own round(drawdown_pct,2); 0.40 is DRAWDOWN_CUT_TO_PCT literal-from-
+# constant. Engineering invents none of this wording — copied from Mark §1.2.
+_T7_ACTION_HE = (
+    "‏🩸 ירידה של {drawdown_pct}% ב-30 יום — הסיכון כבר הורד אוטומטית ל-0.40%.\n"
+    "‏זו הודעה לאישור בלבד. אין פעולת מסחר. אשר שראית."
+)
+
+# auto-clear reason recorded when the engine call later returns None AND the
+# 48h settle elapsed (Mark §1.4 — honest, never as status=done).
+T7_REASON_CONDITION_CLEARED = "condition_cleared"
+
 
 class RulesetUnavailable(RuntimeError):
     """Raised when the ruleset cannot be resolved.
@@ -437,6 +503,92 @@ def derive_tasks(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# T7 — derive_portfolio_tasks: a SEPARATE pure helper (NOT a _RULESET entry,
+# NOT inside derive_tasks's position loop). Drift-test-safe by construction
+# (Mark §1.7 / SPRINT12_DESIGN §1.3).
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _t7_episode_token(drawdown_rec: Optional[dict]) -> str:
+    """The drawdown-episode identity token (Mark §1.4 / SPRINT12_DESIGN
+    §1.5(4)).
+
+    Mark §1.7 anchors the episode to the engine's OWN window + reason. The
+    engine's ``reason`` string embeds the rolling ``DRAWDOWN_WINDOW_DAYS``
+    bucket, the observed dd%, the $ PnL and the cut target — it changes iff the
+    underlying drawdown FACT changes. So two observations are "the same
+    episode" iff their engine ``reason`` strings are equal. This invents no
+    equivalence of our own — it reuses the engine's own output verbatim
+    (zero new math; AGENTS.md #1/#2).
+    """
+    if not drawdown_rec or not isinstance(drawdown_rec, dict):
+        return ""
+    return str(drawdown_rec.get("reason", ""))
+
+
+def derive_portfolio_tasks(
+    *,
+    drawdown_rec: Optional[dict],
+    now: datetime,
+    ruleset: Optional[dict] = None,  # accepted for call-shape parity; unused
+) -> list[Task]:
+    """Pure. ``drawdown_rec`` is the CALLER-supplied output of
+    ``adaptive_risk_engine.drawdown_auto_cut_recommendation`` (or ``None``).
+
+    Returns ``[]`` when ``drawdown_rec`` is ``None`` — absence of a forced cut
+    is NOT a task; never fabricate an ack for a cut that did not happen
+    (AGENTS.md #1; Mark §1.1). Emits **exactly one** ack Task when present,
+    keyed ``(__PORTFOLIO__, ACK_DRAWDOWN_CUT)`` (Mark §1.6).
+
+    Read-only over the engine output: it copies the engine's own
+    ``round(drawdown_pct,2)`` into the Hebrew text and the ``reason`` verbatim
+    into the snapshot. It computes **zero** new R/NAV/PnL/campaign/drawdown
+    math (Mark §1.1; G1). Referentially transparent: same ``drawdown_rec`` +
+    same ``now`` → identical list.
+
+    NOT a ``_RULESET`` row, NOT emitted by ``derive_tasks``: the drift test
+    (``test_ruleset_matches_methodology_spec``) is untouched by construction
+    (Mark §1.7 / SPRINT12_DESIGN §1.3).
+    """
+    if not drawdown_rec or not isinstance(drawdown_rec, dict):
+        return []
+    created = _utc_iso(now)
+    uid = user_context.get_current_user_id()
+
+    dd_pct = drawdown_rec.get("drawdown_pct")
+    # The engine ALREADY rounded this (adaptive_risk_engine.py:252). We display
+    # the engine's own number — never recompute (Mark §1.1/§1.2; AGENTS.md #1).
+    dd_pct_str = (
+        f"{dd_pct}" if isinstance(dd_pct, (int, float)) else "—"
+    )
+    reason = str(drawdown_rec.get("reason", ""))
+
+    action = _T7_ACTION_HE.format(drawdown_pct=dd_pct_str)
+    snap = TriggerSnapshot(
+        state=_PORTFOLIO_DRAWDOWN_STATE_LABEL,  # label string ONLY, never a
+        open_r=None,                            # POSITION_STATE_*; never a
+        age_days=None,                          # _RULESET key.
+        reason=reason,
+    )
+    return [
+        Task(
+            task_type=TASK_ACK_DRAWDOWN_CUT,
+            campaign_id=PORTFOLIO_CID,
+            symbol="תיק",  # portfolio, not a ticker (SPRINT12_DESIGN §1.3)
+            urgency=_T7_URGENCY,
+            trigger_snapshot=snap,
+            recommended_action=action,
+            status=STATUS_OPEN,
+            info_only=_T7_INFO_ONLY,
+            notes=[],
+            created_ts=created,
+            closed_ts=None,
+            user_id=uid,
+        )
+    ]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Lifecycle API — the ONLY Supabase-touching surface (DI ``sb`` first arg)
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -478,16 +630,54 @@ def _read_lifecycle(sb: Any, user_id: str) -> dict:
     return out
 
 
+# T7 — the episode token is persisted append-only inside the existing
+# lifecycle ``notes`` list (NO schema change — _upsert_lifecycle already
+# supports notes; Mark §1.4 / SPRINT12_DESIGN §1.5(4)). A note line that
+# begins with this marker carries the drawdown episode the user acked. The
+# overlay join treats a stored ``done`` as satisfying T7 ONLY when the acked
+# episode equals the CURRENT engine episode (else it is a NEW episode → the
+# old ack does not mask it; surfaced again exactly once, still pull-only).
+_T7_EPISODE_NOTE_PREFIX = "T7_EPISODE::"
+
+
+def t7_episode_note(drawdown_rec: Optional[dict]) -> str:
+    """The note string the Telegram ack layer passes to ``mark_done`` so the
+    acked episode is persisted (append-only) on the existing lifecycle row.
+    Empty when there is no episode (defensive)."""
+    tok = _t7_episode_token(drawdown_rec)
+    return f"{_T7_EPISODE_NOTE_PREFIX}{tok}" if tok else ""
+
+
+def _acked_t7_episodes(notes: Any) -> set:
+    """Episode tokens the user has acked, parsed from the stored notes
+    (read-only over what was written; no fabrication)."""
+    out: set = set()
+    if not isinstance(notes, list):
+        return out
+    for n in notes:
+        s = str(n)
+        i = s.find(_T7_EPISODE_NOTE_PREFIX)
+        if i != -1:
+            out.add(s[i + len(_T7_EPISODE_NOTE_PREFIX):].strip())
+    return out
+
+
 def list_tasks(
     sb: Any,
     positions: list,
     *,
     now: datetime,
     user_id: Optional[str] = None,
+    portfolio_drawdown: Optional[dict] = None,
+    risk_settle_active: Optional[bool] = None,
 ) -> list[Task]:
     """Derive (live) ⟕ lifecycle (stored).
 
-    1. ``derived = derive_tasks(positions, now=now)`` — the live open set.
+    1. ``derived = derive_tasks(positions, now=now)`` — the live per-position
+       open set — plus, when ``portfolio_drawdown`` is supplied,
+       ``derive_portfolio_tasks(...)`` appended (the T7 ack; Mark §1 /
+       SPRINT12_DESIGN §1.3). T7 joins the SAME lifecycle table; it is NOT a
+       ``_RULESET`` row (drift test untouched).
     2. Left-join stored done/skipped/notes overlays on
        ``(campaign_id, task_type)``: a derived task with a stored
        ``done``/``skipped`` overlay is returned with that status (so the bot
@@ -495,23 +685,57 @@ def list_tasks(
     3. Auto-close on state transition / supersede is *implicit*: a stored
        overlay whose ``task_type`` the engine no longer emits simply isn't in
        ``derived`` so it is not surfaced — no engine state is mutated, and a
-       P0 exit is NEVER laundered away (it only drops off once the campaign
-       genuinely closes / the engine stops emitting it; spec §3 / K5 / G8).
+       P0 exit is NEVER laundered away (spec §3 / K5 / G8).
+    4. T7 episode-keying (Mark §1.4): a stored ``done`` overlay satisfies T7
+       ONLY when the acked episode token equals the CURRENT engine episode. A
+       NEW episode (different engine ``reason``) is surfaced again exactly
+       once — an old ack never masks a new drawdown.
+    5. T7 auto-clear (Mark §1.4): when ``portfolio_drawdown is None`` (the
+       engine call now returns None) AND ``risk_settle_active is False`` (the
+       48h settle elapsed), an un-acked stored T7 row is NOT resurfaced — but
+       its closure is honest: it closes as ``reason=condition_cleared``,
+       NEVER as ``done`` unless the user actually acked (the cut was
+       automatic, not a user duty; AGENTS.md #1). Since T7 is re-derived every
+       render, "not resurfaced" == it simply does not appear in ``derived``
+       once the engine stops returning a rec; no laundering of a user duty
+       occurs because the ack is not a trade action (Mark §1.4).
 
-    No write here. Pull-only (G5: no new push path).
+    No write here. Pull-only (G5: no new push path; risk_monitor untouched).
     """
     uid = _resolve_uid(user_id)
     derived = derive_tasks(positions, now=now)
+    if portfolio_drawdown is not None:
+        derived.extend(
+            derive_portfolio_tasks(drawdown_rec=portfolio_drawdown, now=now)
+        )
     overlays = _read_lifecycle(sb, uid)
+    cur_episode = _t7_episode_token(portfolio_drawdown)
     for task in derived:
         ov = overlays.get((task.campaign_id, task.task_type))
         if not ov:
             continue
         status = ov.get("status")
+        notes = ov.get("notes")
+        if (
+            task.task_type == TASK_ACK_DRAWDOWN_CUT
+            and task.campaign_id == PORTFOLIO_CID
+        ):
+            # T7 episode-keyed satisfaction (Mark §1.4): a stored done/skip
+            # only counts if it acked THIS episode. A new episode → ignore the
+            # stale overlay so the new drawdown surfaces again exactly once.
+            if (
+                status in (STATUS_DONE, STATUS_SKIPPED)
+                and cur_episode
+                and cur_episode in _acked_t7_episodes(notes)
+            ):
+                task.status = status
+                task.closed_ts = ov.get("closed_ts")
+            if isinstance(notes, list) and notes:
+                task.notes = list(notes)
+            continue
         if status in (STATUS_DONE, STATUS_SKIPPED):
             task.status = status
             task.closed_ts = ov.get("closed_ts")
-        notes = ov.get("notes")
         if isinstance(notes, list) and notes:
             task.notes = list(notes)
     return derived

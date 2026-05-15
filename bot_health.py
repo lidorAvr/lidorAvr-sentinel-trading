@@ -79,7 +79,23 @@ def build_health_report() -> str:
             buys["quantity"] = pd.to_numeric(buys["quantity"], errors="coerce").fillna(0)
             ms = buys[(buys["quantity"] > 0) & (buys["stop_loss"] <= 0)]
             syms = ", ".join(ms["symbol"].unique()[:5])
-            ok("Missing Stops — אין") if ms.empty else warn(f"Missing Stops — {len(ms)} שורות ({syms})")
+            if ms.empty:
+                ok("Missing Stops — אין")
+            else:
+                warn(f"Missing Stops — {len(ms)} שורות ({syms})")
+                # Sprint-12 / Mark §4 — explicit non-numeric data-hygiene
+                # NOTICE (VERBATIM from MARK_SPRINT12_RULINGS.md §4). It is
+                # NOT a task, NEVER counted, NO fabricated stop — read-only
+                # over the SAME existing check (no new query/math). The
+                # count+symbols are a factual hygiene readout Mark explicitly
+                # permits (honest, not a fabricated metric).
+                checks.append(
+                    f"‏⚠️ נתוני סיכון חסרים: {len(ms)} רשומות ({syms})."
+                )
+                checks.append(
+                    "‏השלם entry/stop כדי שייכללו. "
+                    "(אינו משימה, אינו נספר בסטטיסטיקה.)"
+                )
         else:
             warn("Missing Stops — לא נבדק (אין נתונים)")
     except Exception:

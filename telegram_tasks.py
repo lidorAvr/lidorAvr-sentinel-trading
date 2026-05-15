@@ -35,6 +35,7 @@ from telebot import types
 import pandas as pd
 
 import engine_core as ec
+import adaptive_risk_engine as are
 import open_tasks
 import supabase_repository as repo
 from bot_core import bot, supabase, user_state, RTL
@@ -84,6 +85,10 @@ _TASK_SHORT_TAG = {
     "REVIEW_YELLOW_FLAG": "‏דגל צהוב",
     "TRIM_OR_EXIT_DEAD_MONEY": "‏הון מת",
     "COMPLETE_RISK_DATA": "‏השלם נתונים",
+    # T7 / Sprint-12 / Mark §1 — ≤14 RTL chars info-row label for the
+    # portfolio drawdown ack (display sugar only; same rule as the tags
+    # above — not the methodology sentence).
+    open_tasks.TASK_ACK_DRAWDOWN_CUT: "‏אשר ירידת תיק",
 }
 
 # #5 / DEC-006 — the single consolidated ALGO panel callback. NOT a Task,
@@ -263,8 +268,41 @@ def _load_tasks(chat_id):
             records, target_risk_usd=target_risk_usd
         )
 
+        # T7 / Sprint-12 / Mark §1 — read-only over the engine's OWN drawdown
+        # output. This is the SAME call risk_monitor.py already makes
+        # (adaptive_risk_engine.drawdown_auto_cut_recommendation); we add ZERO
+        # new R/NAV/PnL/drawdown math (Mark §1.1; G1) and ZERO push (pull-only;
+        # risk_monitor untouched — Mark §1.5). If it returns None there is no
+        # T7 (never fabricate an ack for a cut that did not happen).
+        portfolio_drawdown = None
+        risk_settle_active = None
+        try:
+            from bot_helpers import (
+                get_account_settings as _gas,
+                get_nav_and_risk as _gnr,
+            )
+            _acc_s = _gas()
+            _nav, _tr, _ = _gnr(_acc_s)
+            _cur_risk_pct = float(_acc_s.get("risk_pct_input", 0.5))
+            _closed = are.compute_closed_campaigns(df)
+            portfolio_drawdown = are.drawdown_auto_cut_recommendation(
+                _closed, _cur_risk_pct, _nav
+            )
+            risk_settle_active = bool(
+                are.get_risk_settle_info().get("active", False)
+            )
+        except Exception:
+            # Honest: a failed read-only probe must not blank the list and
+            # must not fabricate a T7 (absence ≠ a task; AGENTS.md #1).
+            portfolio_drawdown = None
+            risk_settle_active = None
+
         now = datetime.now(timezone.utc)
-        tasks = open_tasks.list_tasks(supabase, enriched, now=now)
+        tasks = open_tasks.list_tasks(
+            supabase, enriched, now=now,
+            portfolio_drawdown=portfolio_drawdown,
+            risk_settle_active=risk_settle_active,
+        )
         # Stash for tap-only addressing (callback carries an index).
         open_only = _grouped_sorted(
             [t for t in tasks if t.status == open_tasks.STATUS_OPEN]
@@ -299,6 +337,16 @@ def _load_tasks(chat_id):
                 and str(t.campaign_id) in algo_by_cid
             ):
                 rec["_algo_observed"] = algo_by_cid[str(t.campaign_id)]
+            # T7 / Mark §1.4 — carry the current drawdown episode token so the
+            # ack records WHICH episode the user acknowledged (append-only on
+            # the existing lifecycle row; no schema change).
+            if (
+                t.task_type == open_tasks.TASK_ACK_DRAWDOWN_CUT
+                and t.campaign_id == open_tasks.PORTFOLIO_CID
+            ):
+                rec["_t7_episode_note"] = open_tasks.t7_episode_note(
+                    portfolio_drawdown
+                )
             cached_records.append(rec)
 
         built_ts = time.time()
@@ -433,9 +481,21 @@ def build_tasks_keyboard(tasks):
     return markup
 
 
-def _detail_keyboard(idx, urgency, info_only):
+def _detail_keyboard(idx, urgency, info_only, task_type=None):
     markup = types.InlineKeyboardMarkup(row_width=2)
     if info_only:
+        markup.add(types.InlineKeyboardButton(
+            "⬅️ חזרה לרשימה", callback_data="task_open|list"))
+        return markup
+    if task_type == open_tasks.TASK_ACK_DRAWDOWN_CUT:
+        # T7 / Mark §1.4 + SPRINT12_DESIGN §1.4 — ACK-ONLY. It is an
+        # acknowledgement, not a decision with alternatives: ONE explicit
+        # "✅ הבנתי" affordance routed through the EXISTING task_done|{idx}
+        # path (unchanged authoritative write + fail-open audit). NO skip,
+        # NO note (⟨MARK: confirm T7 is ack-only — acknowledge, never
+        # skip/note⟩ — Mark §1.4 "Requires explicit user 'done'").
+        markup.add(types.InlineKeyboardButton(
+            "✅ הבנתי", callback_data=f"task_done|{idx}"))
         markup.add(types.InlineKeyboardButton(
             "⬅️ חזרה לרשימה", callback_data="task_open|list"))
         return markup
@@ -663,7 +723,10 @@ def handle_task_open(chat_id, raw_idx):
         )
     bot.send_message(
         chat_id, body,
-        reply_markup=_detail_keyboard(idx, rec.get("urgency"), rec.get("info_only")),
+        reply_markup=_detail_keyboard(
+            idx, rec.get("urgency"), rec.get("info_only"),
+            task_type=rec.get("task_type"),
+        ),
         parse_mode="Markdown",
     )
 
@@ -777,8 +840,18 @@ def handle_task_done_confirm(chat_id, idx, approved):
         bot.send_message(chat_id, f"{RTL}↩️ ללא שינוי.", parse_mode="Markdown")
         handle_task_open(chat_id, idx)
         return
+    # T7 / Mark §1.4 — record WHICH drawdown episode the user acked so a later
+    # NEW episode is not masked by this ack (append-only on the existing
+    # lifecycle row; no schema change). Other tasks: note stays None.
+    _ack_note = None
+    if (
+        rec.get("task_type") == open_tasks.TASK_ACK_DRAWDOWN_CUT
+        and rec.get("campaign_id") == open_tasks.PORTFOLIO_CID
+    ):
+        _ep = rec.get("_t7_episode_note")
+        _ack_note = _ep if _ep else None
     ok = open_tasks.mark_done(
-        supabase, rec["campaign_id"], rec["task_type"],
+        supabase, rec["campaign_id"], rec["task_type"], note=_ack_note,
     )
     status = "✅ סומן כבוצע" if ok else "⚠️ שמירה נכשלה (נסה שוב)"
     bot.send_message(

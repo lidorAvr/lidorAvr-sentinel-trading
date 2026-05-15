@@ -288,9 +288,23 @@ Mark the owner:
   (DEC-20260515-006 conditional on this ruling; DEC-20260511-001;
   AGENTS.md #5/#8; `OPEN_TASKS_METHODOLOGY_SPEC.md` §4 G2). If unachievable,
   fall back to a single "מנוהל חיצונית — אין פעולת Sentinel" button.
-- T7 (drawdown-ack) is **portfolio-level, not a per-position state** — it is
-  out of the position-driven `derive_tasks(positions, …)` contract and is
-  explicitly deferred (documented in `OPEN_TASKS_WAVE2_IMPL.md`); no row here.
+- T7 (drawdown-ack) is **portfolio-level, not a per-position state** — it
+  is out of the position-driven `derive_tasks(positions, …)` contract
+  and is **deliberately NOT a row in the ```yaml block below and NOT in
+  `open_tasks._RULESET`** (adding it either side breaks the
+  bidirectional drift test `test_ruleset_matches_methodology_spec`). It
+  is derived by a separate portfolio path keyed
+  `(campaign_id="__PORTFOLIO__", task_type="ACK_DRAWDOWN_CUT")`, urgency
+  **P3** (`ALERT_PRIORITY["adaptive_risk"]`, `risk_monitor.py:77`),
+  `info_only:false` ack-task, triggered iff
+  `adaptive_risk_engine.drawdown_auto_cut_recommendation()`
+  (`adaptive_risk_engine.py:222-259`) returns non-`None` (read-only over
+  the engine; constants `:27-29,33` read live, never copied). It emits
+  **no** Telegram push (the push is `risk_monitor.py:938-997`; G5,
+  §1.5). It never enters WR/Expectancy/any stat (`AGENTS.md` #8). Ack-
+  only; auto-closes `reason=condition_cleared` when the engine call later
+  returns `None` and the 48h settle elapsed — never as `done` unless the
+  user acked (`AGENTS.md` #1; Mark Sprint-12 §1).
 
 ```yaml
 # OWNED BY MARK — open_tasks._RULESET is transcribed verbatim from this block.

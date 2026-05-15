@@ -543,6 +543,176 @@ class TestAuditFailOpen:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Sprint-12 / Mark §1 — T7 portfolio drawdown-ack (a SEPARATE sibling
+# derivation; NOT a _RULESET row; pull-only; firewalled from all stats).
+# ──────────────────────────────────────────────────────────────────────────────
+
+_DD_REC = {
+    "force_cut_to_pct": 0.40,
+    "drawdown_pct": -9.37,
+    "pnl_30d_usd": -1874.0,
+    "n_trades": 6,
+    "window_days": 30,
+    "reason": "Drawdown -9.4% over 30d (-$1874) ≤ trigger -8% — force cut to 0.40%",
+}
+
+
+def _lifecycle_sb(rows):
+    """sb whose _read_lifecycle SELECT('*') returns `rows`."""
+    sb = MagicMock()
+    sb.table.return_value.select.return_value.eq.return_value.execute.return_value.data = rows
+    return sb
+
+
+class TestT7DerivePortfolioTasks:
+    # A. derive
+    def test_none_rec_yields_no_task(self):
+        assert open_tasks.derive_portfolio_tasks(
+            drawdown_rec=None, now=_NOW) == []
+
+    def test_real_rec_yields_exactly_one_ack_task(self):
+        tasks = open_tasks.derive_portfolio_tasks(
+            drawdown_rec=_DD_REC, now=_NOW)
+        assert len(tasks) == 1
+        t = tasks[0]
+        assert t.task_type == open_tasks.TASK_ACK_DRAWDOWN_CUT
+        assert t.task_type == "ACK_DRAWDOWN_CUT"            # Mark §1.6 verbatim
+        assert t.campaign_id == open_tasks.PORTFOLIO_CID
+        assert t.campaign_id == "__PORTFOLIO__"             # Mark §1.6 verbatim
+        assert t.urgency == "P3"                            # Mark §1.3
+        # Mark §1.2 — engine's OWN drawdown_pct, no recompute; ack-only text.
+        assert "-9.37" in t.recommended_action
+        assert "0.40%" in t.recommended_action
+        assert "אשר שראית" in t.recommended_action
+        # Mark §1.2 VERBATIM ack text (descriptive: the cut ALREADY happened
+        # automatically — past-tense passive "כבר הורד אוטומטית", NOT an
+        # imperative directed at the user). Pin the exact Mark wording.
+        assert t.recommended_action == (
+            "‏🩸 ירידה של -9.37% ב-30 יום — "
+            "הסיכון כבר הורד אוטומטית ל-0.40%.\n"
+            "‏זו הודעה לאישור בלבד. אין פעולת מסחר. אשר שראית."
+        )
+        # checklist #2 — no imperative DIRECTIVE to the user (no "הורד את
+        # הסיכון" / "צא עכשיו" command form; the verbatim text is a passive
+        # report, asserted above).
+        for directive in ("הורד את", "צא עכשיו", "מכור עכשיו", "צמצם עכשיו"):
+            assert directive not in t.recommended_action
+        assert t.trigger_snapshot.reason == _DD_REC["reason"]  # verbatim
+
+    def test_referentially_transparent(self):
+        a = open_tasks.derive_portfolio_tasks(drawdown_rec=_DD_REC, now=_NOW)
+        b = open_tasks.derive_portfolio_tasks(drawdown_rec=_DD_REC, now=_NOW)
+        assert a[0].recommended_action == b[0].recommended_action
+        assert a[0].trigger_snapshot.reason == b[0].trigger_snapshot.reason
+
+    # D. drift-test-safe by construction — T7 NOT in _RULESET
+    def test_t7_not_in_ruleset(self):
+        all_task_types = {
+            e.task_type
+            for v in open_tasks._RULESET.values()
+            for e in v
+        }
+        assert "ACK_DRAWDOWN_CUT" not in all_task_types
+        assert open_tasks.TASK_ACK_DRAWDOWN_CUT not in all_task_types
+        # the snapshot label string is NOT an engine POSITION_STATE_* / key
+        assert open_tasks._PORTFOLIO_DRAWDOWN_STATE_LABEL not in open_tasks._RULESET
+        assert open_tasks.PORTFOLIO_CID not in open_tasks._RULESET
+
+    def test_derive_tasks_position_loop_never_emits_t7(self):
+        # Even a position carrying the snapshot label as a fake state must
+        # not produce T7 via derive_tasks (it would raise RulesetUnavailable
+        # on an unknown state — proving T7 is OUT of the position contract).
+        with pytest.raises(open_tasks.RulesetUnavailable):
+            open_tasks.derive_tasks(
+                [_pos(open_tasks._PORTFOLIO_DRAWDOWN_STATE_LABEL)], now=_NOW)
+
+
+class TestT7ListTasksLifecycle:
+    # B. dedup / lifecycle / episode keying
+    def test_t7_surfaced_when_no_overlay(self):
+        sb = _lifecycle_sb([])
+        tasks = open_tasks.list_tasks(
+            sb, [], now=_NOW, portfolio_drawdown=_DD_REC)
+        t7 = [t for t in tasks if t.task_type == "ACK_DRAWDOWN_CUT"]
+        assert len(t7) == 1 and t7[0].status == open_tasks.STATUS_OPEN
+
+    def test_acked_same_episode_marks_done(self):
+        ep_note = open_tasks.t7_episode_note(_DD_REC)
+        sb = _lifecycle_sb([{
+            "campaign_id": "__PORTFOLIO__", "task_type": "ACK_DRAWDOWN_CUT",
+            "status": "done", "closed_ts": "2026-05-15T00:00:00+00:00",
+            "notes": [f"[ts] {ep_note}"],
+        }])
+        tasks = open_tasks.list_tasks(
+            sb, [], now=_NOW, portfolio_drawdown=_DD_REC)
+        t7 = [t for t in tasks if t.task_type == "ACK_DRAWDOWN_CUT"][0]
+        assert t7.status == open_tasks.STATUS_DONE  # not re-shown as open
+
+    def test_new_episode_not_masked_by_old_ack(self):
+        old_note = open_tasks.t7_episode_note({"reason": "OLD EPISODE"})
+        sb = _lifecycle_sb([{
+            "campaign_id": "__PORTFOLIO__", "task_type": "ACK_DRAWDOWN_CUT",
+            "status": "done", "closed_ts": "x",
+            "notes": [f"[ts] {old_note}"],
+        }])
+        # current episode differs → old ack must NOT satisfy it.
+        tasks = open_tasks.list_tasks(
+            sb, [], now=_NOW, portfolio_drawdown=_DD_REC)
+        t7 = [t for t in tasks if t.task_type == "ACK_DRAWDOWN_CUT"][0]
+        assert t7.status == open_tasks.STATUS_OPEN  # surfaced again
+
+    def test_no_portfolio_drawdown_kwarg_means_no_t7(self):
+        sb = _lifecycle_sb([])
+        tasks = open_tasks.list_tasks(sb, [], now=_NOW)  # legacy call shape
+        assert all(t.task_type != "ACK_DRAWDOWN_CUT" for t in tasks)
+
+    def test_engine_returns_none_t7_not_resurfaced(self):
+        # Mark §1.4 auto-clear: engine None → no T7 derived at all (it is
+        # re-derived every render; absence ≠ a fabricated/laundered task).
+        sb = _lifecycle_sb([{
+            "campaign_id": "__PORTFOLIO__", "task_type": "ACK_DRAWDOWN_CUT",
+            "status": "open", "notes": [],
+        }])
+        tasks = open_tasks.list_tasks(
+            sb, [], now=_NOW, portfolio_drawdown=None, risk_settle_active=False)
+        assert all(t.task_type != "ACK_DRAWDOWN_CUT" for t in tasks)
+
+    # C. no-stat-pollution: __PORTFOLIO__ is never a real campaign and the
+    # only T7 lifecycle write is keyed by the sentinel.
+    def test_t7_keyed_by_portfolio_sentinel_never_a_campaign(self):
+        sb = MagicMock()
+        sb.table.return_value.select.return_value.eq.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
+        open_tasks.mark_done(
+            sb, open_tasks.PORTFOLIO_CID, open_tasks.TASK_ACK_DRAWDOWN_CUT,
+            note=open_tasks.t7_episode_note(_DD_REC), now=_NOW)
+        row = sb.table.return_value.upsert.call_args.args[0]
+        assert row["campaign_id"] == "__PORTFOLIO__"
+        assert row["task_type"] == "ACK_DRAWDOWN_CUT"
+        # never touches trades / management_state
+        tables = [c.args[0] for c in sb.table.call_args_list]
+        assert "trades" not in tables
+        assert "management_state" not in tables
+
+    # E. no-push / no-double-notify: open_tasks must not IMPORT risk_monitor
+    # (leaf import discipline — it cannot emit a push; the only push channel
+    # is risk_monitor.py:938-997 which T7 never touches; Mark §1.5).
+    def test_open_tasks_does_not_import_risk_monitor(self):
+        import ast as _ast
+        src = (Path(__file__).resolve().parents[1] / "open_tasks.py").read_text()
+        tree = _ast.parse(src)
+        imported = set()
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.Import):
+                imported.update(a.name.split(".")[0] for a in node.names)
+            elif isinstance(node, _ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
+        assert "risk_monitor" not in imported
+        # also: no bot/telebot push primitive importable from this leaf
+        assert "telebot" not in imported
+        assert "bot_core" not in imported
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # CHECKPOINT — _RULESET ↔ Mark's spec §6 machine-readable block drift guard
 # ──────────────────────────────────────────────────────────────────────────────
 

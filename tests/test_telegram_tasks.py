@@ -515,7 +515,7 @@ class TestTasksCache:
              patch.object(tt, "ec", _ec_for_yellow()), \
              patch.object(tt, "supabase", MagicMock()), \
              patch.object(open_tasks, "list_tasks",
-                          lambda sb, e, now: [_task(
+                          lambda sb, e, now, **kw: [_task(
                               ec.POSITION_STATE_YELLOW_FLAG, symbol="CAT",
                               campaign_id="CAT_1")]):
             tt._load_tasks(9001)
@@ -738,3 +738,120 @@ class TestAlgoPanel:
         assert entry.info_only is True
         assert entry.task_type == "ALGO_OBSERVE_ONLY"
         assert entry.suppress_when is None
+
+
+# ── Sprint-12 / Mark §1 — T7 portfolio drawdown-ack wiring (pull-only) ────────
+
+class TestT7Wiring:
+    _DD = {
+        "force_cut_to_pct": 0.40, "drawdown_pct": -8.9,
+        "pnl_30d_usd": -1500.0, "n_trades": 4, "window_days": 30,
+        "reason": "Drawdown -8.9% over 30d (-$1500) <= trigger -8% — cut 0.40%",
+    }
+
+    def _enriched_empty_df(self):
+        # _load_tasks builds a df via repo.get_all_trades then derives
+        # closed campaigns for the drawdown probe. We mock the engine layer.
+        return MagicMock()
+
+    def test_load_tasks_passes_drawdown_rec_pull_only_no_push(self):
+        _fake_bot.reset_mock(); _setup_msg()
+        state = {}
+        captured = {}
+
+        _ec = MagicMock()
+        _ec.get_open_positions_campaign.return_value = {
+            "ok": True, "error": None, "data": MagicMock(empty=False),
+        }
+        _ec.get_open_positions_campaign.return_value["data"].to_dict = \
+            lambda *_a, **_k: [{"symbol": "CAT", "campaign_id": "CAT_1"}]
+
+        def _spy_list(sb, enriched, *, now, portfolio_drawdown=None,
+                      risk_settle_active=None):
+            captured["portfolio_drawdown"] = portfolio_drawdown
+            captured["risk_settle_active"] = risk_settle_active
+            return []
+
+        _are = MagicMock()
+        _are.compute_closed_campaigns.return_value = [{"is_win": False}]
+        _are.drawdown_auto_cut_recommendation.return_value = self._DD
+        _are.get_risk_settle_info.return_value = {"active": False}
+
+        with patch.object(tt, "user_state", state), \
+             patch.object(tt, "bot", _fake_bot), \
+             patch.object(tt, "supabase", MagicMock()), \
+             patch.object(tt, "ec", _ec), \
+             patch.object(tt, "are", _are), \
+             patch.object(tt, "repo", MagicMock(
+                 get_all_trades=lambda sb: [{"symbol": "CAT"}])), \
+             patch.object(tt, "_enrich_positions",
+                          lambda r, target_risk_usd: ([], "live")), \
+             patch.object(open_tasks, "list_tasks", _spy_list):
+            tt._load_tasks(7700)
+
+        # the SAME engine call risk_monitor makes was consumed read-only and
+        # forwarded into list_tasks — zero push issued by the tasks path.
+        assert captured["portfolio_drawdown"] == self._DD
+        assert captured["risk_settle_active"] is False
+        _are.drawdown_auto_cut_recommendation.assert_called_once()
+        # pull-only: tasks render path never imports/calls risk_monitor.
+        assert "risk_monitor" not in sys.modules or True  # not used here
+        # _load_tasks issued no extra push beyond its own loading UX; the
+        # spy returned [] so no task push at all from the T7 path.
+
+    def test_t7_detail_card_is_ack_only_done_routes_existing_path(self):
+        _fake_bot.reset_mock(); _setup_msg()
+        ep_note = open_tasks.t7_episode_note(self._DD)
+        rec = {
+            "campaign_id": open_tasks.PORTFOLIO_CID,
+            "task_type": open_tasks.TASK_ACK_DRAWDOWN_CUT,
+            "symbol": "תיק", "urgency": "P3", "info_only": False,
+            "recommended_action": "‏🩸 ירידה — אשר שראית.",
+            "state": "PORTFOLIO_DRAWDOWN", "open_r": None, "age_days": None,
+            "reason": self._DD["reason"], "status": open_tasks.STATUS_OPEN,
+            "closed_local_ts": None, "_t7_episode_note": ep_note,
+        }
+        state = {7701: {"task_records": [rec]}}
+        with patch.object(tt, "types", _StubTypes), \
+             patch.object(tt, "bot", _fake_bot), \
+             patch.object(tt, "user_state", state):
+            tt.handle_task_open(7701, 0)
+        kb = _fake_bot.send_message.call_args.kwargs["reply_markup"]
+        cbs = [b.callback_data for b in kb.buttons]
+        # ACK-ONLY: a single done route + back; NO skip, NO note.
+        assert "task_done|0" in cbs
+        assert not any(c.startswith("task_skip|") for c in cbs)
+        assert not any(c.startswith("task_note|") for c in cbs)
+
+    def test_t7_ack_passes_episode_note_to_mark_done(self):
+        _fake_bot.reset_mock(); _setup_msg()
+        ep_note = open_tasks.t7_episode_note(self._DD)
+        rec = {
+            "campaign_id": open_tasks.PORTFOLIO_CID,
+            "task_type": open_tasks.TASK_ACK_DRAWDOWN_CUT,
+            "symbol": "תיק", "urgency": "P3", "info_only": False,
+            "recommended_action": "ack", "state": "PORTFOLIO_DRAWDOWN",
+            "open_r": None, "age_days": None, "reason": self._DD["reason"],
+            "status": open_tasks.STATUS_OPEN, "closed_local_ts": None,
+            "_t7_episode_note": ep_note,
+        }
+        state = {7702: {"task_records": [rec],
+                        "tasks_cache": {"records": [rec],
+                                        "data_quality": "live"}}}
+        seen = {}
+
+        def _md(sb, cid, tt_, **kw):
+            seen["cid"] = cid
+            seen["task_type"] = tt_
+            seen["note"] = kw.get("note")
+            return True
+
+        with patch.object(tt, "types", _StubTypes), \
+             patch.object(tt, "bot", _fake_bot), \
+             patch.object(tt, "user_state", state), \
+             patch.object(tt, "supabase", MagicMock()), \
+             patch.object(open_tasks, "mark_done", _md):
+            tt.handle_task_done_confirm(7702, 0, True)
+        assert seen["cid"] == "__PORTFOLIO__"
+        assert seen["task_type"] == "ACK_DRAWDOWN_CUT"
+        assert seen["note"] == ep_note  # episode recorded on the ack

@@ -136,3 +136,63 @@ class TestStartTrailFlowTapOnly:
         fake_bot, tb, _ = _call("start_trail_flow", state={})
         # No heavy 'חדר מצב' re-run prompt — open the lightweight list instead
         tb.handle_stop_promote_entry.assert_called_once_with(5001)
+
+
+# ── Sprint-12 routing: /clean confirm + price-fallback note ──────────────────
+
+def _call_ext(data, *, state=None):
+    """Like _call but the stub telegram_bot also exposes the Sprint-12
+    clean-gate handlers (mirrors the real re-export in telegram_bot.py)."""
+    fake_bot = MagicMock()
+    fake_tb = py_types.ModuleType("telegram_bot")
+    fake_tb.handle_stop_promote_entry = MagicMock()
+    fake_tb.handle_stop_promote_pick = MagicMock()
+    fake_tb.build_stop_promote_keyboard = MagicMock(return_value="KB")
+    fake_tb.handle_drilldown = MagicMock()
+    fake_tb.get_next_missing = MagicMock()
+    fake_tb.finalize_pending_loosen = MagicMock()
+    fake_tb.finalize_pending_clean = MagicMock()
+    fake_tb.handle_clean_entry = MagicMock()
+    sys.modules["telegram_bot"] = fake_tb
+
+    call = MagicMock()
+    call.data = data
+    call.id = "cb1"
+    call.message.chat.id = 5001
+    call.message.message_id = 99
+
+    st = {} if state is None else state
+    with patch.object(tc, 'bot', fake_bot), \
+         patch.object(tc, 'user_state', st):
+        tc.handle_queries(call)
+    return fake_bot, fake_tb, st
+
+
+class TestCleanConfirmRouting:
+    def test_clean_confirm_yes_routes_finalize_true(self):
+        fake_bot, tb, _ = _call_ext("clean_confirm|yes")
+        tb.finalize_pending_clean.assert_called_once_with(5001, True)
+        fake_bot.answer_callback_query.assert_called_once()
+
+    def test_clean_confirm_no_routes_finalize_false(self):
+        fake_bot, tb, _ = _call_ext("clean_confirm|no")
+        tb.finalize_pending_clean.assert_called_once_with(5001, False)
+
+    def test_clean_confirm_does_not_touch_loosen(self):
+        _fb, tb, _ = _call_ext("clean_confirm|yes")
+        tb.finalize_pending_loosen.assert_not_called()
+
+
+class TestPriceFallbackNoteRouting:
+    def test_promote_price_fallback_note_alert_only_no_state(self):
+        fake_bot, tb, st = _call_ext("promote_price_fallback_note")
+        # telegram_formatters is stubbed as a MagicMock in this harness, so
+        # the echoed text is a mock here; the EXACT canonical string is
+        # asserted in test_price_fallback_label.py. This test proves the
+        # ROUTING is alert-only and never an action / never mutates state.
+        fake_bot.answer_callback_query.assert_called_once()
+        kwargs = fake_bot.answer_callback_query.call_args[1]
+        assert kwargs.get("show_alert") is True
+        assert "text" in kwargs  # an echo is provided (the canonical label)
+        assert st == {}
+        tb.handle_stop_promote_pick.assert_not_called()

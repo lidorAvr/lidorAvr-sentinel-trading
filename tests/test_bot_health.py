@@ -242,3 +242,50 @@ class TestRTLMarkers:
         non_empty = [ln for ln in result.split("\n") if ln.strip()]
         rtl_lines = [ln for ln in non_empty if rtl in ln]
         assert len(rtl_lines) >= len(non_empty) * 0.8
+
+
+# ── Sprint-12 / Mark §4 — missing-stops data-hygiene NOTICE ────────────────────
+
+class TestMissingStopsNotice:
+    """Mark §4: surface missing stops ONLY as a non-numeric data-hygiene
+    notice — never an action-item, never counted, no fabricated stop. The
+    count+symbols are a factual hygiene readout Mark explicitly permits."""
+
+    def _sb_with_missing(self):
+        return _make_supabase([
+            {"trade_date": "2025-01-01", "symbol": "MSGE",
+             "side": "BUY", "stop_loss": 0, "quantity": 10,
+             "campaign_id": "MSGE_1", "setup_type": "VCP"},
+            {"trade_date": "2025-01-02", "symbol": "TSLA",
+             "side": "BUY", "stop_loss": 0, "quantity": 5,
+             "campaign_id": "TSLA_2", "setup_type": "VCP"},
+        ])
+
+    def test_notice_present_with_mark_verbatim_clause(self):
+        result = _run_report(supabase_mock=self._sb_with_missing())
+        # the legacy numeric warn still there
+        assert "Missing Stops — 2 שורות" in result
+        # Mark §4 VERBATIM non-task / non-counted clause appended
+        assert "נתוני סיכון חסרים: 2 רשומות" in result
+        assert "(אינו משימה, אינו נספר בסטטיסטיקה.)" in result
+        assert "השלם entry/stop כדי שייכללו." in result
+
+    def test_no_notice_when_no_missing_stops(self):
+        sb = _make_supabase([
+            {"trade_date": "2025-01-01", "symbol": "AAPL",
+             "side": "BUY", "stop_loss": 95.0, "quantity": 10,
+             "campaign_id": "AAPL_1", "setup_type": "VCP"},
+        ])
+        result = _run_report(supabase_mock=sb)
+        assert "Missing Stops — אין" in result
+        assert "אינו משימה, אינו נספר בסטטיסטיקה" not in result
+
+    def test_notice_is_non_numeric_and_not_a_task(self):
+        # No fabricated stop value, no R/$/urgency tier, no "task" word —
+        # it is a notice, not an action-item (Mark §4).
+        result = _run_report(supabase_mock=self._sb_with_missing())
+        line = next(ln for ln in result.split("\n")
+                    if "אינו משימה" in ln)
+        assert "$" not in line
+        assert "R" not in line.replace("RTL", "")
+        assert "P0" not in line and "P1" not in line

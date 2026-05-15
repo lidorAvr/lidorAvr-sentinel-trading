@@ -55,6 +55,9 @@ from telegram_tasks import (handle_open_tasks_entry,  # noqa: E402 — re-export
 
 from telegram_audit_review import handle_my_actions  # noqa: E402 — re-exported for telegram_callbacks lazy import
 
+from telegram_clean_gate import (handle_clean_entry,  # noqa: E402 — re-exported for telegram_callbacks lazy import
+                                 finalize_pending_clean)
+
 @bot.message_handler(content_types=['document'])
 def handle_document_upload(message):
     chat_id = message.chat.id
@@ -375,28 +378,14 @@ def handle_all_messages(message):
         return get_next_missing(chat_id)
 
     if text in ["🧹 ארכיון עסקאות (Legacy)", "/clean"]:
-        bot.send_message(chat_id, "🧹 *מבצע ניקוי היסטוריה (עסקאות מעל 30 יום בלבד)...*", parse_mode="Markdown")
-        try:
-            thirty_days_ago = (datetime.now() - pd.Timedelta(days=30)).strftime('%Y-%m-%d')
-            count = 0
-            for t in repo.get_old_trades(supabase, thirty_days_ago):
-                needs_update = False
-                upd = {}
-                if t.get('setup_type') is None: upd['setup_type'] = "Legacy"; needs_update = True
-                if t.get('quality') is None: upd['quality'] = -1; needs_update = True
-                if t.get('side', '').upper() == 'BUY':
-                    if t.get('initial_stop') in [None, 0]: upd['initial_stop'] = -1; upd['stop_loss'] = -1; needs_update = True
-                if t.get('side', '').upper() == 'SELL':
-                    if t.get('score') is None: upd['score'] = -1; needs_update = True
-                    if t.get('image_url') is None: upd['image_url'] = "Skipped"; needs_update = True
-                    if t.get('management_notes') is None: upd['management_notes'] = "Skipped"; needs_update = True
-                if needs_update:
-                    repo.update_trade(supabase, t['trade_id'], upd)
-                    count += 1
-            bot.send_message(chat_id, f"✅ ארכיון נקי! {count} עסקאות ישנות טופלו בהצלחה.", parse_mode="Markdown")
-        except Exception as e:
-            bot.send_message(chat_id, f"❌ שגיאה בניקוי הארכיון: {e}")
-        return get_next_missing(chat_id)
+        # Sprint-12 / Mark §2 — `/clean` no longer writes on a single tap. It
+        # runs a read-only dry-run preview and a defaulted-NO inline confirm
+        # (reuses the proven guard_stop_write / finalize_pending_loosen
+        # pattern). The bulk-write body is relocated BYTE-IDENTICAL behind the
+        # gate in telegram_clean_gate.finalize_pending_clean. Additive routing
+        # only (CLAUDE.md — no telegram_bot.py wholesale rewrite).
+        handle_clean_entry(chat_id)
+        return
 
     if text in ["❓ פקודות מערכת", "/help"]:
         return bot.send_message(chat_id, "🛡️ *מערכת הפיקוד (Sentinel Command)*\n\n/trade SYMBOL - צלילת עומק לפוזיציה\n/next - סריקת יומן\n/portfolio - חדר מצב\n/clean - מטאטא ארכיון (מוגן 30 יום)", parse_mode="Markdown")

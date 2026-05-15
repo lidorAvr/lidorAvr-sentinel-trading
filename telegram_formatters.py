@@ -7,6 +7,13 @@ telegram_formatters.py
 RTL = "‏"
 SEP = "───────────────"
 
+# Sprint-12 / Mark §3 — the SINGLE canonical honest price-fallback label.
+# VERBATIM from MARK_SPRINT12_RULINGS.md §3 (engineering invents no wording).
+# Shown ONLY when ec.get_live_price() returned None for that figure and the
+# entry/last price was substituted (per-figure, binary on the actual None —
+# never a guess). One source, reused at every site (like _SNAPSHOT_LABEL).
+PRICE_FALLBACK_LABEL = "‏⚠️ (מחיר לא חי — לפי מחיר כניסה, לא בזמן אמת)"
+
 # ── Actionability Layer ────────────────────────────────────────────────────
 # Every alert must declare what the user should do with it.
 ACTIONABILITY_LABELS = {
@@ -62,8 +69,18 @@ def fmt_position_card(i: int, sym: str, setup: str, days_held: int,
                       open_r_val: float, status: str, action_short: str,
                       add_on_count: int = 0, base_price: float = 0,
                       locked_profit: float = 0, giveback_risk: float = 0,
-                      capital_risk: float = 0) -> str:
-    """כרטיס פוזיציה אחד — קומפקטי וברור."""
+                      capital_risk: float = 0,
+                      price_is_fallback: bool = False) -> str:
+    """כרטיס פוזיציה אחד — קומפקטי וברור.
+
+    ``price_is_fallback`` (Sprint-12 / Mark §3): default ``False`` keeps every
+    existing caller/test BYTE-IDENTICAL. When the CALLER detected that
+    ``ec.get_live_price()`` returned ``None`` for this position and fell back
+    to ``entry`` as ``curr``, it passes ``True`` and the card appends the
+    single canonical honest label after the price (label only — no number is
+    recomputed or restated; this is a pure formatter, DEC-20260510-005, so the
+    fallback DETECTION stays in the caller).
+    """
     pnl_icon = '🟢' if open_pnl >= 0 else '🔴'
     addon_tag = f" +(+{add_on_count})" if add_on_count > 0 else ""
     base_tag = f" _(בסיס ${base_price:.2f})_" if add_on_count > 0 and base_price > 0 else ""
@@ -72,9 +89,12 @@ def fmt_position_card(i: int, sym: str, setup: str, days_held: int,
     if total_campaign_r == 0 and open_r_val == 0 and capital_risk == 0 and locked_profit == 0:
         r_str = "`N/A` ⚠️ חסר סטופ התחלתי"
 
+    curr_line = f"{RTL}  ▸ כניסה: `${entry:.2f}`{base_tag} → נוכחי: `${curr:.2f}`"
+    if price_is_fallback:
+        curr_line += f" {PRICE_FALLBACK_LABEL}"
     lines = [
         f"{RTL}*{i}. {sym}*{addon_tag} | 🏷️ {setup} | {days_held}d",
-        f"{RTL}  ▸ כניסה: `${entry:.2f}`{base_tag} → נוכחי: `${curr:.2f}`",
+        curr_line,
         f"{RTL}  ▸ רווח צף: {pnl_icon} `${open_pnl:+.2f}` | סה״כ: `${total_pos_profit:+.2f}`",
         f"{RTL}  ▸ R: {r_str}",
         f"{RTL}  ▸ חשיפה: `{weight_pct:.1f}%` (${pos_value:,.0f})",

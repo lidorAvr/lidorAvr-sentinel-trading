@@ -72,7 +72,8 @@ def handle_drilldown(chat_id, symbol):
         mgt_state  = open_pos.get('management_state', 'full_position')
         entry_date = open_pos['entry_date']
         curr = ec.get_live_price(symbol)
-        if curr is None:
+        price_is_fallback = curr is None
+        if price_is_fallback:
             curr = entry
 
         account_settings = get_account_settings()
@@ -144,6 +145,12 @@ def handle_drilldown(chat_id, symbol):
         if data['issues']:
             rep += f"\n{RTL}⚠️ *אזהרות:* {', '.join(data['issues'])}\n"
 
+        if price_is_fallback:
+            # Sprint-12 / Mark §3 — this card's current price / weight / P&L
+            # all derive from entry-as-price because ec.get_live_price()
+            # returned None. Honest label only (no number recomputed).
+            rep += f"\n{RTL}_{tf.PRICE_FALLBACK_LABEL}_\n"
+
         bot.edit_message_text(rep, chat_id, msg_id, parse_mode="Markdown")
 
     except Exception as e:
@@ -167,10 +174,17 @@ def handle_market_regime(chat_id):
 
         exp = {"ALGO": 0, "VCP": 0, "EP": 0, "OTHER": 0}
         open_r_regime = []
+        # Sprint-12 / Mark §3 — symbols whose price fell back because
+        # ec.get_live_price() returned None (binary on the ACTUAL None — the
+        # legacy `or` also caught a falsy 0, so detect None explicitly).
+        regime_fallback_syms = []
         if not open_pos.empty:
             for _, row in open_pos.iterrows():
                 sym, setup = row["symbol"], str(row["setup_type"]).upper()
-                curr = ec.get_live_price(sym) or float(row["price"])
+                _live = ec.get_live_price(sym)
+                if _live is None:
+                    regime_fallback_syms.append(sym)
+                curr = _live or float(row["price"])
                 val = curr * float(row["quantity"])
                 if setup in exp:
                     exp[setup] += val
@@ -190,6 +204,11 @@ def handle_market_regime(chat_id):
 
         if nav_stale_label:
             rep += f"\n\n⚠️ _{nav_stale_label}_"
+        if regime_fallback_syms:
+            # Sprint-12 / Mark §3 — honest aggregate notice (label only; the
+            # exposure/R numbers above used entry-as-price for these symbols).
+            _rfb = ", ".join(sorted(set(regime_fallback_syms)))
+            rep += f"\n\n{RTL}{tf.PRICE_FALLBACK_LABEL}\n{RTL}_חל על: {_rfb}_"
 
         try:
             current_risk_pct = float(account_settings.get("risk_pct_input", 0.5))
@@ -236,6 +255,10 @@ def handle_portfolio_room(chat_id):
         algo_count = 0
         active_symbols = []
         open_r_vals = []  # running R for each open position → fed into adaptive risk
+        # Sprint-12 / Mark §3 — symbols whose current price fell back to entry
+        # because ec.get_live_price() returned None (per-figure, binary on the
+        # actual None — never a guess). Drives the honest fallback label.
+        price_fallback_syms = []
 
         msg = f"{RTL}🔭 *חדר מצב - דו\"ח ריכוז פוזיציות:*\n\n"
 
@@ -254,8 +277,10 @@ def handle_portfolio_room(chat_id):
             base_qty   = row.get('base_qty', init_qty)
 
             curr = ec.get_live_price(sym)
-            if curr is None:
+            price_is_fallback = curr is None
+            if price_is_fallback:
                 curr = entry
+                price_fallback_syms.append(sym)
 
             open_pnl_usd = (curr - entry) * qty
             pos_value = curr * qty
@@ -321,7 +346,8 @@ def handle_portfolio_room(chat_id):
 
                 msg += f"{RTL}*{i}. {sym}* | 🏷️ ALGO | 🟠 מנוהל חיצונית\n"
                 msg += f"{RTL}   ▸ ותק: `{days_held}` ימים | כמות: {qty_text}\n"
-                msg += f"{RTL}   ▸ כניסה: {entry_text} | נוכחי: `${curr:.2f}`\n"
+                _algo_fb = f" {tf.PRICE_FALLBACK_LABEL}" if price_is_fallback else ""
+                msg += f"{RTL}   ▸ כניסה: {entry_text} | נוכחי: `${curr:.2f}`{_algo_fb}\n"
                 msg += f"{RTL}   ▸ סטופ: מנוהל חיצונית | בסיס R: `{risk_basis}` | שקיפות סיכון: `{risk_vis}/100`\n"
                 msg += f"{RTL}   ▸ רווח צף: {pnl_icon} `${open_pnl_usd:.2f}` | כולל: `${total_pos_profit:.2f}`\n"
                 msg += f"{RTL}   ▸ חשיפה: `{weight_pct:.1f}%` מקרן הבסיס\n"
@@ -345,6 +371,7 @@ def handle_portfolio_room(chat_id):
                     locked_profit=locked_profit_usd,
                     giveback_risk=giveback_risk_usd,
                     capital_risk=current_open_loss_risk,
+                    price_is_fallback=price_is_fallback,
                 ) + "\n"
                 if original_campaign_risk > 0 and sizing_str != "✅ תקין":
                     clean_sizing = sizing_str.replace('⚠️ ', '').replace('📉 ', '')
@@ -416,6 +443,15 @@ def handle_portfolio_room(chat_id):
 
         if nav_stale_label:
             msg += f"\n\n{RTL}⚠️ _{nav_stale_label}_"
+        if price_fallback_syms:
+            # Sprint-12 / Mark §3 — honest aggregate notice: at least one
+            # position's price fell back to entry (label only; no number
+            # recomputed). Same footer region as nav_stale_label.
+            _fb_list = ", ".join(sorted(set(price_fallback_syms)))
+            msg += (
+                f"\n\n{RTL}{tf.PRICE_FALLBACK_LABEL}"
+                f"\n{RTL}_חל על: {_fb_list}_"
+            )
 
         try: bot.delete_message(chat_id, loading_msg.message_id)
         except Exception: pass

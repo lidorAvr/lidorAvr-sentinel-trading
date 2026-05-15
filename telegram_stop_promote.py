@@ -55,6 +55,11 @@ def _compute_open_r(row, target_risk_usd):
     discretionary → original campaign risk). It is duplicated here only
     for the button label — the authoritative report still computes it
     itself; this never feeds back into any write.
+
+    Returns ``(open_r, curr, price_is_fallback)``. ``price_is_fallback``
+    (Sprint-12 / Mark §3) is a PURE bool of ``ec.get_live_price() is None``
+    — NO math change (the open-R formula and ``curr`` are byte-identical to
+    before); it only lets the keyboard render the honest fallback label.
     """
     try:
         entry = float(row.get("price", 0) or 0)
@@ -65,19 +70,20 @@ def _compute_open_r(row, target_risk_usd):
         setup = str(row.get("setup_type", "")).upper()
 
         curr = ec.get_live_price(row.get("symbol"))
-        if curr is None:
+        price_is_fallback = curr is None
+        if price_is_fallback:
             curr = entry
         open_pnl_usd = (curr - entry) * qty
 
         if setup == "ALGO" and target_risk_usd > 0:
-            return open_pnl_usd / target_risk_usd, curr
+            return open_pnl_usd / target_risk_usd, curr, price_is_fallback
         init_sl_clean = init_sl if (0 < init_sl < base_price) else 0
         original_campaign_risk = (base_price - init_sl_clean) * base_qty if init_sl_clean > 0 else 0
         if original_campaign_risk > 0:
-            return open_pnl_usd / original_campaign_risk, curr
-        return None, curr
+            return open_pnl_usd / original_campaign_risk, curr, price_is_fallback
+        return None, curr, price_is_fallback
     except Exception:
-        return None, None
+        return None, None, False
 
 
 def build_stop_promote_keyboard(positions):
@@ -92,6 +98,7 @@ def build_stop_promote_keyboard(positions):
     _acc, target_risk_usd, _stale = get_nav_and_risk(account_settings)
 
     markup = types.InlineKeyboardMarkup(row_width=1)
+    any_fallback = False
     for idx, row in enumerate(positions):
         sym = row.get("symbol", "?")
         setup = str(row.get("setup_type", "")).upper()
@@ -100,14 +107,30 @@ def build_stop_promote_keyboard(positions):
             # ALGO rows are pure noise in this discretionary-only flow. Skip
             # them entirely (no info button, no promote_algo_noop dead-end).
             continue
-        open_r, _curr = _compute_open_r(row, target_risk_usd)
+        open_r, _curr, price_is_fallback = _compute_open_r(row, target_risk_usd)
         if open_r is None:
             r_label = "R N/A"
         else:
             r_label = f"{open_r:+.2f}R"
+        # Sprint-12 / Mark §3 — when this row's open-R was computed off
+        # entry-as-price because ec.get_live_price() returned None, the button
+        # carries an honest short marker (the canonical label is shown in full
+        # below; the button is space-constrained). No number changes.
+        fb_mark = " ‏⚠️" if price_is_fallback else ""
+        any_fallback = any_fallback or price_is_fallback
         markup.add(types.InlineKeyboardButton(
-            f"🎯 {sym}  {r_label}",
+            f"🎯 {sym}  {r_label}{fb_mark}",
             callback_data=f"promote_pick|{idx}",
+        ))
+    if any_fallback:
+        # Sprint-12 / Mark §3 — surface the EXACT canonical label (the
+        # space-constrained buttons only carry a ⚠️ marker). Non-tappable
+        # info row (same pattern as the ALGO no-op rows); tapping it just
+        # echoes the honest label, never an action.
+        import telegram_formatters as _tf
+        markup.add(types.InlineKeyboardButton(
+            _tf.PRICE_FALLBACK_LABEL,
+            callback_data="promote_price_fallback_note",
         ))
     markup.add(types.InlineKeyboardButton("❌ סגור", callback_data="cancel_action"))
     return markup
