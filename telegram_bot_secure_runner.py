@@ -3,6 +3,23 @@ import threading
 import time
 from collections import defaultdict, deque
 
+
+def _log(msg: str) -> None:
+    """Best-effort observability for the security gateway.
+
+    Before this, the secure runner was entirely silent — admin-guard
+    rejections, rate-limit trips, and data-source disclosure were
+    invisible in `docker logs` (SYSTEM_AUDIT §5.11 / Issue P). Never
+    raises; never logs token or admin id. flush=True so the line is
+    visible immediately even if PYTHONUNBUFFERED is ever unset.
+    """
+    try:
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[{ts}] [secure_runner] {msg}", flush=True)
+    except Exception:
+        pass
+
+
 _HEARTBEAT_DIR = "/app/state"
 _HEARTBEAT_INTERVAL = 60
 
@@ -41,10 +58,13 @@ def guard_decision(chat_id):
     chat_id = str(chat_id)
     now = time.time()
     if not ADMIN_ID or chat_id != str(ADMIN_ID):
+        _log(f"REJECT unauthorized — chat_id={chat_id}")
         return False, 'unauthorized'
 
     until = _cooldown_until.get(chat_id, 0)
     if now < until:
+        # In an active cooldown window — not logged per-message on purpose
+        # (logging every blocked message would itself be a log flood).
         return False, 'cooldown'
     if until and now >= until:
         _cooldown_until.pop(chat_id, None)
@@ -55,6 +75,9 @@ def guard_decision(chat_id):
         events.popleft()
     if len(events) >= MAX_MESSAGES:
         _cooldown_until[chat_id] = now + COOLDOWN_SECONDS
+        _log(f"RATE LIMIT tripped — chat_id={chat_id}, "
+             f"{MAX_MESSAGES} msgs / {WINDOW_SECONDS}s, "
+             f"cooldown {COOLDOWN_SECONDS}s")
         return False, 'rate_limited'
     events.append(now)
     return True, 'ok'
@@ -73,6 +96,7 @@ def truth_suffix(text):
         return text
     markers = ['חדר מצב', 'דו"ח', 'חשיפת תיק', 'Drill-down', 'משטר שוק', 'פוזיציות']
     if any(marker in text for marker in markers):
+        _log("data-source disclaimer appended to outgoing report")
         return text + '\n\nℹ️ *מקור נתונים:* Live/Cached לפי זמינות. אם מחיר חי או NAV לא זמינים, יש להתייחס לנתון כהערכה ולאמת מול IBKR לפני פעולה.'
     return text
 
@@ -135,14 +159,23 @@ def install_telegram_hardening():
     telebot.TeleBot.__init__ = patched_init
     telebot.TeleBot.message_handler = guarded_message_handler
     telebot.TeleBot.callback_query_handler = guarded_callback_handler
+    _log("telegram hardening installed — admin guard + rate limit + "
+         "data-source disclosure active")
 
 
 def main():
+    _log(
+        "starting — admin guard "
+        f"{'configured' if ADMIN_ID else 'MISSING (all messages will be rejected)'}, "
+        f"rate limit {MAX_MESSAGES} msgs / {WINDOW_SECONDS}s, "
+        f"cooldown {COOLDOWN_SECONDS}s"
+    )
     if os.path.isdir(WORKDIR):
         os.chdir(WORKDIR)
     _start_heartbeat_thread("telegram_bot")
     install_telegram_hardening()
     import telegram_bot
+    _log("polling started")
     telegram_bot.bot.infinity_polling()
 
 

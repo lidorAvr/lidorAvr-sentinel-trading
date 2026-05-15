@@ -791,6 +791,32 @@ def _write_runner_decision(campaign_id: str, decision: str) -> None:
 
 ---
 
+### 5.11 Issue P (NEW, MEDIUM) — secure_runner had zero observability — **RESOLVED (Sprint 10)**
+
+> **STATUS: RESOLVED.** Discovered Day 1 evening: after `PYTHONUNBUFFERED`
+> was fixed, `docker logs telegram-bot` was still empty even while the
+> bot answered `/portfolio` correctly. Root cause: `telegram_bot_secure_runner.py`
+> had **no `print` and no logging at all** — every admin-guard rejection,
+> rate-limit trip, and data-source disclosure was invisible. This is the
+> observability counterpart of §5.1 (which fixed missing alerts; this
+> makes the guard's own actions visible).
+>
+> **Fix:** added a best-effort `_log()` helper (timestamped,
+> `[secure_runner]`-prefixed, `flush=True`, never raises, never logs
+> token/admin id). Instrumented: startup config summary (counts only),
+> hardening installed, polling started, `unauthorized` rejection (with
+> chat_id, for intrusion visibility), `rate_limited` trip, and
+> data-source disclaimer append. Deliberately **not** logged: per-message
+> `cooldown` rejections and the `ok` happy path — logging those would
+> itself be a flood. **No guard logic changed** — additive logging only;
+> regression tests assert the admin gate + rate-limit return values are
+> byte-identical. 13 tests in `tests/test_secure_runner_logging.py`;
+> existing source-content tests still green. Full suite: 1354 passed.
+>
+> Apply on the Pi with `docker compose up -d --force-recreate telegram-bot`.
+
+---
+
 ## 6. מפת סינרגיה בין שירותים
 
 ```
