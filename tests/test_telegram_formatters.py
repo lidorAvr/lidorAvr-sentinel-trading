@@ -377,3 +377,123 @@ class TestMarkdownValidity:
         tt = {"ok": True, "data": {"passed": 7, "criteria": {i: True for i in range(8)}}}
         result = tf.fmt_minervini_trend_template("AAPL", tt)
         assert self._count_bold(result) % 2 == 0
+
+
+# ── Sprint-13 / Mark §2 — missing-stops split-label helper ──────────────────
+
+class TestClassifyMissingStops:
+    """Mark §2: split detected missing-stop rows by lifecycle. Pure /
+    read-only — never fabricates a stop, never a stat, total preserved."""
+
+    def _rows_55_like(self):
+        # Mirrors the live finding shape: MSGE/SNEX/TSLA open, JPM/HP closed.
+        return [
+            {"symbol": "MSGE", "campaign_id": "MSGE_1"},
+            {"symbol": "MSGE", "campaign_id": "MSGE_1"},
+            {"symbol": "SNEX", "campaign_id": "SNEX_2"},
+            {"symbol": "TSLA", "campaign_id": "TSLA_3"},
+            {"symbol": "JPM", "campaign_id": "JPM_OLD"},
+            {"symbol": "HP", "campaign_id": "HP_OLD"},
+            {"symbol": "HP", "campaign_id": None},  # no campaign → hygiene
+        ]
+
+    def test_split_routes_open_vs_closed(self):
+        rows = self._rows_55_like()
+        open_ids = {"MSGE_1", "SNEX_2", "TSLA_3"}
+        s = tf.classify_missing_stops(rows, open_ids)
+        assert s["open_count"] == 4          # 2x MSGE + SNEX + TSLA
+        assert s["legacy_count"] == 3        # 2x HP-ish + JPM
+        assert s["open_symbols"] == ["MSGE", "SNEX", "TSLA"]
+        assert s["legacy_symbols"] == ["HP", "JPM"]
+
+    def test_total_invariant_no_row_lost_or_duplicated(self):
+        rows = self._rows_55_like()
+        s = tf.classify_missing_stops(rows, {"MSGE_1"})
+        assert s["total"] == len(rows)
+        assert s["open_count"] + s["legacy_count"] == s["total"]
+
+    def test_referentially_transparent(self):
+        rows = self._rows_55_like()
+        open_ids = {"MSGE_1", "TSLA_3"}
+        a = tf.classify_missing_stops(rows, open_ids)
+        b = tf.classify_missing_stops(rows, open_ids)
+        assert a == b
+        # input not mutated
+        assert rows == self._rows_55_like()
+        assert open_ids == {"MSGE_1", "TSLA_3"}
+
+    def test_no_open_campaigns_all_hygiene(self):
+        rows = self._rows_55_like()
+        s = tf.classify_missing_stops(rows, set())
+        assert s["open_count"] == 0
+        assert s["legacy_count"] == len(rows)
+
+    def test_empty_inputs(self):
+        s = tf.classify_missing_stops([], set())
+        assert s == {
+            "open_count": 0, "open_symbols": [],
+            "legacy_count": 0, "legacy_symbols": [], "total": 0,
+        }
+        assert tf.classify_missing_stops(None, None)["total"] == 0
+
+    def test_missing_symbol_becomes_placeholder_not_a_price(self):
+        s = tf.classify_missing_stops([{"campaign_id": "X"}], {"X"})
+        assert s["open_symbols"] == ["?"]
+        # never emits a numeric stop / price
+        for sym in s["open_symbols"] + s["legacy_symbols"]:
+            assert not sym.replace(".", "").isdigit()
+
+    def test_never_emits_stop_price_or_stat_key(self):
+        rows = [{"symbol": "MSGE", "campaign_id": "MSGE_1"}]
+        s = tf.classify_missing_stops(rows, {"MSGE_1"})
+        keys = set(s.keys())
+        # only count/symbols/total — no stop, no $, no R/WR/PF/expectancy
+        assert keys == {
+            "open_count", "open_symbols",
+            "legacy_count", "legacy_symbols", "total",
+        }
+        for forbidden in ("stop", "price", "wr", "expectancy", "pf", "r_", "usd"):
+            assert not any(forbidden in k.lower() for k in keys)
+
+
+class TestMissingStopsSplitLabel:
+    """The /health split-label string: non-numeric, Mark §2 routing,
+    no fabricated stop, empty when nothing missing."""
+
+    def test_empty_when_nothing_missing(self):
+        assert tf.fmt_missing_stops_split_label(
+            {"total": 0, "open_count": 0, "legacy_count": 0}
+        ) == ""
+        assert tf.fmt_missing_stops_split_label(None) == ""
+
+    def test_open_subset_routes_to_journal_backlog_language(self):
+        split = tf.classify_missing_stops(
+            [{"symbol": "MSGE", "campaign_id": "M1"}], {"M1"}
+        )
+        line = tf.fmt_missing_stops_split_label(split)
+        assert "פוזיציות פתוחות ללא סטופ: 1" in line
+        assert "MSGE" in line
+        assert "לא יומצא" in line          # no fabrication promise
+        assert "לא נכלל בסטטיסטיקה" in line  # not counted
+        # non-numeric: no stop price / $ / R-tier
+        assert "$" not in line
+        assert "P0" not in line and "P1" not in line
+
+    def test_legacy_subset_routes_to_clean_language(self):
+        split = tf.classify_missing_stops(
+            [{"symbol": "JPM", "campaign_id": "OLD"}], set()
+        )
+        line = tf.fmt_missing_stops_split_label(split)
+        assert "סגורות/ארכיון" in line
+        assert "/clean" in line
+        assert "אינו משימה" in line
+
+    def test_mark_verbatim_backlog_constant_only_symbol_substituted(self):
+        # MISSING_STOP_BACKLOG_HE is VERBATIM Mark §2 :76-80; the ONLY
+        # substitution is {SYMBOL} — never a price.
+        rendered = tf.MISSING_STOP_BACKLOG_HE.format(SYMBOL="MSGE")
+        assert "פוזיציה פתוחה ללא סטופ — MSGE" in rendered
+        assert "לא יומצא ערך" in rendered
+        assert "לא נכלל בסטטיסטיקה" in rendered
+        assert "{SYMBOL}" not in rendered
+        assert "150.50" in rendered  # Mark's literal example, not a real stop

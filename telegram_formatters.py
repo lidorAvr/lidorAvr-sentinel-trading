@@ -441,3 +441,123 @@ def fmt_heat_thermometer(risk_rec: dict, include_legend: bool = False) -> str:
         lines.append(f"\n{RTL}_סולם:_ 🔥 ≥80 חם מאוד | 🟠 60-79 חם | 🟡 40-59 מתון | 🔵 20-39 קר | ❄️ <20 קר מאוד")
 
     return "\n".join(lines)
+
+
+# ── Sprint-13 / Mark §2 — missing-stops split-label (READ-ONLY, pure) ───────
+# Mark MARK_SPRINT13_RULINGS.md §2 (:50-67): split the existing 55 detected
+# missing-stop rows by lifecycle — never fabricate a stop, never a stat.
+#
+#   • OPEN position missing a stop  = real risk gap (urgent). Routes to the
+#     EXISTING journal-backlog (telegram_backlog.py:86-97), which prompts the
+#     founder for the *true* initial stop and writes ONLY what the founder
+#     types (or the existing -1 skip sentinel) — NEVER a default/fabricated
+#     value. These rows stay out of WR/Expectancy/PF until completed
+#     (AGENTS.md #8; open_tasks.py:271-281 COMPLETE_RISK_DATA, urgency=None,
+#     never counted) — this helper adds NO new ruleset key / §6 entry, so
+#     test_ruleset_matches_methodology_spec stays green.
+#   • CLOSED / archived row missing a stop = hygiene only. Handled by the
+#     already-gated /clean (telegram_clean_gate.py — defaulted-NO, open
+#     campaigns excluded, 30-day absolute window). The bot_health.py:92-98
+#     Sprint-12 notice text stays VERBATIM for this subset (Mark §2 :71-72).
+#
+# This function is the approved-surface label only. It performs ZERO trade /
+# campaign / R / NAV math: the caller passes in the rows it already detected
+# AND the open-campaign id set it already derived (engine's existing
+# net-qty>0.001 rule, engine_core.get_open_positions_campaign:473-514). The
+# helper is referentially transparent: same inputs → same output, no I/O,
+# no Supabase, no fabricated stop number, no $/R, no stat.
+
+# VERBATIM from MARK_SPRINT13_RULINGS.md §2 (:76-80). Engineering invents no
+# wording. {SYMBOL} is the only substitution (the row's own symbol — never a
+# price). Used by the journal-backlog open-position stop-completion prompt.
+MISSING_STOP_BACKLOG_HE = (
+    "‏🛡️ פוזיציה פתוחה ללא סטופ — {SYMBOL}\n"
+    "‏הזן את הסטופ ההתחלתי האמיתי (לדוגמה 150.50).\n"
+    "‏לא יומצא ערך. עד להשלמה — לא נכלל בסטטיסטיקה."
+)
+
+
+def classify_missing_stops(missing_rows, open_campaign_ids):
+    """Split detected missing-stop rows into open (urgent) vs closed (hygiene).
+
+    Pure / read-only (Mark §2). No fabricated stop, no $/R, no stat.
+
+    Parameters
+    ----------
+    missing_rows : iterable of mapping
+        The rows the caller ALREADY detected as missing-stop (BUY, qty>0,
+        stop_loss<=0). Each needs ``symbol`` and ``campaign_id`` keys. This
+        function does NOT re-detect or re-query — it only labels.
+    open_campaign_ids : set/iterable
+        The campaign_ids the caller ALREADY derived as OPEN via the engine's
+        existing net-qty>0.001 rule (engine_core.get_open_positions_campaign).
+        This helper performs NO campaign math itself.
+
+    Returns
+    -------
+    dict with:
+        ``open_count``     int  — rows on an OPEN campaign (real risk gap)
+        ``open_symbols``   sorted unique list[str]
+        ``legacy_count``   int  — rows on a closed/archived/no campaign
+        ``legacy_symbols`` sorted unique list[str]
+        ``total``          int  — == open_count + legacy_count == len(rows)
+    Invariant: ``open_count + legacy_count == total`` (every row lands in
+    exactly one bucket; no row is dropped, none duplicated). No key in the
+    return is ever a stop price, an R value, or a money figure.
+    """
+    open_ids = set(open_campaign_ids or [])
+    open_syms: set = set()
+    legacy_syms: set = set()
+    open_count = 0
+    legacy_count = 0
+
+    for row in (missing_rows or []):
+        sym = str(row.get("symbol", "")).strip() or "?"
+        cid = row.get("campaign_id")
+        # OPEN iff the row's campaign is in the caller-derived open set.
+        # No campaign_id, or a campaign not in the open set → closed/archived
+        # (hygiene). Net-quantity already decided membership upstream.
+        if cid is not None and cid in open_ids:
+            open_count += 1
+            open_syms.add(sym)
+        else:
+            legacy_count += 1
+            legacy_syms.add(sym)
+
+    return {
+        "open_count": open_count,
+        "open_symbols": sorted(open_syms),
+        "legacy_count": legacy_count,
+        "legacy_symbols": sorted(legacy_syms),
+        "total": open_count + legacy_count,
+    }
+
+
+def fmt_missing_stops_split_label(split):
+    """Non-numeric Hebrew split-label line(s) for the /health notice.
+
+    Consumes ``classify_missing_stops`` output. States the OPEN subset is an
+    actionable journal-backlog item (real risk gap) and the CLOSED subset is
+    hygiene via the gated /clean — count + symbols only, NEVER a stop price,
+    $/R, or a stat (Mark §2 :69-72; AGENTS.md #1/#8). Returns ``""`` when
+    nothing is missing (caller appends nothing).
+    """
+    if not split or split.get("total", 0) <= 0:
+        return ""
+    parts = []
+    oc = split.get("open_count", 0)
+    lc = split.get("legacy_count", 0)
+    if oc > 0:
+        osy = ", ".join(split.get("open_symbols", [])[:5])
+        parts.append(
+            f"{RTL}‏🛡️ פוזיציות פתוחות ללא סטופ: {oc} ({osy}) — "
+            f"השלם בגיבוי היומן (ערך אמיתי בלבד, לא יומצא; "
+            f"עד להשלמה לא נכלל בסטטיסטיקה)."
+        )
+    if lc > 0:
+        lsy = ", ".join(split.get("legacy_symbols", [])[:5])
+        parts.append(
+            f"{RTL}‏🧹 רשומות סגורות/ארכיון ללא סטופ: {lc} ({lsy}) — "
+            f"היגיינה בלבד דרך /clean (אינו משימה, אינו נספר)."
+        )
+    return "\n".join(parts)
