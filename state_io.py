@@ -39,6 +39,17 @@ try:
 except ImportError:  # non-POSIX; not used in production, keeps imports safe
     _HAVE_FCNTL = False
 
+# Sprint 14 (RC-2/RC-3): single shared path for the anti-spam state file.
+# It lives on the EXISTING `sentinel_state:/app/state` named volume (same
+# directory the heartbeat already uses) so it survives `git pull` deploys
+# AND container `--force-recreate`. Both writers — risk_monitor.save_state
+# and bot_helpers._write_runner_decision — import THIS constant so the path
+# can never drift onto two inodes (a split-brain would defeat the fcntl
+# lock and the dedup memory). No risk/NAV/campaign/stop math is touched;
+# this only relocates a runtime JSON file.
+RM_STATE_DIR = "/app/state"
+RM_STATE_FILE = os.path.join(RM_STATE_DIR, "risk_monitor_state.json")
+
 
 def lock_path_for(path: str) -> str:
     return f"{path}.lock"

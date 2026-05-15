@@ -11,6 +11,7 @@ import glob
 from datetime import datetime
 import pandas as pd
 import engine_core as ec
+import state_io
 import telegram_formatters as tf
 from bot_core import supabase, RTL
 from bot_helpers import get_account_settings
@@ -171,7 +172,10 @@ def build_health_report() -> str:
 
     # 12. Risk Monitor State
     try:
-        rm = json.load(open("risk_monitor_state.json"))
+        # Sprint 14: state file relocated to the /app/state named volume
+        # (state_io.RM_STATE_FILE) — read-only health probe follows the
+        # single shared constant.
+        rm = json.load(open(state_io.RM_STATE_FILE))
         pos_count = len(rm.get("positions", {}))
         ok(f"Risk Monitor State — {pos_count} פוזיציות במעקב")
     except Exception:

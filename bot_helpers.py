@@ -10,7 +10,11 @@ import state_io
 
 _BOT_LOG_FILE      = "/app/logs/sentinel_bot.log"
 _BOT_LOG_MAX_LINES = 2000
-_RM_STATE_FILE     = "risk_monitor_state.json"
+# Sprint 14 (RC-2/RC-3): same shared constant risk_monitor.save_state uses,
+# so the bot's runner-decision RMW writes the SAME inode on the persistent
+# `sentinel_state:/app/state` volume — the cross-container fcntl lock and the
+# anti-spam dedup memory can never split-brain across two paths.
+_RM_STATE_FILE     = state_io.RM_STATE_FILE
 
 _DEV_LOG_FILES = {
     "sentinel-main": "/app/logs/sentinel_main.log",
@@ -54,6 +58,11 @@ def _write_runner_decision(campaign_id: str, decision: str) -> None:
         # with risk_monitor.save_state (shared state file, different
         # container). Atomic write so a concurrent reader never sees a
         # partial file. See state_io / SYSTEM_AUDIT §5.7 (Issue N3).
+        try:
+            os.makedirs(os.path.dirname(_RM_STATE_FILE) or ".",
+                        exist_ok=True)
+        except Exception:
+            pass
         with state_io.file_lock(_RM_STATE_FILE):
             rm_state = state_io.read_json(_RM_STATE_FILE,
                                           {"positions": {}, "cluster": {}})

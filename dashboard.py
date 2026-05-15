@@ -11,6 +11,7 @@ import json
 import xml.etree.ElementTree as ET
 import engine_core as ec
 import adaptive_risk_engine as are
+import state_io
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
@@ -492,7 +493,10 @@ else:
 
     # Phase 6: load persisted position states from risk monitor
     try:
-        with open("risk_monitor_state.json", "r", encoding="utf-8") as _f:
+        # Sprint 14: state file relocated to the /app/state named volume
+        # (state_io.RM_STATE_FILE) — read-only consumer, path follows the
+        # single shared constant so it never drifts from the writer.
+        with open(state_io.RM_STATE_FILE, "r", encoding="utf-8") as _f:
             _rm_positions = json.load(_f).get("positions", {})
     except Exception:
         _rm_positions = {}
