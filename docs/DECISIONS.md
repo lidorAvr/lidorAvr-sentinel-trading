@@ -868,3 +868,28 @@ The `telegram_bot_secure_runner.py` rate-limit (8 messages / 60s, 90s cooldown) 
 ### Rationale
 
 `telegram_bot_secure_runner.py` is a CLAUDE.md hard constraint. A single-user-admin convenience is not worth loosening anti-spam. Recorded so it is not re-litigated.
+
+---
+
+## DEC-20260515-010 — Manual operator-run `deploy.sh`; `deploy-watcher` not installed
+
+Date: 2026-05-15
+Status: decided (ops)
+
+### Decision
+
+The host `deploy-watcher` systemd service is **not** installed on the Pi (`systemctl restart deploy-watcher` → "Unit not found"), so the Telegram "🔄 Git Pull + Deploy" button has always been a no-op and the real deploy path is a manual SSH command. Going forward the supported deploy path is a new operator-run `deploy.sh` at the repo root. The auto-deploy `deploy-watcher` is **not** installed (founder chose explicit control over auto-deploy). `deploy_watcher.sh` (Sprint 13) stays in the repo for a possible future watcher install but is dormant.
+
+### Rationale
+
+The founder wants deploys under explicit control, not auto-fired by a Telegram tap. `deploy.sh` applies the exact Sprint-13 resilience Mark ruled (MARK_SPRINT13_RULINGS.md §1) — `up -d --build --force-recreate` (no `down`), a forced-IPv4 in-container connectivity self-check, retry-once, and on persistent failure it prints the exact `down && up -d` recovery and exits non-zero (never a fabricated success on a dead bot; never an unattended `down`).
+
+### Constraint
+
+`deploy.sh` is a new standalone file. It does NOT modify `docker-compose.yml` service commands, `deploy_watcher.sh`, `deploy-watcher.service`, `telegram_bot_secure_runner.py`, or any app/risk/NAV/campaign math (CLAUDE.md most-fragile area). Host bash → not unit-testable; `bash -n` clean; manual verification only.
+
+### Alternatives considered
+
+- **Install the `deploy-watcher` systemd service**: makes the Telegram button a live auto-deploy; rejected — founder wants explicit control.
+- **Both watcher + manual script**: deferred; revisit only if unattended auto-deploy is wanted later.
+- **Keep raw `docker compose up -d --build`**: rejected — it is exactly what caused the [Errno 101] stale-bridge outage this session.
