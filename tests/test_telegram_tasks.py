@@ -116,14 +116,34 @@ class TestKeyboard:
         assert any(b.callback_data == "task_refresh" for b in kb.buttons)
         assert any(b.callback_data == "cancel_action" for b in kb.buttons)
 
-    def test_algo_info_only_is_non_tappable_noop(self):
-        tasks = [_task(ec.POSITION_STATE_ALGO_OBSERVED, symbol="SPY",
-                       campaign_id="SPY_1")]
+    def test_algo_consolidated_into_one_panel_no_per_row_noop(self):
+        # #5 / DEC-006 / SPRINT11_DESIGN §3.2: ALGO items collapse into ONE
+        # task_algo_panel entry; the per-row task_algo_noop dead-end popup is
+        # removed entirely. ALGO is never a tappable Task row.
+        tasks = [
+            _task(ec.POSITION_STATE_ALGO_OBSERVED, symbol="SPY",
+                  campaign_id="SPY_1"),
+            _task(ec.POSITION_STATE_ALGO_OBSERVED, symbol="QQQ",
+                  campaign_id="QQQ_1"),
+        ]
         with patch.object(tt, "types", _StubTypes):
             kb = tt.build_tasks_keyboard(tasks)
-        algo = [b for b in kb.buttons if "SPY" in b.text][0]
-        assert algo.callback_data == "task_algo_noop"
+        panels = [b for b in kb.buttons
+                  if b.callback_data == "task_algo_panel"]
+        assert len(panels) == 1                       # exactly ONE
+        assert "ALGO (2)" in panels[0].text           # k = count
+        assert not any(b.callback_data == "task_algo_noop"
+                       for b in kb.buttons)            # popup is dead
         assert not any(b.callback_data.startswith("task_open|")
+                       for b in kb.buttons)            # never a Task row
+
+    def test_zero_algo_no_panel_button(self):
+        # #5 / SPRINT11_DESIGN §3.3: empty ALGO set → no panel button.
+        tasks = [_task(ec.POSITION_STATE_BROKEN, symbol="NVDA",
+                       campaign_id="NVDA_1")]
+        with patch.object(tt, "types", _StubTypes):
+            kb = tt.build_tasks_keyboard(tasks)
+        assert not any(b.callback_data == "task_algo_panel"
                        for b in kb.buttons)
 
     def test_grouped_sorted_p0_first_then_symbol(self):
@@ -378,3 +398,343 @@ class TestInfoOnlyDetail:
         assert not any(c.startswith("task_done|") for c in cbs)
         assert not any(c.startswith("task_skip|") for c in cbs)
         assert "task_open|list" in cbs
+
+
+# ── #4 short inline labels (SPRINT11_DESIGN §2) ───────────────────────────────
+
+class TestShortLabels:
+    def _kb(self, tasks):
+        with patch.object(tt, "types", _StubTypes):
+            return tt.build_tasks_keyboard(tasks)
+
+    def test_label_is_glyph_symbol_tag_and_short(self):
+        kb = self._kb([_task(ec.POSITION_STATE_BROKEN, symbol="NVDA",
+                             campaign_id="NVDA_1")])
+        btn = [b for b in kb.buttons
+               if b.callback_data.startswith("task_open|")][0]
+        assert "NVDA" in btn.text
+        assert "סגור עכשיו" in btn.text          # the EXECUTE_EXIT tag
+        assert "🛑" in btn.text                   # P0 glyph
+        assert len(btn.text) <= 32               # legible on a phone
+
+    def test_every_task_type_has_a_short_tag(self):
+        cases = {
+            ec.POSITION_STATE_BROKEN: "סגור עכשיו",
+            ec.POSITION_STATE_RUNNER: "הדק (Runner)",
+            ec.POSITION_STATE_PROFIT_PROTECTION: "הדק 2R+",
+            ec.POSITION_STATE_YELLOW_FLAG: "דגל צהוב",
+            ec.POSITION_STATE_DEAD_MONEY: "הון מת",
+            ec.POSITION_STATE_DATA_INCOMPLETE: "השלם נתונים",
+        }
+        for st, tag in cases.items():
+            kb = self._kb([_task(st, symbol="AAA", campaign_id="A_1")])
+            txt = " ".join(b.text for b in kb.buttons)
+            assert tag in txt, (st, tag)
+
+    def test_unknown_task_type_falls_back_to_14char_trim(self):
+        rec = {
+            "campaign_id": "X_1", "task_type": "FUTURE_UNKNOWN",
+            "symbol": "X", "urgency": "P2", "info_only": False,
+            "recommended_action": "‏מאוד מאוד ארוך משפט שלא נכנס בכפתור",
+        }
+        with patch.object(tt, "types", _StubTypes):
+            kb = tt.build_tasks_keyboard([rec])
+        btn = [b for b in kb.buttons
+               if b.callback_data.startswith("task_open|")][0]
+        # tag portion is a <=14 char trim, never the full sentence
+        assert "מאוד מאוד" in btn.text
+        assert "שלא נכנס בכפתור" not in btn.text
+
+    def test_detail_card_keeps_full_recommended_action(self):
+        _fake_bot.reset_mock()
+        _setup_msg()
+        rec = {
+            "campaign_id": "CAT_1", "task_type": "PROTECT_RUNNER_PROFIT",
+            "symbol": "CAT", "urgency": "P1", "info_only": False,
+            "recommended_action": "‏🏃 Runner — הדק סטופ לפי ההמלצה (MA50, $123.45). אל תרופף.",
+            "state": ec.POSITION_STATE_RUNNER, "open_r": 5.0,
+            "age_days": 9.0, "reason": "runner",
+        }
+        state = {8001: {"task_records": [rec]}}
+        with patch.object(tt, "types", _StubTypes), \
+             patch.object(tt, "bot", _fake_bot), \
+             patch.object(tt, "user_state", state):
+            tt.handle_task_open(8001, 0)
+        body = _fake_bot.send_message.call_args.args[1]
+        assert "MA50, $123.45" in body          # full text in the card
+        assert "אל תרופף" in body
+
+
+# ── #2 snapshot wording (Mark §3) ─────────────────────────────────────────────
+
+class TestSnapshotWording:
+    def test_detail_card_uses_mark_label_not_old_wording(self):
+        _fake_bot.reset_mock()
+        _setup_msg()
+        rec = {
+            "campaign_id": "CAT_1", "task_type": "REVIEW_YELLOW_FLAG",
+            "symbol": "CAT", "urgency": "P2", "info_only": False,
+            "recommended_action": "בדוק", "state": ec.POSITION_STATE_YELLOW_FLAG,
+            "open_r": 1.2, "age_days": 9.0, "reason": "yf",
+        }
+        state = {8101: {"task_records": [rec]}}
+        with patch.object(tt, "types", _StubTypes), \
+             patch.object(tt, "bot", _fake_bot), \
+             patch.object(tt, "user_state", state):
+            tt.handle_task_open(8101, 0)
+        body = _fake_bot.send_message.call_args.args[1]
+        assert "לא מאומת כעת" not in body                         # old gone
+        assert "ערך בעת יצירת המשימה" in body                     # Mark's exact
+        assert "הרשימה מחושבת מחדש בכל פתיחה" in body
+
+    def test_snapshot_label_is_single_source_constant(self):
+        assert tt._SNAPSHOT_LABEL == (
+            "‏(ערך בעת יצירת המשימה — הרשימה מחושבת מחדש בכל פתיחה)"
+        )
+
+
+# ── #3 cache-and-update-in-place (SPRINT11_DESIGN §1) ─────────────────────────
+
+class TestTasksCache:
+    def _enriched_runner(self, **ov):
+        base = {
+            "symbol": "CAT", "price": 100.0, "quantity": 10,
+            "stop_loss": 95.0, "setup_type": "VCP", "campaign_id": "CAT_1",
+            "entry_date": "2026-05-01",
+        }
+        base.update(ov)
+        return base
+
+    def test_load_tasks_populates_tasks_cache(self):
+        state = {}
+        _ec = MagicMock()
+        _ec.POSITION_STATE_RUNNER = ec.POSITION_STATE_RUNNER
+        with patch.object(tt, "user_state", state), \
+             patch.object(tt, "repo", MagicMock(
+                 get_all_trades=lambda sb: [self._enriched_runner()])), \
+             patch.object(tt, "ec", _ec_for_yellow()), \
+             patch.object(tt, "supabase", MagicMock()), \
+             patch.object(open_tasks, "list_tasks",
+                          lambda sb, e, now: [_task(
+                              ec.POSITION_STATE_YELLOW_FLAG, symbol="CAT",
+                              campaign_id="CAT_1")]):
+            tt._load_tasks(9001)
+        cache = state[9001]["tasks_cache"]
+        assert "records" in cache and "enriched" in cache
+        assert isinstance(cache["built_ts"], float)
+        assert state[9001]["task_records"] is cache["records"]
+
+    def test_lifecycle_action_does_not_re_derive_engine(self):
+        # done → mark_done called once, NO repo/engine re-pipeline on the
+        # post-action re-render (served from cache).
+        _fake_bot.reset_mock(); _setup_msg()
+        recs = [{
+            "campaign_id": "CAT_1", "task_type": "REVIEW_YELLOW_FLAG",
+            "symbol": "CAT", "urgency": "P2", "info_only": False,
+            "recommended_action": "בדוק", "state": ec.POSITION_STATE_YELLOW_FLAG,
+            "open_r": 1.0, "age_days": 5.0, "reason": "",
+            "status": open_tasks.STATUS_OPEN, "closed_local_ts": None,
+        }]
+        cache = {"records": recs, "enriched": [], "data_quality": "live",
+                 "built_ts": __import__("time").time(), "built_iso": "15/05 16:00"}
+        state = {9101: {"tasks_cache": cache, "task_records": recs}}
+        repo_m = MagicMock()
+        ec_m = MagicMock()
+        done = {}
+        with patch.object(tt, "types", _StubTypes), \
+             patch.object(tt, "bot", _fake_bot), \
+             patch.object(tt, "user_state", state), \
+             patch.object(tt, "repo", repo_m), \
+             patch.object(tt, "ec", ec_m), \
+             patch.object(tt, "supabase", MagicMock()), \
+             patch.object(open_tasks, "mark_done",
+                          lambda *a, **k: done.setdefault("n", 0) or
+                          done.update(n=done.get("n", 0) + 1) or True):
+            tt.handle_task_done_confirm(9101, 0, True)
+        assert done["n"] == 1                            # write once
+        assert not repo_m.get_all_trades.called          # no re-fetch
+        assert not ec_m.get_open_positions_campaign.called
+        assert recs[0]["status"] == open_tasks.STATUS_DONE  # in-place flip
+
+    def test_acted_row_dropped_from_rerender_others_kept(self):
+        _fake_bot.reset_mock(); _setup_msg()
+        recs = [
+            {"campaign_id": "A_1", "task_type": "REVIEW_YELLOW_FLAG",
+             "symbol": "AAA", "urgency": "P2", "info_only": False,
+             "recommended_action": "x", "state": ec.POSITION_STATE_YELLOW_FLAG,
+             "status": open_tasks.STATUS_OPEN, "closed_local_ts": None},
+            {"campaign_id": "B_1", "task_type": "REVIEW_YELLOW_FLAG",
+             "symbol": "BBB", "urgency": "P2", "info_only": False,
+             "recommended_action": "y", "state": ec.POSITION_STATE_YELLOW_FLAG,
+             "status": open_tasks.STATUS_OPEN, "closed_local_ts": None},
+        ]
+        cache = {"records": recs, "enriched": [], "data_quality": "live",
+                 "built_ts": __import__("time").time(), "built_iso": "x"}
+        state = {9201: {"tasks_cache": cache, "task_records": recs}}
+        with patch.object(tt, "types", _StubTypes), \
+             patch.object(tt, "bot", _fake_bot), \
+             patch.object(tt, "user_state", state):
+            tt._apply_local_status(9201, 0, open_tasks.STATUS_DONE)
+        assert recs[0]["status"] == open_tasks.STATUS_DONE
+        assert recs[1]["status"] == open_tasks.STATUS_OPEN   # untouched
+        kb = _fake_bot.send_message.call_args.kwargs["reply_markup"]
+        # only the still-open BBB row remains tappable
+        txt = " ".join(b.text for b in kb.buttons)
+        assert "BBB" in txt and "AAA" not in txt
+
+    def test_cache_miss_falls_back_to_full_load(self):
+        called = {}
+        state = {9301: {}}   # no tasks_cache
+        with patch.object(tt, "user_state", state), \
+             patch.object(tt, "handle_open_tasks_entry",
+                          lambda c: called.setdefault("reload", c)):
+            tt._apply_local_status(9301, 0, open_tasks.STATUS_DONE)
+        assert called.get("reload") == 9301
+
+    def test_stale_cache_triggers_rebuild_on_entry(self):
+        old = __import__("time").time() - 9999     # way past TTL
+        state = {9401: {"tasks_cache": {"records": [], "built_ts": old}}}
+        with patch.object(tt, "user_state", state):
+            assert tt._cache_valid(9401) is False
+
+    def test_fresh_cache_is_valid(self):
+        state = {9402: {"tasks_cache": {
+            "records": [], "built_ts": __import__("time").time()}}}
+        with patch.object(tt, "user_state", state):
+            assert tt._cache_valid(9402) is True
+
+    def test_explicit_refresh_discards_cache_and_rederives(self):
+        called = {}
+        state = {9501: {"tasks_cache": {"records": [{"x": 1}],
+                                        "built_ts": __import__("time").time()}}}
+        with patch.object(tt, "user_state", state), \
+             patch.object(tt, "handle_open_tasks_entry",
+                          lambda c: called.setdefault("entry", c)):
+            tt.handle_task_refresh(9501)
+        assert "tasks_cache" not in state[9501]      # cache discarded
+        assert called["entry"] == 9501               # re-derive path taken
+
+    def test_entry_serves_from_fresh_cache_without_load(self):
+        _fake_bot.reset_mock(); _setup_msg()
+        recs = [{"campaign_id": "C_1", "task_type": "REVIEW_YELLOW_FLAG",
+                 "symbol": "CCC", "urgency": "P2", "info_only": False,
+                 "recommended_action": "z", "state": ec.POSITION_STATE_YELLOW_FLAG,
+                 "status": open_tasks.STATUS_OPEN, "closed_local_ts": None}]
+        state = {9601: {"tasks_cache": {
+            "records": recs, "enriched": [], "data_quality": "live",
+            "built_ts": __import__("time").time(), "built_iso": "15/05 16:00"}}}
+        load_called = {}
+        with patch.object(tt, "types", _StubTypes), \
+             patch.object(tt, "bot", _fake_bot), \
+             patch.object(tt, "user_state", state), \
+             patch.object(tt, "_load_tasks",
+                          lambda c: load_called.setdefault("x", 1) or ([], "live", None)):
+            tt.handle_open_tasks_entry(9601)
+        assert "x" not in load_called                # never re-derived
+        txt = " ".join(
+            b.text for c in _fake_bot.send_message.call_args_list
+            if c.kwargs.get("reply_markup")
+            for b in c.kwargs["reply_markup"].buttons
+        )
+        assert "CCC" in txt
+
+
+def _ec_for_yellow():
+    m = MagicMock()
+    m.POSITION_STATE_RUNNER = ec.POSITION_STATE_RUNNER
+    m.POSITION_STATE_ALGO_OBSERVED = ec.POSITION_STATE_ALGO_OBSERVED
+    m.get_open_positions_campaign.return_value = {
+        "ok": True, "error": None,
+        "data": pd.DataFrame([{
+            "symbol": "CAT", "price": 100.0, "quantity": 10,
+            "stop_loss": 95.0, "setup_type": "VCP", "campaign_id": "CAT_1",
+            "entry_date": "2026-05-01",
+        }]),
+    }
+    m.get_live_price.return_value = 110.0
+    m.get_campaign_risk_metrics.return_value = {"original_risk": 100.0}
+    m.classify_management_mode.return_value = "manual_managed"
+    m.compute_position_state.return_value = {
+        "state": ec.POSITION_STATE_YELLOW_FLAG, "label": "yf",
+        "event_risk": {}, "reason": "",
+    }
+    return m
+
+
+# ── #5 consolidated ALGO panel (DEC-006 / Mark §2) ────────────────────────────
+
+class TestAlgoPanel:
+    def _algo_cache(self, mark_fallback=False):
+        rec = {
+            "campaign_id": "SPY_1", "task_type": "ALGO_OBSERVE_ONLY",
+            "symbol": "SPY", "urgency": "P3", "info_only": True,
+            "recommended_action": "‏🤖 ALGO — בקרה בלבד.",
+            "state": ec.POSITION_STATE_ALGO_OBSERVED,
+            "status": open_tasks.STATUS_OPEN, "closed_local_ts": None,
+        }
+        if not mark_fallback:
+            rec["_algo_observed"] = {
+                "symbol": "SPY", "state_label": "🤖 ALGO — פיקוח בלבד",
+                "risk_basis": "Target", "external_stop": None,
+            }
+        return {"records": [rec], "enriched": [], "data_quality": "live",
+                "built_ts": __import__("time").time(), "built_iso": "15/05 16:00"}
+
+    def test_panel_renders_disclaimer_and_observation_from_cache(self):
+        _fake_bot.reset_mock(); _setup_msg()
+        state = {9701: {"tasks_cache": self._algo_cache()}}
+        ec_m = MagicMock()
+        with patch.object(tt, "types", _StubTypes), \
+             patch.object(tt, "bot", _fake_bot), \
+             patch.object(tt, "user_state", state), \
+             patch.object(tt, "ec", ec_m), \
+             patch.object(tt, "_load_tasks",
+                          lambda c: (_ for _ in ()).throw(
+                              AssertionError("must not re-derive"))):
+            tt.handle_algo_panel(9701)
+        body = _fake_bot.send_message.call_args.args[1]
+        # mandatory disclaimer first; descriptive, non-binding
+        assert "מנוהל חיצונית. בקרה בלבד." in body
+        assert "אינו ממליץ" in body
+        assert "לא הוראת פעולה" in body
+        assert "מצב נצפה" in body              # descriptive observation line
+        assert "סטופ חיצוני: לא ידוע" in body  # no fabricated stop
+        # no imperative verbs
+        for verb in ("הדק", "צא", "מכור", "צמצם", "העלה סטופ"):
+            assert verb not in body, verb
+        kb = _fake_bot.send_message.call_args.kwargs["reply_markup"]
+        cbs = {b.callback_data for b in kb.buttons}
+        assert cbs == {"task_open|list"}       # only back; no done/skip/note
+
+    def test_panel_never_calls_engine_management_for_algo(self):
+        _fake_bot.reset_mock(); _setup_msg()
+        state = {9702: {"tasks_cache": self._algo_cache()}}
+        ec_m = MagicMock()
+        with patch.object(tt, "types", _StubTypes), \
+             patch.object(tt, "bot", _fake_bot), \
+             patch.object(tt, "user_state", state), \
+             patch.object(tt, "ec", ec_m):
+            tt.handle_algo_panel(9702)
+        assert not ec_m.build_management_action.called
+        assert not ec_m.compute_suggested_trail_stop.called
+
+    def test_panel_external_stop_only_if_algo_exposes_it(self):
+        _fake_bot.reset_mock(); _setup_msg()
+        cache = self._algo_cache()
+        cache["records"][0]["_algo_observed"]["external_stop"] = 157.70
+        state = {9703: {"tasks_cache": cache}}
+        with patch.object(tt, "types", _StubTypes), \
+             patch.object(tt, "bot", _fake_bot), \
+             patch.object(tt, "user_state", state), \
+             patch.object(tt, "ec", MagicMock()):
+            tt.handle_algo_panel(9703)
+        body = _fake_bot.send_message.call_args.args[1]
+        assert "$157.70" in body
+
+    def test_algo_observe_only_never_settable_status_not_counted(self):
+        # ALGO_OBSERVE_ONLY stays info_only in the ruleset (never a Task /
+        # never counted). DEC-006 is UX-only; the ruleset is unchanged.
+        entry = open_tasks._RULESET[ec.POSITION_STATE_ALGO_OBSERVED][0]
+        assert entry.info_only is True
+        assert entry.task_type == "ALGO_OBSERVE_ONLY"
+        assert entry.suppress_when is None

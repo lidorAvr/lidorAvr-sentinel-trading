@@ -1,14 +1,19 @@
 """
-audit_logger.py — write-only compliance trail.
+audit_logger.py — write-only compliance trail (+ one additive SELECT-only
+retrospective read, DEC-20260515-008).
 
-Records state-changing actions to Supabase `audit_log` (migration 002). Reads
-are intentionally not exposed here — the table is queried directly via
-Supabase for forensic investigation; the application layer never needs to
-read its own audit trail.
+Records state-changing actions to Supabase `audit_log` (migration 002). The
+module is write-only *in spirit*: ``log_action`` is the only mutating path.
+DEC-20260515-008 adds ONE deliberate, additive, clearly-named READ path
+(``read_recent_actions``) so the *user* can review their own recorded
+decisions. It shares NONE of ``log_action``'s write path: it is SELECT-only,
+hard-capped, fail-soft, and physically cannot insert/update/delete.
 
 Design rules:
   - Fail-open. Never raise from log_action(); never block business logic.
     A missing audit row is better than a refused user action.
+  - ``read_recent_actions`` is fail-soft: any error → ``[]`` (a read failure
+    must never raise into a user flow), SELECT-only, never mutates.
   - Dependency-injected Supabase client (same pattern as supabase_repository).
   - No imports from bot_core / telegram_* — keeps audit usable from any layer
     (CLI, scheduler, tests) without bot startup.
@@ -31,6 +36,11 @@ ACTION_SETTINGS_CHANGE   = "settings_change"
 ACTION_TELEGRAM_ALERT    = "telegram_alert_send"
 
 _AUDIT_TABLE = "audit_log"
+
+# DEC-20260515-008 / Mark §4 — bounded N for the read-only retrospective
+# surface. A read can NEVER return more than this many rows regardless of the
+# caller's requested limit (read-only guardrail; no unbounded scan).
+_MAX_READ = 50
 
 
 def log_action(
@@ -67,3 +77,60 @@ def log_action(
         print(f"[audit_logger] failed action={action}: {type(e).__name__}: {e}",
               file=sys.stderr, flush=True)
         return False
+
+
+def read_recent_actions(
+    sb: Any,
+    *,
+    chat_id: Optional[int] = None,
+    limit: int = 20,
+    actions: Optional[list] = None,
+) -> list:
+    """Read-only, bounded retrospective view of recorded actions
+    (DEC-20260515-008 / Mark §4).
+
+    SELECT-only. NEVER inserts/updates/deletes — it shares none of
+    ``log_action``'s write path. Returns at most ``limit`` rows (hard-capped
+    at ``_MAX_READ`` = 50), most-recent-first (``ORDER BY created_at DESC`` —
+    relies on audit_log's own stored timestamp; no fabricated ordering).
+    ``actions`` optionally filters to a whitelist of action constants. On any
+    error returns ``[]`` and logs to stderr (same fail-soft posture as
+    ``log_action`` — a read failure must never raise into a user flow).
+    Honest: returns rows exactly as stored; callers must label the data
+    source and must NOT derive performance numbers from these rows
+    (Mark §4 D3/D4; AGENTS.md #1).
+    """
+    if sb is None:
+        return []
+    try:
+        n = max(1, min(int(limit), _MAX_READ))
+    except (TypeError, ValueError):
+        n = _MAX_READ
+    try:
+        q = (
+            sb.table(_AUDIT_TABLE)
+            .select(
+                "action,chat_id,before_state,after_state,metadata,created_at"
+            )
+            .order("created_at", desc=True)
+            .limit(n)
+        )
+        if chat_id is not None:
+            try:
+                q = q.eq("chat_id", int(chat_id))
+            except (TypeError, ValueError):
+                pass
+        if actions:
+            q = q.in_("action", list(actions))
+        res = q.execute()
+        rows = (res.data if res and getattr(res, "data", None) else []) or []
+        return list(rows)
+    except Exception as e:
+        # Fail-soft: a read failure must never raise into a user flow.
+        print(
+            f"[audit_logger] read_recent_actions failed: "
+            f"{type(e).__name__}: {e}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return []

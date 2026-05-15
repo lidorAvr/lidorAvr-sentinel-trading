@@ -43,6 +43,8 @@ from telegram_stop_promote import (handle_stop_promote_entry,  # noqa: E402 — 
 
 from telegram_tasks import (handle_open_tasks_entry,  # noqa: E402 — re-exported for telegram_callbacks lazy import
                             handle_task_open,
+                            handle_task_refresh,
+                            handle_algo_panel,
                             handle_task_done,
                             handle_task_done_confirm,
                             handle_task_skip,
@@ -50,6 +52,8 @@ from telegram_tasks import (handle_open_tasks_entry,  # noqa: E402 — re-export
                             handle_task_skip_reason,
                             handle_task_note,
                             handle_task_add_note)
+
+from telegram_audit_review import handle_my_actions  # noqa: E402 — re-exported for telegram_callbacks lazy import
 
 @bot.message_handler(content_types=['document'])
 def handle_document_upload(message):
@@ -301,6 +305,7 @@ def handle_all_messages(message):
             f"{RTL}───────────────\n"
             f"{RTL}/portfolio — חדר מצב\n"
             f"{RTL}/tasks — משימות פתוחות (Action-Items)\n"
+            f"{RTL}/myactions — הפעולות שלי (יומן ביקורת)\n"
             f"{RTL}/trade SYMBOL — ניתוח עומק לפוזיציה\n"
             f"{RTL}/mentor SYMBOL — Trend Template מלא\n"
             f"{RTL}/analyze SYMBOL — ניתוח VCP מינרביני\n"
@@ -406,6 +411,10 @@ def handle_all_messages(message):
 
     if text in ["📋 משימות פתוחות", "/tasks"]:
         handle_open_tasks_entry(chat_id)
+        return
+
+    if text in ["🧾 הפעולות שלי", "/myactions"]:
+        handle_my_actions(chat_id)
         return
 
     if text in ["🎯 קידום סטופ", "/promote"]:

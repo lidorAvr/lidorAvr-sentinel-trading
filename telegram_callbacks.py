@@ -85,8 +85,23 @@ def handle_queries(call):
         return
 
     if data == "task_refresh":
+        # #3 / SPRINT11_DESIGN §1.3 — explicit refresh ALWAYS re-derives
+        # (discards the cache; the engine is re-consulted as source of truth).
         bot.answer_callback_query(call.id)
-        _tb.handle_open_tasks_entry(chat_id)
+        _tb.handle_task_refresh(chat_id)
+        return
+
+    if data == "task_algo_panel":
+        # #5 / DEC-006 — observation-only consolidated ALGO read-out card.
+        # NOT a Task: no done/skip/note, never counted (Mark §2.3).
+        bot.answer_callback_query(call.id)
+        _tb.handle_algo_panel(chat_id)
+        return
+
+    if data == "myactions_refresh":
+        # #9 / DEC-008 — re-read the SELECT-only audit surface.
+        bot.answer_callback_query(call.id)
+        _tb.handle_my_actions(chat_id)
         return
 
     if data.startswith("task_open|"):

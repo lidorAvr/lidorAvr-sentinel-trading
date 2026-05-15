@@ -150,13 +150,26 @@ class TestBuildKeyboard:
         picks = [b for b in kb.buttons if b.callback_data.startswith("promote_pick|")]
         assert {b.callback_data for b in picks} == {"promote_pick|0", "promote_pick|1"}
 
-    def test_algo_position_not_promotable(self):
+    def test_algo_position_not_rendered_at_all(self):
+        # #7 / SPRINT11_DESIGN §4.1: ALGO rows are skipped entirely — no info
+        # button, no promote_algo_noop dead-end (Sentinel never manages ALGO
+        # stops; the discretionary-only flow shows no ALGO noise).
         kb = self._build([_pos(symbol="QQQ", setup_type="ALGO", campaign_id="QQQ_1")])
-        algo_btns = [b for b in kb.buttons if "QQQ" in b.text]
-        assert algo_btns
-        # ALGO button must NOT be a promote_pick — it's a no-op info button
-        assert algo_btns[0].callback_data == "promote_algo_noop"
+        assert not any("QQQ" in b.text for b in kb.buttons)
+        assert not any(b.callback_data == "promote_algo_noop" for b in kb.buttons)
         assert not any(b.callback_data.startswith("promote_pick|") for b in kb.buttons)
+
+    def test_mixed_algo_and_disc_only_disc_rendered(self):
+        # Mixed: discretionary buttons present, ALGO skipped (no noop).
+        kb = self._build([
+            _pos(symbol="CAT", campaign_id="CAT_1", setup_type="VCP"),
+            _pos(symbol="QQQ", campaign_id="QQQ_1", setup_type="ALGO"),
+        ], live_price=120.0)
+        picks = [b for b in kb.buttons if b.callback_data.startswith("promote_pick|")]
+        assert len(picks) == 1
+        assert "CAT" in picks[0].text
+        assert not any("QQQ" in b.text for b in kb.buttons)
+        assert not any(b.callback_data == "promote_algo_noop" for b in kb.buttons)
 
     def test_missing_initial_stop_shows_na(self):
         kb = self._build([_pos(initial_stop=0)], live_price=120.0)

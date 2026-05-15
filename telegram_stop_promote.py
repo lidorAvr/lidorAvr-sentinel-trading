@@ -84,9 +84,9 @@ def build_stop_promote_keyboard(positions):
     """Inline keyboard: one symbol-labelled button per discretionary position.
 
     positions: list of open-position dicts (the ``temp_positions`` records).
-    Returns an InlineKeyboardMarkup. ALGO positions get a disabled-style
-    info button (callback ``promote_algo_noop``) so the user understands
-    why they cannot promote them — Sentinel does not manage ALGO stops.
+    Returns an InlineKeyboardMarkup. ALGO positions are skipped entirely
+    (Sprint-11 #7) — Sentinel never manages ALGO stops, so an ALGO row in
+    a stop-promotion list is pure noise (no button, no dead-end popup).
     """
     account_settings = get_account_settings()
     _acc, target_risk_usd, _stale = get_nav_and_risk(account_settings)
@@ -95,13 +95,12 @@ def build_stop_promote_keyboard(positions):
     for idx, row in enumerate(positions):
         sym = row.get("symbol", "?")
         setup = str(row.get("setup_type", "")).upper()
-        open_r, _curr = _compute_open_r(row, target_risk_usd)
         if setup == "ALGO":
-            markup.add(types.InlineKeyboardButton(
-                f"🟠 {sym} — מנוהל חיצונית (ALGO)",
-                callback_data="promote_algo_noop",
-            ))
+            # #7 / SPRINT11_DESIGN §4.1 — Sentinel never manages ALGO stops;
+            # ALGO rows are pure noise in this discretionary-only flow. Skip
+            # them entirely (no info button, no promote_algo_noop dead-end).
             continue
+        open_r, _curr = _compute_open_r(row, target_risk_usd)
         if open_r is None:
             r_label = "R N/A"
         else:
@@ -156,14 +155,33 @@ def handle_stop_promote_entry(chat_id):
         disc = [r for r in records if str(r.get("setup_type", "")).upper() != "ALGO"]
         algo_n = len(records) - len(disc)
 
+        # #7 / SPRINT11_DESIGN §4.2 — with ALGO rows no longer rendered, the
+        # all-ALGO case must be an explicit early empty-state (the keyboard
+        # would otherwise be just "❌ סגור"). Mirrors this module's own
+        # "אין פוזיציות פתוחות" early-return path.
+        if not disc:
+            try:
+                bot.delete_message(chat_id, loading.message_id)
+            except Exception:
+                pass
+            bot.send_message(
+                chat_id,
+                f"{RTL}🎯 *קידום סטופ*\n"
+                f"{RTL}אין פוזיציות דיסקרציוניות לקידום סטופ.\n"
+                f"{RTL}כל הפוזיציות הפתוחות מנוהלות חיצונית (ALGO) — "
+                f"Sentinel אינה מנהלת סטופים של אלגו.",
+                reply_markup=get_portfolio_menu(), parse_mode="Markdown",
+            )
+            return
+
         header = (
             f"{RTL}🎯 *קידום סטופ — בחר פוזיציה*\n"
             f"{RTL}לחיצה אחת בוחרת קמפיין. אין צורך להקליד מספר.\n"
         )
-        if not disc:
-            header += f"{RTL}\n⚠️ כל הפוזיציות הפתוחות הן ALGO — Sentinel אינה מנהלת סטופים של אלגו."
-        elif algo_n:
-            header += f"{RTL}_(פוזיציות ALGO מסומנות 🟠 ואינן ניתנות לקידום — מנוהל חיצונית.)_"
+        if algo_n:
+            # Mixed case: ALGO buttons are gone, so the note is reworded
+            # (SPRINT11_DESIGN §4.2 — pure UX, methodology-neutral).
+            header += f"{RTL}_(פוזיציות ALGO אינן מוצגות — מנוהל חיצונית.)_"
 
         try:
             bot.delete_message(chat_id, loading.message_id)

@@ -115,6 +115,13 @@ class RuleEntry:
     urgency: Optional[str]   # "P0".."P3" or None (DATA_INCOMPLETE: no tier)
     info_only: bool
     action_he: str           # Hebrew template; may contain {basis}/{stop}
+    # DEC-20260515-007 / Mark §1.3: declarative suppression key. The string is
+    # interpreted by derive_tasks (NOT new math) — RUNNER's
+    # "current_stop_meets_suggested_within_trail_ma_buffer" suppresses a
+    # redundant no-op tighten when the engine's own suggested stop is already
+    # satisfied within the engine's own MA buffer. Default None = no
+    # suppression (every non-RUNNER row).
+    suppress_when: Optional[str] = None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -141,13 +148,16 @@ _RULESET: dict[str, list[RuleEntry]] = {
         ),
     ],
     # spec: §1 row T3 (RUNNER, P1, action embeds compute_suggested_trail_stop
-    #       output verbatim — {basis}/{stop} — never a self-computed stop; G4)
+    #       output verbatim — {basis}/{stop} — never a self-computed stop; G4).
+    #       suppress_when: Mark §1.3 / DEC-20260515-007 — read-only no-op
+    #       suppression vs the engine's own suggested stop (no new math).
     ec.POSITION_STATE_RUNNER: [
         RuleEntry(
             task_type="PROTECT_RUNNER_PROFIT",
             urgency="P1",
             info_only=False,
             action_he="‏🏃 Runner — הדק סטופ לפי ההמלצה ({basis}, ${stop}). אל תרופף.",
+            suppress_when="current_stop_meets_suggested_within_trail_ma_buffer",
         ),
     ],
     # spec: §1 row T6 (YELLOW_FLAG, P2, "‏🟡 דגל צהוב — בדוק חריגה, החלט אם להדק/לצאת.")
@@ -284,6 +294,60 @@ def _render_action(template: str, position: dict) -> str:
     return template.format(basis=basis, stop=f"{float(stop):.2f}")
 
 
+# DEC-20260515-007 / Mark §1 — the ONLY suppression key the ruleset declares.
+# Kept as a named constant so derive_tasks dispatches on the spec string, not a
+# magic literal scattered in logic.
+_SUPPRESS_RUNNER_WITHIN_TRAIL_BUFFER = (
+    "current_stop_meets_suggested_within_trail_ma_buffer"
+)
+
+
+def _runner_task_suppressed(position: dict) -> bool:
+    """DEC-20260515-007 / Mark §1.2 — read-only no-op RUNNER suppression.
+
+    Returns True only when the campaign's already-stored ``current_stop`` is
+    ALREADY at or beyond the engine's OWN ``compute_suggested_trail_stop()``
+    suggestion, within the engine's OWN MA buffer. This is a comparison of two
+    engine-produced numbers — it computes **no** new R/NAV/exposure/campaign
+    math (G1; AGENTS.md #2; CLAUDE.md). ``_TRAIL_MA_BUFFER_PCT`` is read LIVE
+    from ``engine_core`` (Mark §1.1 — never hard-copied).
+
+    Tighten-only: suppression triggers only when the stop is already protected;
+    it never produces, recommends, or implies a *lower* stop, so it cannot
+    conflict with the ratchet-up rule (Mark §1.2).
+
+    Honest on absent/invalid engine output: ``suggested_stop is None`` /
+    ``basis == "none"`` / ``current_stop <= 0`` → NOT suppressed (the task IS
+    emitted — never suppress on missing engine output; AGENTS.md #1).
+    """
+    trail = position.get("trail_stop") or {}
+    S = trail.get("suggested_stop")
+    B = trail.get("basis")
+    if S is None or B == "none":
+        return False
+    C = position.get("current_stop")
+    try:
+        S = float(S)
+        if C is None:
+            return False
+        C = float(C)
+    except (TypeError, ValueError):
+        return False
+    if C <= 0 or S <= 0:
+        return False
+    # ε = _TRAIL_MA_BUFFER_PCT × suggested_stop, the constant read LIVE from
+    # engine_core (Mark §1.1 ruling — anchored, never invented/hard-copied).
+    epsilon = ec._TRAIL_MA_BUFFER_PCT * S
+    side = str(position.get("side", "BUY")).upper()
+    if side in ("SELL", "SHORT"):
+        # Short side is symmetric (Mark §1.2): already-protected = stop at or
+        # below suggested + ε.
+        return C <= S + epsilon
+    # Long (the only side in this Minervini long-momentum data model): already
+    # protected = stop at or above suggested − ε.
+    return C >= S - epsilon
+
+
 def derive_tasks(
     positions: list,
     *,
@@ -335,6 +399,17 @@ def derive_tasks(
         reason = str(sr.get("reason", ""))
 
         for entry in entries:
+            # DEC-20260515-007 / Mark §1: suppress a redundant no-op RUNNER
+            # tighten when the engine's own suggested stop is already met
+            # within the engine's own MA buffer. Read-only over the engine
+            # output; a *material* tighten (gap > ε) still surfaces. The
+            # RUNNER position state itself is unchanged — only this one
+            # action-item is withheld (Mark §1.2).
+            if (
+                entry.suppress_when == _SUPPRESS_RUNNER_WITHIN_TRAIL_BUFFER
+                and _runner_task_suppressed(pos)
+            ):
+                continue
             snap = TriggerSnapshot(
                 state=state,
                 open_r=open_r,

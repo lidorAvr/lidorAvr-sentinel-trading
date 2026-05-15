@@ -100,6 +100,143 @@ class TestDerivationPerState:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# #1 / DEC-20260515-007 — RUNNER no-op suppression (read-only, ε anchored)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestRunnerSuppression:
+    """Mark §1 / DEC-007: PROTECT_RUNNER_PROFIT is suppressed only when the
+    already-stored campaign stop already satisfies the engine's OWN suggested
+    trail stop within the engine's OWN MA buffer. ε reads the LIVE constant
+    (never hard-copied). Read-only over engine output; a material tighten
+    still surfaces; absent/invalid engine output never suppresses."""
+
+    def _runner(self, *, suggested, basis, current_stop, side="BUY"):
+        p = _pos(
+            ec.POSITION_STATE_RUNNER,
+            trail_stop={"suggested_stop": suggested, "basis": basis},
+        )
+        p["current_stop"] = current_stop
+        p["side"] = side
+        return p
+
+    def test_epsilon_reads_live_engine_constant_not_hardcoded(self):
+        # The suppression must consume the live engine constant; assert by
+        # flexing it and watching the boundary move (proves no hard copy).
+        import re
+        src = (Path(__file__).resolve().parents[1] / "open_tasks.py").read_text()
+        # No bare 0.02 literal introduced into open_tasks for the epsilon.
+        assert "_TRAIL_MA_BUFFER_PCT * S" in src
+        assert "ec._TRAIL_MA_BUFFER_PCT" in src
+
+    def test_noop_tighten_is_suppressed_mrvl_case(self):
+        # SPRINT11_PLAN #1 MRVL: suggested 158.11, current 157.70 → gap 0.41
+        # ≪ ε (≈2% of 158.11 ≈ 3.16) → suppressed (the founder no-op).
+        tasks = open_tasks.derive_tasks(
+            [self._runner(suggested=158.11, basis="MA50", current_stop=157.70)],
+            now=_NOW,
+        )
+        assert not any(t.task_type == "PROTECT_RUNNER_PROFIT" for t in tasks)
+
+    def test_material_tighten_still_surfaces(self):
+        # current 150 vs suggested 158.11 → gap 8.11 > ε → NOT suppressed.
+        tasks = open_tasks.derive_tasks(
+            [self._runner(suggested=158.11, basis="MA50", current_stop=150.0)],
+            now=_NOW,
+        )
+        assert any(t.task_type == "PROTECT_RUNNER_PROFIT" for t in tasks)
+
+    def test_epsilon_exactly_at_engine_constant(self):
+        ec_buf = ec._TRAIL_MA_BUFFER_PCT
+        S = 100.0
+        eps = ec_buf * S
+        # current == S - eps → boundary is inclusive (>=) → suppressed.
+        tasks = open_tasks.derive_tasks(
+            [self._runner(suggested=S, basis="MA21", current_stop=S - eps)],
+            now=_NOW,
+        )
+        assert not any(t.task_type == "PROTECT_RUNNER_PROFIT" for t in tasks)
+        # just below the band → surfaces.
+        tasks2 = open_tasks.derive_tasks(
+            [self._runner(suggested=S, basis="MA21",
+                          current_stop=S - eps - 0.01)],
+            now=_NOW,
+        )
+        assert any(t.task_type == "PROTECT_RUNNER_PROFIT" for t in tasks2)
+
+    def test_none_suggested_never_suppressed(self):
+        # Absent engine output → task IS emitted (no fallback-as-truth).
+        tasks = open_tasks.derive_tasks(
+            [self._runner(suggested=None, basis="none", current_stop=999.0)],
+            now=_NOW,
+        )
+        assert any(t.task_type == "PROTECT_RUNNER_PROFIT" for t in tasks)
+
+    def test_basis_none_never_suppressed(self):
+        tasks = open_tasks.derive_tasks(
+            [self._runner(suggested=100.0, basis="none", current_stop=999.0)],
+            now=_NOW,
+        )
+        assert any(t.task_type == "PROTECT_RUNNER_PROFIT" for t in tasks)
+
+    def test_nonpositive_current_stop_never_suppressed(self):
+        tasks = open_tasks.derive_tasks(
+            [self._runner(suggested=100.0, basis="MA21", current_stop=0.0)],
+            now=_NOW,
+        )
+        assert any(t.task_type == "PROTECT_RUNNER_PROFIT" for t in tasks)
+
+    def test_missing_current_stop_key_never_suppressed(self):
+        # The plain _pos() RUNNER (no current_stop) must still emit T3 — the
+        # suppression is opt-in on engine-supplied data.
+        tasks = open_tasks.derive_tasks(
+            [_pos(ec.POSITION_STATE_RUNNER,
+                  trail_stop={"suggested_stop": 100.0, "basis": "MA21"})],
+            now=_NOW,
+        )
+        assert any(t.task_type == "PROTECT_RUNNER_PROFIT" for t in tasks)
+
+    def test_short_side_symmetric_suppression(self):
+        ec_buf = ec._TRAIL_MA_BUFFER_PCT
+        S = 100.0
+        eps = ec_buf * S
+        # Short: protected = current <= S + eps → suppressed.
+        tasks = open_tasks.derive_tasks(
+            [self._runner(suggested=S, basis="MA21",
+                          current_stop=S + eps, side="SELL")],
+            now=_NOW,
+        )
+        assert not any(t.task_type == "PROTECT_RUNNER_PROFIT" for t in tasks)
+        tasks2 = open_tasks.derive_tasks(
+            [self._runner(suggested=S, basis="MA21",
+                          current_stop=S + eps + 0.01, side="SELL")],
+            now=_NOW,
+        )
+        assert any(t.task_type == "PROTECT_RUNNER_PROFIT" for t in tasks2)
+
+    def test_suppression_does_not_change_runner_state_or_other_tasks(self):
+        # Only the action-item is withheld — a co-located non-RUNNER task is
+        # unaffected (suppression is per-entry, read-only).
+        runner = self._runner(suggested=100.0, basis="MA21", current_stop=99.0)
+        broken = _pos(ec.POSITION_STATE_BROKEN, symbol="X", campaign_id="X_1")
+        tasks = open_tasks.derive_tasks([runner, broken], now=_NOW)
+        types_ = {t.task_type for t in tasks}
+        assert "PROTECT_RUNNER_PROFIT" not in types_   # suppressed
+        assert "EXECUTE_EXIT" in types_                # untouched
+
+    def test_ruleset_runner_carries_exact_spec_suppress_when(self):
+        entry = open_tasks._RULESET[ec.POSITION_STATE_RUNNER][0]
+        assert entry.suppress_when == (
+            "current_stop_meets_suggested_within_trail_ma_buffer"
+        )
+        # Every other ruleset entry has no suppression key.
+        for st, entries in open_tasks._RULESET.items():
+            if st == ec.POSITION_STATE_RUNNER:
+                continue
+            for e in entries:
+                assert e.suppress_when is None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # §4.2 — ALGO_OBSERVED info-only
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -467,6 +604,10 @@ def test_ruleset_matches_methodology_spec():
                 "urgency": e.urgency,
                 "info_only": e.info_only,
                 "action_he": e.action_he,
+                # DEC-20260515-007 / Mark §1.3: suppress_when is part of the
+                # spec↔runtime lockstep. Absent in YAML → None (the parser
+                # only emits keys present per entry).
+                "suppress_when": e.suppress_when,
             }
             for e in entries
         ]
@@ -485,6 +626,13 @@ def test_ruleset_matches_methodology_spec():
             assert se["action_he"] == ce["action_he"], (
                 f"{state} action drifted:\nspec={se['action_he']!r}\n"
                 f"code={ce['action_he']!r}"
+            )
+            # Lockstep on the new declarative suppression key (Mark §1.3 /
+            # checkpoint guardrail #3). Spec omits it → None; code omits it
+            # → None; RUNNER carries the exact spec string on both sides.
+            assert se.get("suppress_when") == ce["suppress_when"], (
+                f"{state} suppress_when drifted:\n"
+                f"spec={se.get('suppress_when')!r}\ncode={ce['suppress_when']!r}"
             )
 
 

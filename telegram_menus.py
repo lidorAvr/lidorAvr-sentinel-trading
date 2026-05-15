@@ -33,6 +33,10 @@ def get_portfolio_menu():
     markup.add(telebot.types.KeyboardButton("📋 משימות פתוחות"))
     markup.add(telebot.types.KeyboardButton("🎯 קידום סטופ"))
     markup.add(telebot.types.KeyboardButton("🌡️ משטר שוק וסיכונים"))
+    # #9 / DEC-20260515-008 — user-facing audit review. NORMAL user menu
+    # (a first-class self-review need, not dev/forensic); NEVER in
+    # get_developer_menu(). Last action row, directly above "back to main".
+    markup.add(telebot.types.KeyboardButton("🧾 הפעולות שלי"))
     markup.add(telebot.types.KeyboardButton("⬅️ חזרה לתפריט ראשי"))
     return markup
 

@@ -28,6 +28,7 @@ Red lines respected
 * Honest stale/fallback labels (CLAUDE.md / AGENTS.md #1).
 * Admin guard / secure runner untouched; `telegram_bot.py` not rewritten.
 """
+import time
 from datetime import datetime, timezone
 
 from telebot import types
@@ -56,6 +57,38 @@ _BAND_ICON = {
     "P3": "🔵",
     None: "ℹ️",
 }
+
+# #3 / SPRINT11_DESIGN §1.3 — cache staleness TTL. 180s matches the
+# engine_core YF_CACHE TTL (DEC-20260509-001 / -003 cadence) so the rendered
+# snapshot never out-lives the price layer it was derived from. A cache hit
+# serves ONLY lifecycle re-renders; explicit refresh / TTL-exceeded / absent
+# cache always re-derives via the full engine pipeline (engine = source of
+# truth on every true build).
+_TASKS_CACHE_TTL_S = 180
+
+# #2 / Mark §3 — the SINGLE Mark-approved honest snapshot label. Used wherever
+# the snapshot value is shown (detail card today; the cached header reuses the
+# same one source). States plainly: value at task creation; the live list
+# re-derives every open. No "verification pending" (that was the soft
+# fallback-as-truth the founder flagged).
+_SNAPSHOT_LABEL = "‏(ערך בעת יצירת המשימה — הרשימה מחושבת מחדש בכל פתיחה)"
+
+# #4 / SPRINT11_DESIGN §2.2 — short inline-button tag per task_type (≤14
+# RTL chars, Hebrew noun-phrase — NOT the methodology sentence; the full
+# recommended_action stays in the detail card only). Methodology-neutral
+# display sugar (Mark: confirmed methodology-neutral, SPRINT11_DESIGN §2.1).
+_TASK_SHORT_TAG = {
+    "EXECUTE_EXIT": "‏סגור עכשיו",
+    "PROTECT_RUNNER_PROFIT": "‏הדק (Runner)",
+    "TIGHTEN_STOP_PROFIT": "‏הדק 2R+",
+    "REVIEW_YELLOW_FLAG": "‏דגל צהוב",
+    "TRIM_OR_EXIT_DEAD_MONEY": "‏הון מת",
+    "COMPLETE_RISK_DATA": "‏השלם נתונים",
+}
+
+# #5 / DEC-006 — the single consolidated ALGO panel callback. NOT a Task,
+# no lifecycle, never counted (Mark §2.3 hard rules).
+_ALGO_PANEL_CB = "task_algo_panel"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -148,6 +181,40 @@ def _enrich_positions(records, *, target_risk_usd):
             rec["open_r"] = open_r
             rec["age_days"] = age_days
             rec["trail_stop"] = trail_stop
+            # DEC-20260515-007: the already-stored campaign stop + side, so
+            # open_tasks.derive_tasks can compare it against the engine's OWN
+            # suggested trail stop (read-only no-op RUNNER suppression). This
+            # is the value already fed to the engine — no new math here (G1).
+            rec["current_stop"] = sl
+            rec["side"] = side
+            # #5 / DEC-006 / Mark §2.2 — ALGO observation read-out fields,
+            # populated ONLY for an engine-observed ALGO position and ONLY
+            # from the engine's already-existing observation (Mark §2.3 hard
+            # rule #5: never the discretionary ladder; engine_core.py:457-462
+            # returns suggested_stop=None for ALGO and that is respected
+            # literally — no Sentinel-originated stop, ever).
+            if state_result.get("state") == ec.POSITION_STATE_ALGO_OBSERVED:
+                try:
+                    risk_basis = ec.classify_risk_basis(
+                        sl, entry, setup, target_risk_usd
+                    )
+                except Exception:
+                    risk_basis = "Unknown"
+                # External stop: only if ALGO actually exposes one (a real
+                # positive stored stop). Else "Unknown" — NEVER $0.00, never
+                # a Sentinel suggestion (Mark §2.3 #4 / DECISIONS.md:444-445).
+                ext_stop = sl if (isinstance(sl, (int, float)) and sl > 0) else None
+                rec["_algo_observed"] = {
+                    "symbol": sym,
+                    # The engine's OWN state label, verbatim
+                    # (engine_core.py:1680 / state_result["label"]).
+                    "state_label": state_result.get(
+                        "label", ec._STATE_LABELS.get(
+                            ec.POSITION_STATE_ALGO_OBSERVED, "ALGO")
+                    ),
+                    "risk_basis": risk_basis,
+                    "external_stop": ext_stop,
+                }
             rec["_data_quality"] = "stale" if curr == entry and ec.get_live_price(sym) is None else "live"
             enriched.append(rec)
         except Exception:
@@ -199,10 +266,20 @@ def _load_tasks(chat_id):
         now = datetime.now(timezone.utc)
         tasks = open_tasks.list_tasks(supabase, enriched, now=now)
         # Stash for tap-only addressing (callback carries an index).
-        open_only = [t for t in tasks if t.status == open_tasks.STATUS_OPEN]
-        st = user_state.get(chat_id, {})
-        st["task_records"] = [
-            {
+        open_only = _grouped_sorted(
+            [t for t in tasks if t.status == open_tasks.STATUS_OPEN]
+        )
+        # Engine ALGO-observed read-out, keyed by campaign_id — carried onto
+        # the cached record so handle_algo_panel reads the snapshot, never
+        # re-derives (Mark §2.2 / SPRINT11_DESIGN §3.3; G1).
+        algo_by_cid = {
+            str(r.get("campaign_id", "")): r["_algo_observed"]
+            for r in enriched
+            if isinstance(r.get("_algo_observed"), dict)
+        }
+        cached_records = []
+        for t in open_only:
+            rec = {
                 "campaign_id": t.campaign_id,
                 "task_type": t.task_type,
                 "symbol": t.symbol,
@@ -213,13 +290,101 @@ def _load_tasks(chat_id):
                 "open_r": t.trigger_snapshot.open_r,
                 "age_days": t.trigger_snapshot.age_days,
                 "reason": t.trigger_snapshot.reason,
+                # #3 lifecycle-in-place projection fields (default open).
+                "status": open_tasks.STATUS_OPEN,
+                "closed_local_ts": None,
             }
-            for t in _grouped_sorted(open_only)
-        ]
+            if (
+                t.task_type == "ALGO_OBSERVE_ONLY"
+                and str(t.campaign_id) in algo_by_cid
+            ):
+                rec["_algo_observed"] = algo_by_cid[str(t.campaign_id)]
+            cached_records.append(rec)
+
+        built_ts = time.time()
+        built_iso = datetime.now().strftime("%d/%m %H:%M")
+        st = user_state.get(chat_id, {})
+        # #3 / SPRINT11_DESIGN §1.2 — explicit, invalidatable task cache.
+        # `records` replaces today's `task_records` (backward-shaped); the
+        # whole derived set is one snapshot keyed by chat_id, exactly like
+        # `temp_positions` is one list.
+        st["tasks_cache"] = {
+            "records": cached_records,
+            "enriched": enriched,
+            "data_quality": data_quality,
+            "built_ts": built_ts,
+            "built_iso": built_iso,
+        }
+        # Back-compat alias: anything still reading task_records sees the
+        # same list (no behaviour change for existing callers).
+        st["task_records"] = cached_records
         user_state[chat_id] = st
-        return _grouped_sorted(open_only), data_quality, None
+        return open_only, data_quality, None
     except Exception as e:
         return [], "live", f"{type(e).__name__}: {e}"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# #3 — cache-and-update-in-place (mirrors telegram_stop_promote temp_positions)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _cache_valid(chat_id):
+    """True iff a fresh-enough tasks_cache exists for chat_id.
+
+    A cache hit serves ONLY lifecycle re-renders. Invalid (absent / TTL
+    exceeded) → the caller must re-derive via the full engine pipeline
+    (SPRINT11_DESIGN §1.3 — engine stays the source of truth on every true
+    build). Lifecycle actions never invalidate (a status flip changes user
+    intent in open_tasks, not engine position state).
+    """
+    st = user_state.get(chat_id, {})
+    cache = st.get("tasks_cache")
+    if not cache or not isinstance(cache, dict):
+        return False
+    built_ts = cache.get("built_ts")
+    if not isinstance(built_ts, (int, float)):
+        return False
+    return (time.time() - built_ts) <= _TASKS_CACHE_TTL_S
+
+
+def _short_label(rec):
+    """#4 / SPRINT11_DESIGN §2.2 — short inline-button text.
+
+    `{glyph} {SYM} — {≤14-char tag}`. The tag is a fixed Hebrew noun-phrase
+    keyed by task_type (display sugar, NOT methodology text). Unknown/future
+    task_type → a 14-char trim of recommended_action (current behaviour, now
+    at 14 not 48). The detail card always carries the FULL recommended_action,
+    so truncation never loses information (SPRINT11_DESIGN §2.2).
+    """
+    tag = _TASK_SHORT_TAG.get(rec.get("task_type"))
+    if tag is None:
+        ra = str(rec.get("recommended_action", ""))
+        tag = ra[:14] if len(ra) <= 14 else ra[:13] + "…"
+    icon = _BAND_ICON.get(rec.get("urgency"), "•")
+    return f"{icon} {rec.get('symbol')} — {tag}"
+
+
+def _rec_view(t):
+    """Normalize a Task OR a cached record dict into the dict shape the
+    render path expects (so the cache hit and the fresh-build path render
+    identically; existing Task-returning callers/tests stay green)."""
+    if isinstance(t, dict):
+        return t
+    return {
+        "campaign_id": t.campaign_id,
+        "task_type": t.task_type,
+        "symbol": t.symbol,
+        "urgency": t.urgency,
+        "info_only": t.info_only,
+        "recommended_action": t.recommended_action,
+        "state": t.trigger_snapshot.state,
+        "open_r": t.trigger_snapshot.open_r,
+        "age_days": t.trigger_snapshot.age_days,
+        "reason": t.trigger_snapshot.reason,
+        "status": getattr(t, "status", open_tasks.STATUS_OPEN),
+        "closed_local_ts": None,
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -228,24 +393,40 @@ def _load_tasks(chat_id):
 
 
 def build_tasks_keyboard(tasks):
-    """One tap-only inline row per task (reuse build_stop_promote_keyboard's
-    one-button-per-row pattern). ALGO/info-only rows are non-tappable info
-    buttons (callback task_algo_noop), exactly like promote_algo_noop."""
+    """One tap-only inline row per task. #4: short label
+    `{glyph} {SYM} — {tag}` (full text only in the detail card). #5/DEC-006:
+    all ALGO_OBSERVE_ONLY info-only items collapse into ONE consolidated
+    `task_algo_panel` entry (NOT a Task, never counted) — the per-row
+    task_algo_noop dead-end popup is removed. Accepts Task objects OR cached
+    record dicts (duck-typed via _rec_view)."""
     markup = types.InlineKeyboardMarkup(row_width=1)
-    for idx, t in enumerate(tasks):
-        icon = _BAND_ICON.get(t.urgency, "•")
-        short = t.recommended_action
-        if len(short) > 48:
-            short = short[:47] + "…"
-        if t.info_only:
+    views = [_rec_view(t) for t in tasks]
+    algo_count = 0
+    for idx, rec in enumerate(views):
+        if rec.get("info_only") and rec.get("task_type") == "ALGO_OBSERVE_ONLY":
+            # #5 / DEC-006 / Mark §2.3 #1 — never a per-row tappable Task;
+            # consolidated into one panel entry below. No task_algo_noop.
+            algo_count += 1
+            continue
+        if rec.get("info_only"):
+            # Non-ALGO info-only (e.g. DATA_INCOMPLETE) keeps the existing
+            # non-tappable info row pattern.
             markup.add(types.InlineKeyboardButton(
-                f"🟠 {t.symbol} — {short}",
+                f"🟠 {rec.get('symbol')} — {_short_label(rec)}",
                 callback_data="task_algo_noop",
             ))
             continue
         markup.add(types.InlineKeyboardButton(
-            f"{icon} {t.symbol} — {short}",
+            _short_label(rec),
             callback_data=f"task_open|{idx}",
+        ))
+    if algo_count:
+        # #5 / DEC-006 — ONE consolidated, non-Task ALGO control. It carries
+        # no index (it is the whole ALGO set), opens a read-out card via
+        # handle_algo_panel (observation-only; Mark §2.2/§2.3).
+        markup.add(types.InlineKeyboardButton(
+            f"🤖 ALGO ({algo_count}) — בקרה",
+            callback_data=_ALGO_PANEL_CB,
         ))
     markup.add(types.InlineKeyboardButton("🔄 רענן", callback_data="task_refresh"))
     markup.add(types.InlineKeyboardButton("❌ סגור", callback_data="cancel_action"))
@@ -298,8 +479,77 @@ def _data_label(data_quality):
     return {"live": "חי 🟢", "stale": "מאוחסן ⚠️"}.get(data_quality, "מוערך ⛔")
 
 
+def _open_views_from_cache(chat_id):
+    """Open (non-closed) cached record dicts for re-render. Drops rows the
+    user already acted on locally (status != open) so a done/skip row leaves
+    the list immediately (SPRINT11_DESIGN §1.2 step 3)."""
+    cache = user_state.get(chat_id, {}).get("tasks_cache") or {}
+    recs = cache.get("records") or []
+    return [
+        r for r in recs
+        if r.get("status", open_tasks.STATUS_OPEN) == open_tasks.STATUS_OPEN
+    ]
+
+
+def _render_tasks_list(chat_id, tasks, data_quality):
+    """Render the list message + keyboard from a normalized task collection
+    (Task objects on a fresh build OR cached dict records on a cache hit —
+    one render path, identical output)."""
+    if not tasks:
+        bot.send_message(
+            chat_id,
+            f"{RTL}📋 *משימות פתוחות*\n\n"
+            f"{RTL}✅ אין משימות פתוחות.\n"
+            f"{RTL}התיק תחת שליטה — אין פעולה נדרשת כרגע.",
+            reply_markup=get_portfolio_menu(), parse_mode="Markdown",
+        )
+        return
+
+    views = [_rec_view(t) for t in tasks]
+    actionable = [v for v in views if not v.get("info_only")]
+    info_only = [v for v in views if v.get("info_only")]
+    symbols = sorted({v.get("symbol") for v in views})
+    ts_str = datetime.now().strftime("%d/%m %H:%M")
+
+    if not actionable and info_only:
+        # ALGO-only / data-incomplete-only → info-only screen (UX §5b).
+        header = (
+            f"{RTL}📋 *משימות פתוחות*\n\n"
+            f"{RTL}🟠 כל הפוזיציות הפתוחות מנוהלות חיצונית/חסרות נתונים.\n"
+            f"{RTL}Sentinel אינו מנפיק משימות פעולה — מעקב בלבד:\n"
+        )
+    else:
+        header = (
+            f"{RTL}📋 *משימות פתוחות — {len(views)} משימות "
+            f"({len(symbols)} סימולים)*\n"
+            f"{RTL}מעודכן: {ts_str} · נתונים: {_data_label(data_quality)}\n"
+            # #2 — single Mark-approved honest snapshot label (one source).
+            f"{RTL}{_SNAPSHOT_LABEL}\n"
+        )
+        if data_quality != "live":
+            header += (
+                f"{RTL}⚠️ נתונים חלקיים — אמת מול IBKR לפני פעולה. "
+                f"P0 לא נטען כוודאי על נתון מאוחסן.\n"
+            )
+
+    bot.send_message(chat_id, header,
+                     reply_markup=build_tasks_keyboard(views),
+                     parse_mode="Markdown")
+
+
 def handle_open_tasks_entry(chat_id):
-    """`📋 משימות פתוחות` / `/tasks` entry — lightweight, pull-only."""
+    """`📋 משימות פתוחות` / `/tasks` entry — lightweight, pull-only.
+
+    #3: serves from the cached snapshot when it is still fresh (≤TTL); a true
+    re-derive (full engine pipeline) runs only on cache-absent / TTL-exceeded
+    (the engine stays the single source of truth on every true build). The
+    explicit 🔄 רענן button always re-derives (handle_task_refresh)."""
+    if _cache_valid(chat_id):
+        cache = user_state[chat_id]["tasks_cache"]
+        _render_tasks_list(
+            chat_id, _open_views_from_cache(chat_id), cache.get("data_quality"))
+        return
+
     loading = bot.send_message(chat_id, f"{RTL}⏳ *טוען משימות פתוחות...*",
                                parse_mode="Markdown")
     tasks, data_quality, error = _load_tasks(chat_id)
@@ -323,43 +573,19 @@ def handle_open_tasks_entry(chat_id):
         )
         return
 
-    if not tasks:
-        bot.send_message(
-            chat_id,
-            f"{RTL}📋 *משימות פתוחות*\n\n"
-            f"{RTL}✅ אין משימות פתוחות.\n"
-            f"{RTL}התיק תחת שליטה — אין פעולה נדרשת כרגע.",
-            reply_markup=get_portfolio_menu(), parse_mode="Markdown",
-        )
-        return
+    _render_tasks_list(chat_id, tasks, data_quality)
 
-    actionable = [t for t in tasks if not t.info_only]
-    info_only = [t for t in tasks if t.info_only]
-    symbols = sorted({t.symbol for t in tasks})
-    ts_str = datetime.now().strftime("%d/%m %H:%M")
 
-    if not actionable and info_only:
-        # ALGO-only / data-incomplete-only → info-only screen (UX §5b).
-        header = (
-            f"{RTL}📋 *משימות פתוחות*\n\n"
-            f"{RTL}🟠 כל הפוזיציות הפתוחות מנוהלות חיצונית/חסרות נתונים.\n"
-            f"{RTL}Sentinel אינו מנפיק משימות פעולה — מעקב בלבד:\n"
-        )
-    else:
-        header = (
-            f"{RTL}📋 *משימות פתוחות — {len(tasks)} משימות "
-            f"({len(symbols)} סימולים)*\n"
-            f"{RTL}מעודכן: {ts_str} · נתונים: {_data_label(data_quality)}\n"
-        )
-        if data_quality != "live":
-            header += (
-                f"{RTL}⚠️ נתונים חלקיים — אמת מול IBKR לפני פעולה. "
-                f"P0 לא נטען כוודאי על נתון מאוחסן.\n"
-            )
-
-    bot.send_message(chat_id, header,
-                     reply_markup=build_tasks_keyboard(tasks),
-                     parse_mode="Markdown")
+def handle_task_refresh(chat_id):
+    """Explicit 🔄 רענן — ALWAYS discards the cache and re-derives via the
+    full engine pipeline (SPRINT11_DESIGN §1.3 — the user-facing "engine is
+    the source of truth" lever; the cached status flip never survives a
+    refresh the DB overlay contradicts)."""
+    st = user_state.get(chat_id, {})
+    st.pop("tasks_cache", None)
+    st.pop("task_records", None)
+    user_state[chat_id] = st
+    handle_open_tasks_entry(chat_id)
 
 
 def _get_record(chat_id, idx):
@@ -368,6 +594,32 @@ def _get_record(chat_id, idx):
     if not (0 <= idx < len(recs)):
         return None
     return recs[idx]
+
+
+def _apply_local_status(chat_id, idx, status):
+    """#3 / SPRINT11_DESIGN §1.2 — in-place lifecycle mutate + re-render.
+
+    The authoritative Supabase write is STILL done by the caller via
+    open_tasks.mark_done/skip_task (unchanged, audited) — only the *re-render*
+    is served from the cache. This mutates ONLY the acted row's status (other
+    rows + `enriched` untouched), drops it from the visible list, and
+    re-renders straight from the cached records: zero engine call, zero
+    network, header counts recomputed from the cached list.
+
+    Cache-miss is always safe: fall back to a full re-derive (never a hard
+    error; SPRINT11_DESIGN §1.2 step 1)."""
+    st = user_state.get(chat_id, {})
+    cache = st.get("tasks_cache")
+    if not cache or not isinstance(cache, dict) or not cache.get("records"):
+        handle_open_tasks_entry(chat_id)
+        return
+    recs = cache["records"]
+    if 0 <= idx < len(recs):
+        recs[idx]["status"] = status
+        recs[idx]["closed_local_ts"] = datetime.now().strftime("%d/%m %H:%M")
+    user_state[chat_id] = st
+    _render_tasks_list(
+        chat_id, _open_views_from_cache(chat_id), cache.get("data_quality"))
 
 
 def handle_task_open(chat_id, raw_idx):
@@ -396,7 +648,7 @@ def handle_task_open(chat_id, raw_idx):
         f"{RTL}{_BAND_ICON.get(rec.get('urgency'), '•')} *{rec.get('symbol')} — משימה*\n\n"
         f"{RTL}🔎 *מה קרה:*\n"
         f"{RTL}• מצב: `{rec.get('state')}`\n"
-        f"{RTL}• Open-R: `{r_str}` _(snapshot — לא מאומת כעת)_\n"
+        f"{RTL}• Open-R: `{r_str}` _{_SNAPSHOT_LABEL}_\n"
         f"{RTL}• בקמפיין: {age_str}\n"
         f"{RTL}• סיבת מנוע: _{rec.get('reason') or '—'}_\n\n"
         f"{RTL}🎯 *פעולה מומלצת:*\n"
@@ -414,6 +666,86 @@ def handle_task_open(chat_id, raw_idx):
         reply_markup=_detail_keyboard(idx, rec.get("urgency"), rec.get("info_only")),
         parse_mode="Markdown",
     )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# #5 / DEC-006 — consolidated ALGO observation panel (NOT a Task)
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Mark §2.2 — risk_basis surfaced descriptively (engine's own
+# classify_risk_basis output; no instruction, no Sentinel computation).
+_RISK_BASIS_HE = {
+    "True": "אמיתי",
+    "Target": "Target (יעד)",
+    "Unknown": "לא ידוע",
+}
+
+
+def handle_algo_panel(chat_id):
+    """#5 / DEC-006 — ONE consolidated, observation-only ALGO read-out card.
+
+    Hard invariants (Mark §2.3): it is NOT a Task — no task_type/urgency, no
+    done/skip/note/lifecycle, never counted in WR/Expectancy/PF/total_r. It
+    surfaces ONLY the engine's already-existing observation fields
+    (ALGO_OBSERVED state label, risk_basis, an external stop ONLY if ALGO
+    exposes one) — never a Sentinel-synthesized recommendation or stop
+    (engine_core.py:457-462 returns suggested_stop=None and that is respected
+    literally). Read from the CACHE (no engine call; consistent with #3);
+    cache absent → safe full re-derive first.
+    """
+    if not _cache_valid(chat_id):
+        # Safe: build the cache (engine = source of truth) before reading it.
+        _load_tasks(chat_id)
+    cache = user_state.get(chat_id, {}).get("tasks_cache") or {}
+    recs = cache.get("records") or []
+    algo = [
+        r.get("_algo_observed")
+        for r in recs
+        if r.get("task_type") == "ALGO_OBSERVE_ONLY"
+        and isinstance(r.get("_algo_observed"), dict)
+    ]
+
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(types.InlineKeyboardButton(
+        "⬅️ חזרה לרשימה", callback_data="task_open|list"))
+
+    if not algo:
+        # Empty ALGO set — nothing to read out (the entry would not have been
+        # rendered; this is the defensive path).
+        bot.send_message(
+            chat_id,
+            f"{RTL}🤖 *ALGO — מנוהל חיצונית*\n"
+            f"{RTL}אין כרגע פוזיציות ALGO תחת בקרה.",
+            reply_markup=markup, parse_mode="Markdown",
+        )
+        return
+
+    # Header disclaimer — MANDATORY and FIRST (Mark §2.2, verbatim;
+    # descriptive, non-binding, no imperative).
+    body = (
+        f"{RTL}🤖 ALGO — מנוהל חיצונית. בקרה בלבד.\n"
+        f"{RTL}Sentinel אינו מנהל, אינו ממליץ, ואינו נספר בסטטיסטיקה.\n"
+        f"{RTL}המידע למטה הוא מה ש-Sentinel *רואה* — לא הוראת פעולה.\n\n"
+    )
+    # Per-position purely descriptive observation line (Mark §2.2 exact
+    # shape — no imperative verb, no Sentinel stop number).
+    for a in algo:
+        sym = a.get("symbol", "?")
+        state_label = a.get("state_label") or "🤖 ALGO — פיקוח בלבד"
+        rb = _RISK_BASIS_HE.get(a.get("risk_basis"), "לא ידוע")
+        ext = a.get("external_stop")
+        ext_he = f"${float(ext):.2f}" if isinstance(ext, (int, float)) and ext > 0 else "לא ידוע"
+        body += (
+            f"{RTL}• {sym}: מצב נצפה — {state_label}.\n"
+            f"{RTL}  בסיס סיכון: {rb}. סטופ חיצוני: {ext_he}.\n"
+        )
+    # Honest source label (same vocabulary the list uses).
+    body += (
+        f"\n{RTL}נתונים: {_data_label(cache.get('data_quality'))} · "
+        f"מעודכן: {cache.get('built_iso', '—')}\n"
+        f"{RTL}{_SNAPSHOT_LABEL}"
+    )
+    bot.send_message(chat_id, body, reply_markup=markup, parse_mode="Markdown")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -454,7 +786,9 @@ def handle_task_done_confirm(chat_id, idx, approved):
         f"{RTL}{status} — {rec.get('symbol')}.",
         parse_mode="Markdown",
     )
-    handle_open_tasks_entry(chat_id)
+    # #3 — re-render from the cache (no engine, no network); the Supabase
+    # write above is unchanged/authoritative.
+    _apply_local_status(chat_id, idx, open_tasks.STATUS_DONE)
 
 
 def handle_task_skip(chat_id, idx):
@@ -506,7 +840,8 @@ def handle_task_skip_confirm(chat_id, idx, approved):
     status = "⏭️ המשימה דולגה ונרשמה" if ok else "⚠️ שמירה נכשלה"
     bot.send_message(chat_id, f"{RTL}{status} — {rec.get('symbol')}.",
                      parse_mode="Markdown")
-    handle_open_tasks_entry(chat_id)
+    # #3 — re-render from the cache (no engine, no network).
+    _apply_local_status(chat_id, idx, open_tasks.STATUS_SKIPPED)
 
 
 def handle_task_skip_reason(chat_id, reason):
@@ -533,7 +868,12 @@ def handle_task_skip_reason(chat_id, reason):
             reply_markup=markup, parse_mode="Markdown",
         )
         return
-    user_state.pop(chat_id, None)
+    # Clear only the in-progress free-text capture keys; PRESERVE tasks_cache
+    # so the post-skip re-render is served in-place (#3) instead of paying a
+    # full re-derive for a single P0 status flip.
+    st.pop("action", None)
+    st.pop("task_idx", None)
+    user_state[chat_id] = st
     open_tasks.skip_task(
         supabase, rec["campaign_id"], rec["task_type"],
         note=reason.strip(), urgency="P0",
@@ -545,7 +885,8 @@ def handle_task_skip_reason(chat_id, reason):
         f"{RTL}(נרשם כ-skipped\\_critical\\_exit ביומן הביקורת.)",
         reply_markup=get_portfolio_menu(), parse_mode="Markdown",
     )
-    handle_open_tasks_entry(chat_id)
+    # #3 — re-render from cache (cache-miss → safe full re-derive).
+    _apply_local_status(chat_id, idx, open_tasks.STATUS_SKIPPED)
 
 
 def handle_task_note(chat_id, idx):

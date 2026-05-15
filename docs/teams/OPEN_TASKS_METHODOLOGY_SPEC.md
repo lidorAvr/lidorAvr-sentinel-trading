@@ -267,6 +267,27 @@ Mark the owner:
 - `DATA_INCOMPLETE` carries **no urgency** (`urgency: null`) and
   `info_only: true` — never counted, never numeric (§ "DATA_INCOMPLETE
   produces no numeric task at all"; AGENTS.md invariant #8).
+- `RUNNER.suppress_when` = `current_stop_meets_suggested_within_trail_ma_buffer`:
+  T3 `PROTECT_RUNNER_PROFIT` is **not emitted** when, for a long,
+  `current_stop >= suggested_stop − (_TRAIL_MA_BUFFER_PCT × suggested_stop)`
+  (short: symmetric, `+`), where `suggested_stop`/`basis` are
+  `compute_suggested_trail_stop()`'s own output (`engine_core.py:1911-1960`)
+  and `_TRAIL_MA_BUFFER_PCT` is read live from `engine_core.py:1887` (0.02).
+  If `suggested_stop is None` / `basis=="none"` / `current_stop<=0`, the
+  task **is** emitted (no suppression on absent/invalid engine output —
+  AGENTS.md #1). Read-only over engine output: zero new R/NAV/campaign math
+  (DEC-20260515-007; `OPEN_TASKS_METHODOLOGY_SPEC.md` §4 G1/G4). A *material*
+  tighten (gap > epsilon) surfaces unchanged.
+- `ALGO_OBSERVED` may be rendered as a **single consolidated info panel**
+  (not one row per ALGO position) showing, per position, ONLY the engine's
+  existing observation fields (`management_mode`, `risk_basis`, the
+  `ALGO_OBSERVED` state label `engine_core.py:1680`, and an external stop
+  only if ALGO exposes one). It remains `info_only: true`, is **not** a
+  `Task` (no lifecycle, never counted), contains **no** Sentinel-originated
+  recommendation or stop, and uses descriptive (non-imperative) Hebrew only
+  (DEC-20260515-006 conditional on this ruling; DEC-20260511-001;
+  AGENTS.md #5/#8; `OPEN_TASKS_METHODOLOGY_SPEC.md` §4 G2). If unachievable,
+  fall back to a single "מנוהל חיצונית — אין פעולת Sentinel" button.
 - T7 (drawdown-ack) is **portfolio-level, not a per-position state** — it is
   out of the position-driven `derive_tasks(positions, …)` contract and is
   explicitly deferred (documented in `OPEN_TASKS_WAVE2_IMPL.md`); no row here.
@@ -285,6 +306,7 @@ RUNNER:
     urgency: P1
     info_only: false
     action_he: "‏🏃 Runner — הדק סטופ לפי ההמלצה ({basis}, ${stop}). אל תרופף."
+    suppress_when: "current_stop_meets_suggested_within_trail_ma_buffer"
 YELLOW_FLAG:
   - task_type: REVIEW_YELLOW_FLAG
     urgency: P2
