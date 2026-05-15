@@ -244,10 +244,15 @@ def handle_all_messages(message):
                     import time as _time
                     with open(_TRIGGER_FILE, "w") as _tf:
                         _tf.write(str(_time.time()))
-                    msg += f"\n\n{RTL}🚀 *trigger נכתב* — deploy_watcher יאסוף ויפעיל docker compose תוך ~5 שניות"
-                    _bot_log("Deploy trigger file written")
+                    msg += (
+                        f"\n\n{RTL}ℹ️ git נמשך *בתוך הקונטיינר בלבד* — זה לא deploy."
+                        f"\n{RTL}deploy-watcher אינו מותקן (DEC-20260515-010)."
+                        f"\n{RTL}כדי לפרוס בפועל, הרץ ב-Orange Pi:\n"
+                        f"`cd ~/sentinel_trading && ./deploy.sh`"
+                    )
+                    _bot_log("Deploy trigger file written (no watcher installed — informational)")
                 except Exception as te:
-                    msg += f"\n\n{RTL}⚠️ לא הצלחתי לכתוב trigger file: {te}\nהרץ ידנית: `docker compose up -d --build`"
+                    msg += f"\n\n{RTL}⚠️ trigger לא נכתב: {te}\nהרץ ב-Orange Pi: `cd ~/sentinel_trading && ./deploy.sh`"
             else:
                 msg += f"\n\n{RTL}⚠️ Git pull נכשל — trigger לא נכתב. בדוק שגיאות למעלה."
             _bot_log(f"Git pull rc={rc}: {stdout[:200]}")
@@ -255,7 +260,7 @@ def handle_all_messages(message):
             msg = (
                 f"{RTL}⚠️ *git לא מותקן בקונטיינר זה.*\n"
                 f"{RTL}כדי לפרוס עדכון, הרץ על Orange Pi:\n"
-                f"`cd ~/sentinel_trading && git pull && docker compose up -d --build`"
+                f"`cd ~/sentinel_trading && ./deploy.sh`"
             )
         except subprocess.TimeoutExpired:
             msg = f"{RTL}⏳ *Git pull פג timeout (60s).*"
