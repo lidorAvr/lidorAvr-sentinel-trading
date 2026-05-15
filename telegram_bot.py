@@ -34,6 +34,10 @@ from telegram_backlog import get_next_missing  # noqa: E402 — re-exported for 
 
 from telegram_portfolio import handle_drilldown, handle_market_regime, handle_portfolio_room  # noqa: E402 — re-exported for telegram_callbacks lazy import
 
+from telegram_stop_promote import (handle_stop_promote_entry,  # noqa: E402 — re-exported for telegram_callbacks lazy import
+                                    handle_stop_promote_pick,
+                                    build_stop_promote_keyboard)
+
 @bot.message_handler(content_types=['document'])
 def handle_document_upload(message):
     chat_id = message.chat.id
@@ -338,7 +342,9 @@ def handle_all_messages(message):
         user_state[chat_id] = {'action': 'analyze_symbol'}
         return
 
-    if text in ["🔍 סריקת יומן (Backlog)", "/next", "📚 ניהול יומן (Backlog)"]: return get_next_missing(chat_id)
+    if text in ["🔍 השלמת יומן — הפריט הבא", "🔍 סריקת יומן (Backlog)",
+                "/next", "📚 ניהול יומן (Backlog)"]:
+        return get_next_missing(chat_id)
 
     if text in ["🧹 ארכיון עסקאות (Legacy)", "/clean"]:
         bot.send_message(chat_id, "🧹 *מבצע ניקוי היסטוריה (עסקאות מעל 30 יום בלבד)...*", parse_mode="Markdown")
@@ -373,6 +379,10 @@ def handle_all_messages(message):
 
     if text in ["📊 חדר מצב (פוזיציות)", "/portfolio"]:
         handle_portfolio_room(chat_id)
+        return
+
+    if text in ["🎯 קידום סטופ", "/promote"]:
+        handle_stop_promote_entry(chat_id)
         return
 
     if chat_id in user_state:
@@ -441,16 +451,47 @@ def handle_all_messages(message):
             return
 
         elif action == 'input_new_sl':
+            # NOTE: stop-write logic below is byte-identical to the legacy
+            # flow (repo.update_stop_for_campaign). Only the post-write
+            # navigation differs: batch flow re-opens the position list so
+            # the user can promote the next stop without a heavy re-run.
+            batch_mode = state.get('promote_batch', False)
             try:
                 new_sl = float(text)
                 trade = state['selected_trade']
                 cid = trade.get('campaign_id')
                 if cid:
                     repo.update_stop_for_campaign(supabase, cid, new_sl)
-                    bot.send_message(chat_id, f"🚀 *הסטופ עודכן בהצלחה!*\nנכס: `{trade['symbol']}`\nסטופ מעודכן ל: `${new_sl:.2f}`\nפקודות הקנייה בקמפיין עודכנו.", reply_markup=get_main_menu(), parse_mode="Markdown")
-                else: bot.send_message(chat_id, "❌ תקלת מערכת: לא נמצא מזהה קמפיין לעסקה זו.")
-                del user_state[chat_id]
-            except: bot.send_message(chat_id, "❌ מחיר לא תקין. נא להזין מספר.")
+                    if batch_mode:
+                        bot.send_message(
+                            chat_id,
+                            f"{RTL}🚀 *הסטופ עודכן — {trade['symbol']}*\n"
+                            f"{RTL}סטופ חדש: `${new_sl:.2f}` | פקודות הקנייה בקמפיין עודכנו.\n"
+                            f"{RTL}בחר פוזיציה נוספת לקידום, או '❌ סגור':",
+                            parse_mode="Markdown",
+                        )
+                    else:
+                        bot.send_message(chat_id, f"🚀 *הסטופ עודכן בהצלחה!*\nנכס: `{trade['symbol']}`\nסטופ מעודכן ל: `${new_sl:.2f}`\nפקודות הקנייה בקמפיין עודכנו.", reply_markup=get_main_menu(), parse_mode="Markdown")
+                else:
+                    bot.send_message(chat_id, "❌ תקלת מערכת: לא נמצא מזהה קמפיין לעסקה זו.")
+                    batch_mode = False
+                if batch_mode and cid:
+                    # Stay in the batch list: clear the per-pick action but
+                    # keep temp_positions so the next tap works with no
+                    # expiry and no heavy 'חדר מצב' re-run.
+                    positions = state.get('temp_positions')
+                    user_state[chat_id] = {'temp_positions': positions} if positions else {}
+                    if positions:
+                        bot.send_message(
+                            chat_id,
+                            f"{RTL}🎯 *קידום סטופ — בחר פוזיציה הבאה:*",
+                            reply_markup=build_stop_promote_keyboard(positions),
+                            parse_mode="Markdown",
+                        )
+                else:
+                    del user_state[chat_id]
+            except Exception:
+                bot.send_message(chat_id, "❌ מחיר לא תקין. נא להזין מספר.")
             return
 
         t_id = state.get('t_id')

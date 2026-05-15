@@ -30,6 +30,7 @@ def get_developer_menu():
 def get_portfolio_menu():
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
     markup.add(telebot.types.KeyboardButton("📊 חדר מצב (פוזיציות)"))
+    markup.add(telebot.types.KeyboardButton("🎯 קידום סטופ"))
     markup.add(telebot.types.KeyboardButton("🌡️ משטר שוק וסיכונים"))
     markup.add(telebot.types.KeyboardButton("⬅️ חזרה לתפריט ראשי"))
     return markup
@@ -45,7 +46,11 @@ def get_analysis_menu():
 
 def get_journal_menu():
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
-    markup.add(telebot.types.KeyboardButton("🔍 סריקת יומן (Backlog)"))
+    # Label is intentionally explicit: this is a SEQUENTIAL "next missing
+    # field" walker, not a browsable grouped backlog. The old "(Backlog)"
+    # label set a false expectation (founder asked for a sorted, grouped,
+    # browsable view that does not exist yet). See UX_TELEGRAM_AUDIT_DAY3.
+    markup.add(telebot.types.KeyboardButton("🔍 השלמת יומן — הפריט הבא"))
     markup.add(telebot.types.KeyboardButton("🧹 ארכיון עסקאות (Legacy)"))
     markup.add(telebot.types.KeyboardButton("⬅️ חזרה לתפריט ראשי"))
     return markup

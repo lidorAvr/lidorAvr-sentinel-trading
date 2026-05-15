@@ -51,13 +51,48 @@ def handle_queries(call):
         _tb.get_next_missing(chat_id)
         return
 
+    # ── Lightweight tap-only stop promotion (UX_TELEGRAM_AUDIT_DAY3 Pain 1) ──
+    if data == "promote_open":
+        bot.answer_callback_query(call.id)
+        _tb.handle_stop_promote_entry(chat_id)
+        return
+
+    if data.startswith("promote_pick|"):
+        bot.answer_callback_query(call.id)
+        try:
+            idx = int(data.split("|", 1)[1])
+        except (ValueError, IndexError):
+            bot.send_message(chat_id, "❌ בחירה לא תקינה.")
+            return
+        _tb.handle_stop_promote_pick(chat_id, idx)
+        return
+
+    if data == "promote_algo_noop":
+        bot.answer_callback_query(
+            call.id,
+            text="🟠 ALGO מנוהל חיצונית — Sentinel אינה מקדמת סטופ אלגו.",
+            show_alert=True,
+        )
+        return
+
     if data == "start_trail_flow":
-        if chat_id in user_state and 'temp_positions' in user_state[chat_id]:
-            count = len(user_state[chat_id]['temp_positions'])
-            bot.send_message(chat_id, f"🎯 *קידום סטופ:*\nהקלד את מספר הטרייד מהרשימה (1-{count}):\n(או שלח 'ביטול')", parse_mode="Markdown")
-            user_state[chat_id]['action'] = 'select_trade_index'
+        # Tap-only path: show inline symbol buttons instead of asking the
+        # user to TYPE a trade number while scrolling a long message.
+        # The typed-index path (action='select_trade_index') is kept as a
+        # fallback for anyone still on the old flow, but is no longer the
+        # primary interaction.
+        if chat_id in user_state and user_state[chat_id].get('temp_positions'):
+            positions = user_state[chat_id]['temp_positions']
+            kb = _tb.build_stop_promote_keyboard(positions)
+            bot.send_message(
+                chat_id,
+                f"{RTL}🎯 *קידום סטופ — בחר פוזיציה (לחיצה אחת):*",
+                reply_markup=kb, parse_mode="Markdown",
+            )
         else:
-            bot.send_message(chat_id, "⚠️ המידע פג תוקף. לחץ שוב על 'חדר מצב'.")
+            # No cached positions — open the lightweight list directly
+            # instead of forcing a heavy 'חדר מצב' re-run.
+            _tb.handle_stop_promote_entry(chat_id)
         bot.answer_callback_query(call.id)
 
     elif data == "cancel_action":
