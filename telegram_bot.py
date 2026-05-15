@@ -41,6 +41,16 @@ from telegram_stop_promote import (handle_stop_promote_entry,  # noqa: E402 — 
                                     get_campaign_current_stop,
                                     finalize_pending_loosen)
 
+from telegram_tasks import (handle_open_tasks_entry,  # noqa: E402 — re-exported for telegram_callbacks lazy import
+                            handle_task_open,
+                            handle_task_done,
+                            handle_task_done_confirm,
+                            handle_task_skip,
+                            handle_task_skip_confirm,
+                            handle_task_skip_reason,
+                            handle_task_note,
+                            handle_task_add_note)
+
 @bot.message_handler(content_types=['document'])
 def handle_document_upload(message):
     chat_id = message.chat.id
@@ -74,6 +84,15 @@ def handle_all_messages(message):
         else:
             dev_pin_record_failure(chat_id)
             bot.send_message(chat_id, f"{RTL}⛔ *PIN שגוי — גישה נדחתה*", reply_markup=get_main_menu(), parse_mode="Markdown")
+        return
+
+    if active_state.get("action") == "task_skip_reason":
+        # P0 Open-Task skip: typed reason is mandatory (spec §3 / G8).
+        handle_task_skip_reason(chat_id, text)
+        return
+
+    if active_state.get("action") == "task_add_note":
+        handle_task_add_note(chat_id, text)
         return
 
     if active_state.get("action") == "risk_reject_reason":
@@ -281,6 +300,7 @@ def handle_all_messages(message):
             f"{RTL}📚 *יומן* — מילוי יומן וארכיון\n"
             f"{RTL}───────────────\n"
             f"{RTL}/portfolio — חדר מצב\n"
+            f"{RTL}/tasks — משימות פתוחות (Action-Items)\n"
             f"{RTL}/trade SYMBOL — ניתוח עומק לפוזיציה\n"
             f"{RTL}/mentor SYMBOL — Trend Template מלא\n"
             f"{RTL}/analyze SYMBOL — ניתוח VCP מינרביני\n"
@@ -382,6 +402,10 @@ def handle_all_messages(message):
 
     if text in ["📊 חדר מצב (פוזיציות)", "/portfolio"]:
         handle_portfolio_room(chat_id)
+        return
+
+    if text in ["📋 משימות פתוחות", "/tasks"]:
+        handle_open_tasks_entry(chat_id)
         return
 
     if text in ["🎯 קידום סטופ", "/promote"]:

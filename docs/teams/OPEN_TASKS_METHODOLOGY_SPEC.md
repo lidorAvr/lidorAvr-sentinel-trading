@@ -240,4 +240,78 @@ Binary checklist. Any FAIL = the Open Tasks engine does not ship.
 
 ---
 
+## 6. Machine-readable ruleset block (Sprint-10 Wave-2 checkpoint)
+
+The Wave-1 design proposed parsing this `.md` at runtime; the Wave-2 build
+checkpoint **rejected runtime `.md` parsing as fragile**. Resolution that keeps
+Mark the owner:
+
+- The runtime ruleset is a typed Python constant `_RULESET` in `open_tasks.py`,
+  transcribed **verbatim** from §1 / §2 above (every entry carries a
+  `# spec:` comment citing the row here).
+- This block below is the **audit source of truth**. A CI drift test
+  (`tests/test_open_tasks.py::test_ruleset_matches_methodology_spec`) re-reads
+  the fenced block below and asserts `open_tasks._RULESET` matches it exactly.
+  Any future divergence between Mark's ruling and the code fails CI loudly —
+  Mark stays the owner; the `.md` is the audit source; the constant is the
+  runtime source.
+- Schema per `OPEN_TASKS_ENGINE_DESIGN.md` §1.6. `urgency` values are exactly
+  the existing `ALERT_PRIORITY` tiers (`risk_monitor.py:56-79`); no new scale.
+- States not listed (`NEW`, `PROVING`, `WORKING`) intentionally map to **no
+  task** (§1: the table only lists actionable/observed states T1–T8).
+- `BROKEN` collapses T1 (price-through-stop) and T2 (violation≥6) into one
+  **P0** actionable exit task — the engine already collapses both into
+  `state=BROKEN` (`engine_core.py:2019-2022`); the `reason` field on the
+  engine `state_result` distinguishes T1 vs T2 for the "why" block, but the
+  *task* and its P0 urgency are identical (spec §1 T1/T2).
+- `DATA_INCOMPLETE` carries **no urgency** (`urgency: null`) and
+  `info_only: true` — never counted, never numeric (§ "DATA_INCOMPLETE
+  produces no numeric task at all"; AGENTS.md invariant #8).
+- T7 (drawdown-ack) is **portfolio-level, not a per-position state** — it is
+  out of the position-driven `derive_tasks(positions, …)` contract and is
+  explicitly deferred (documented in `OPEN_TASKS_WAVE2_IMPL.md`); no row here.
+
+```yaml
+# OWNED BY MARK — open_tasks._RULESET is transcribed verbatim from this block.
+# Audit source of truth. Drift vs the runtime constant fails CI.
+# spec rows: §1 task ruleset table T1–T8, §2 NEW-rules ruling.
+PROFIT_PROTECTION:
+  - task_type: TIGHTEN_STOP_PROFIT
+    urgency: P2
+    info_only: false
+    action_he: "‏🛡️ 2R+ — שקול הדקת סטופ להגנת רווח."
+RUNNER:
+  - task_type: PROTECT_RUNNER_PROFIT
+    urgency: P1
+    info_only: false
+    action_he: "‏🏃 Runner — הדק סטופ לפי ההמלצה ({basis}, ${stop}). אל תרופף."
+YELLOW_FLAG:
+  - task_type: REVIEW_YELLOW_FLAG
+    urgency: P2
+    info_only: false
+    action_he: "‏🟡 דגל צהוב — בדוק חריגה, החלט אם להדק/לצאת."
+BROKEN:
+  - task_type: EXECUTE_EXIT
+    urgency: P0
+    info_only: false
+    action_he: "‏🔴 מחיר חצה את הסטופ / ניקוד חריגות שבור — *סגור עכשיו*. אין שיקול דעת."
+DEAD_MONEY:
+  - task_type: TRIM_OR_EXIT_DEAD_MONEY
+    urgency: P3
+    info_only: false
+    action_he: "‏⏳ הון מת — החלט: לצמצם / לצאת ולפנות הון."
+ALGO_OBSERVED:
+  - task_type: ALGO_OBSERVE_ONLY
+    urgency: P3
+    info_only: true
+    action_he: "‏🤖 ALGO — בקרה בלבד. אין פעולת ניהול מטעם Sentinel."
+DATA_INCOMPLETE:
+  - task_type: COMPLETE_RISK_DATA
+    urgency: null
+    info_only: true
+    action_he: "‏⚠️ נתוני סיכון חסרים — השלם entry/stop כדי שהפוזיציה תיכלל."
+```
+
+---
+
 — Mark

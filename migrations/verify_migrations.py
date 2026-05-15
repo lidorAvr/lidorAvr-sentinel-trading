@@ -48,6 +48,11 @@ MIGRATIONS: list[tuple[str, str, list[str] | None]] = [
         "audit_log",
         ["user_id"],  # Phase A — additive user_id column
     ),
+    (
+        "005_create_open_tasks.sql",
+        "open_tasks",
+        None,  # whole table is new — existence is the test
+    ),
 ]
 
 

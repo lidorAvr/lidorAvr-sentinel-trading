@@ -30,6 +30,7 @@ def get_developer_menu():
 def get_portfolio_menu():
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
     markup.add(telebot.types.KeyboardButton("📊 חדר מצב (פוזיציות)"))
+    markup.add(telebot.types.KeyboardButton("📋 משימות פתוחות"))
     markup.add(telebot.types.KeyboardButton("🎯 קידום סטופ"))
     markup.add(telebot.types.KeyboardButton("🌡️ משטר שוק וסיכונים"))
     markup.add(telebot.types.KeyboardButton("⬅️ חזרה לתפריט ראשי"))

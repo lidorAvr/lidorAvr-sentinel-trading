@@ -75,6 +75,77 @@ def handle_queries(call):
         )
         return
 
+    # ── Open Tasks (Action-Items) — pull-only view + lifecycle ──────────────
+    if data == "task_algo_noop":
+        bot.answer_callback_query(
+            call.id,
+            text="🟠 ALGO מנוהל חיצונית — אין פעולה ב-Sentinel.",
+            show_alert=True,
+        )
+        return
+
+    if data == "task_refresh":
+        bot.answer_callback_query(call.id)
+        _tb.handle_open_tasks_entry(chat_id)
+        return
+
+    if data.startswith("task_open|"):
+        bot.answer_callback_query(call.id)
+        _tb.handle_task_open(chat_id, data.split("|", 1)[1])
+        return
+
+    if data.startswith("task_done_confirm|"):
+        bot.answer_callback_query(call.id)
+        parts = data.split("|")
+        try:
+            idx = int(parts[1])
+        except (ValueError, IndexError):
+            bot.send_message(chat_id, "❌ בחירה לא תקינה.")
+            return
+        _tb.handle_task_done_confirm(chat_id, idx, parts[2] == "yes")
+        return
+
+    if data.startswith("task_skip_confirm|"):
+        bot.answer_callback_query(call.id)
+        parts = data.split("|")
+        try:
+            idx = int(parts[1])
+        except (ValueError, IndexError):
+            bot.send_message(chat_id, "❌ בחירה לא תקינה.")
+            return
+        _tb.handle_task_skip_confirm(chat_id, idx, parts[2] == "yes")
+        return
+
+    if data.startswith("task_done|"):
+        bot.answer_callback_query(call.id)
+        try:
+            idx = int(data.split("|", 1)[1])
+        except (ValueError, IndexError):
+            bot.send_message(chat_id, "❌ בחירה לא תקינה.")
+            return
+        _tb.handle_task_done(chat_id, idx)
+        return
+
+    if data.startswith("task_skip|"):
+        bot.answer_callback_query(call.id)
+        try:
+            idx = int(data.split("|", 1)[1])
+        except (ValueError, IndexError):
+            bot.send_message(chat_id, "❌ בחירה לא תקינה.")
+            return
+        _tb.handle_task_skip(chat_id, idx)
+        return
+
+    if data.startswith("task_note|"):
+        bot.answer_callback_query(call.id)
+        try:
+            idx = int(data.split("|", 1)[1])
+        except (ValueError, IndexError):
+            bot.send_message(chat_id, "❌ בחירה לא תקינה.")
+            return
+        _tb.handle_task_note(chat_id, idx)
+        return
+
     # ── Ratchet-up loosen confirmation (MARK_DAY3_GUARDRAILS U3/C3) ──────────
     if data.startswith("loosen_confirm|"):
         bot.answer_callback_query(call.id)
