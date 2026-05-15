@@ -670,3 +670,124 @@ The Orange Pi's home router DNS was intermittently failing, causing both `api.te
 ### Constraint
 
 If both Google and Cloudflare are unreachable (extremely rare), containers lose DNS regardless of the router. Acceptable — this is the standard graceful-degradation tradeoff for public DNS.
+
+---
+
+## DEC-20260515-001 — Minervini name used as acknowledgment only, not branding
+
+Date: 2026-05-15
+Status: decided (product/GTM)
+
+### Decision
+
+Public marketing may reference *Trade Like a Stock Market Wizard* as an acknowledgment ("built on principles from …") under fair use. Mark Minervini's name is **not** used as a brand, endorsement, or hero line. Revisit a licensing/partnership approach only once there is real traction.
+
+### Rationale
+
+Bold name-use is the strongest positioning but requires a licensing agreement or explicit approval and carries DMCA/litigation risk if refused. Acknowledgment-only is legally neutral, costs nothing, and keeps the partnership option open for later from a position of strength.
+
+### Alternatives considered
+
+- **Name bold in branding** ("your Minervini co-pilot"): strongest, but needs legal clearance; rejected for launch.
+- **No reference at all**: safest legally but neuters the competitive edge and weakens positioning.
+
+### Unblocks
+
+Marketing team — landing-page hero and Phase 3 positioning (see `docs/teams/MARKETING_PLAN_V0.md`). Mark review conflict #4 resolved.
+
+---
+
+## DEC-20260515-002 — Minervini-strict is the only methodology profile for now
+
+Date: 2026-05-15
+Status: decided (product/GTM)
+
+### Decision
+
+Ship a single, hardened, validated `minervini_strict` profile for all users. The 4-profile model (minervini_strict / minervini_relaxed / oneill_classic / swing_low_risk) is deferred to Sprint 13. A full user-tunable "custom profile" is permanently rejected.
+
+### Rationale
+
+One profile is the safest and most consistent with the AGENTS.md Red Lines. Multiple profiles widen the test surface and complicate Hyperscaler Phase B before the single-tenant base is even productized. Regardless of future profiles, the Red Lines (`mix_algo_into_wr=false`, admin-only, no DATA_INCOMPLETE in stats, secure_runner required) stay hard-coded constants, never profile fields.
+
+### Alternatives considered
+
+- **4 profiles now**: more flexible, but premature; deferred to Sprint 13.
+- **Full custom profile**: breaks Mark's methodology and risks the Red Lines; rejected permanently.
+
+### Unblocks
+
+Hyperscaler Phase B architecture (`docs/teams/HYPERSCALER_DESIGN_V0.md`). Mark directive #1 (`mix_algo_into_wr` hard constant) stands. Adaptive-UX `methodology_profile` field has a single enum value for V1.
+
+---
+
+## DEC-20260515-003 — Launch geography: Israel only (Hebrew-first)
+
+Date: 2026-05-15
+Status: decided (product/GTM)
+
+### Decision
+
+First launch targets the Hebrew-speaking Israeli momentum-trader market only. English/i18n is deferred to ~Q3, aligned with Hyperscaler Phase C readiness. No translation work in the near term.
+
+### Rationale
+
+The bot is already Hebrew-native with minimal friction and local networking; this is the fastest path to validating the product. A smaller market (~5k active momentum traders) is an acceptable trade for speed-to-feedback. English expansion rides on the multi-tenant infrastructure that Phase C delivers anyway.
+
+### Alternatives considered
+
+- **Global English only**: larger market but mandatory full translation, heavy competition, and a launch delay.
+- **Bilingual from day one**: best long-term growth but doubles work and delays first launch.
+
+### Unblocks
+
+Marketing channel strategy and the i18n investment line (deferred). Adaptive-UX Layer-1 `language` field defaults to `he` for V1.
+
+---
+
+## DEC-20260515-004 — Public track record: process/demo only, no numbers
+
+Date: 2026-05-15
+Status: decided (product/GTM)
+
+### Decision
+
+Public materials show *how the system behaves* (e.g., how it cuts drawdown, how the state machine reacts) — not performance numbers. No synthetic backtest figures, no founder PnL. Real (anonymized, consented) beta-user metrics may be introduced from Sprint 12.
+
+### Rationale
+
+Process demos are the safest path regulatorily and avoid FINRA-style disclaimer exposure entirely. Synthetic backtests are weak (anyone can backtest); founder PnL needs legal review before any publication. Consented beta data later gives credible numbers without the personal-exposure risk.
+
+### Alternatives considered
+
+- **Synthetic backtest**: weak and not credible.
+- **Founder's anonymized real data**: strong but exposure + legal review required; not before counsel.
+- **Beta-user data now**: needs 5+ consented beta users first — months away.
+
+### Unblocks
+
+Marketing trust rail (`docs/teams/MARKETING_PLAN_V0.md`). Ties to DEC-20260515-005 (closed beta supplies the future consented dataset).
+
+---
+
+## DEC-20260515-005 — Closed free beta; testers get 1 year free Pro at launch
+
+Date: 2026-05-15
+Status: decided (product/GTM)
+
+### Decision
+
+First stage is a **free closed beta** for a founder-selected community (friends, family, trusted traders) for testing, feedback, and improvement. Beta participants receive a **full year of the Pro tier free at launch** as a loyalty reward. The full pricing model and subscription tiers are designed later, after beta feedback.
+
+### Rationale
+
+A closed free beta removes any need for a billing system in the near term (Hyperscaler Phase D), de-risks pricing by deferring it until product value is understood, and produces the consented real dataset that DEC-20260515-004 needs. The 1-year-Pro reward aligns early-tester incentives with long-term retention.
+
+### Alternatives considered
+
+- **Retail $29 + Pro $99 from launch**: premature; requires billing and a pricing model before product validation.
+- **Single flat tier / free public trial**: free public trial needs synthetic demo-mode product work; closed beta is leaner and higher-signal.
+
+### Constraint / unblocks
+
+No billing/payments work needed before Phase D. Marketing Q1 should plan for closed-beta recruitment, not paid acquisition. Pricing model is an explicit open item for a future decision (post-beta). Adaptive-UX onboarding can assume invited users (no public signup) for V1.
