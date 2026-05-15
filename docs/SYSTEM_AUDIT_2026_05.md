@@ -817,6 +817,36 @@ def _write_runner_decision(campaign_id: str, decision: str) -> None:
 
 ---
 
+### 5.12 Issue Q (NEW, MEDIUM) — dashboard healthcheck restart loop — **RESOLVED (Sprint 10)**
+
+> **STATUS: RESOLVED.** Discovered Day 2 on the production Orange Pi:
+> the `dashboard` container was restarting every ~2 min (created 13 min
+> ago, "Up 40 seconds"). streamlit itself was healthy — the healthcheck
+> was broken on **two** counts, both confirmed by probing inside the
+> container:
+>
+> 1. `docker-compose.yml` used `["CMD", "curl", "-f", ...]` but **curl
+>    is not installed in the image** — `docker exec dashboard sh -c
+>    'curl ...'` returned exit **127** (command not found). The
+>    healthcheck could never pass; autoheal then killed and restarted
+>    the container on a loop. dashboard was the only service using curl;
+>    the other five already use `python3 -c` healthchecks.
+> 2. The URL used `localhost`, which resolves to IPv6 `::1`; streamlit
+>    binds IPv4 `0.0.0.0:8501`, so the probe **timed out** even when
+>    issued correctly. Forcing `127.0.0.1` returned
+>    `/_stcore/health -> 200` in **0.1s** (vs `/healthz -> 200` in
+>    2.8s — the legacy path still works but is slow).
+>
+> **Fix:** the dashboard healthcheck now uses
+> `python3 -c "import http.client,sys; ...HTTPConnection('127.0.0.1',8501,timeout=5)...'/_stcore/health'...status==200"`
+> — stdlib only, IPv4, the fast modern streamlit health endpoint, and
+> consistent with the other five services' healthcheck style. Only the
+> `test:` line changed; interval/timeout/retries/start_period untouched.
+> Infra config — no unit test (verified operationally on the Pi). Apply
+> with `docker compose up -d --force-recreate dashboard`.
+
+---
+
 ## 6. מפת סינרגיה בין שירותים
 
 ```
