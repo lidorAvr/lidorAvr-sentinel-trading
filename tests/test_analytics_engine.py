@@ -239,13 +239,119 @@ class TestAggregateGetCampaignRiskMetrics:
         # net_r should be 200 / 100 = 2.0
         assert result["avg_win_r"] == pytest.approx(2.0)
 
-    def test_fallback_to_target_risk_when_stop_missing(self):
-        # initial_stop=0 → get_campaign_risk_metrics returns valid=False → falls back to target_risk_usd
-        # target_risk_usd = 10000 * 0.01 = $100; pnl=$50 → net_r = 0.5
+    def test_missing_stop_campaign_is_data_incomplete_and_excluded(self):
+        # initial_stop=0 → get_campaign_risk_metrics valid=False → true_orig_risk=0
+        # → classify_stat_bucket → DATA_INCOMPLETE → excluded from stats per
+        # AGENTS.md invariant #8. (This previously asserted the bug: the
+        # campaign was counted via the target_risk fallback.)
         df = _make_df([
             _base_trade("c1", "BUY",  "2025-01-07", 100, 10, 0,  0),   # no stop
             _base_trade("c1", "SELL", "2025-01-09", 105, 10, 50, 0),
         ])
         result = m.compute_period_analytics(df, START, END, _ACCOUNT)
+        assert result["campaigns_closed"] == 0
+        assert result["excluded_count"] == 1
+        assert result["excluded_pnl"] == pytest.approx(50.0)
+        assert result["ok"] is True
+
+
+class TestStatBucketExclusion:
+    """
+    Issue F (SYSTEM_AUDIT §5.6): analytics_engine must exclude ALGO_OBSERVED
+    and DATA_INCOMPLETE campaigns from Win Rate / Expectancy / Profit Factor,
+    matching AGENTS.md invariant #8 and the canonical filter in
+    adaptive_risk_engine._is_disc / dashboard.py.
+    """
+
+    def _manual_win(self):
+        # entry=100, stop=90, qty=10 → orig_risk $100; pnl=$200 → net_r +2.0
+        return [
+            _base_trade("m1", "BUY",  "2025-01-07", 100, 10, 0,   90, setup="EP"),
+            _base_trade("m1", "SELL", "2025-01-09", 120, 10, 200,  0, setup="EP"),
+        ]
+
+    def _manual_loss(self):
+        # entry=100, stop=90, qty=10 → orig_risk $100; pnl=-$50 → net_r -0.5
+        return [
+            _base_trade("m2", "BUY",  "2025-01-07", 100, 10, 0,   90, setup="VCP"),
+            _base_trade("m2", "SELL", "2025-01-09",  95, 10, -50,  0, setup="VCP"),
+        ]
+
+    def _algo_win(self):
+        # setup_type ALGO → is_algo_position → ALGO_OBSERVED bucket
+        return [
+            _base_trade("a1", "BUY",  "2025-01-07", 50, 20, 0,   45, setup="ALGO"),
+            _base_trade("a1", "SELL", "2025-01-09", 80, 20, 600,  0, setup="ALGO"),
+        ]
+
+    def _data_incomplete(self):
+        # manual setup but no initial stop → DATA_INCOMPLETE
+        return [
+            _base_trade("d1", "BUY",  "2025-01-07", 100, 10, 0,  0, setup="Breakout"),
+            _base_trade("d1", "SELL", "2025-01-09", 130, 10, 300, 0, setup="Breakout"),
+        ]
+
+    def test_algo_excluded_from_win_rate(self):
+        # 1 manual win + 1 ALGO win → countable = 1, win_rate = 1.0 (not 2/2)
+        result = m.compute_period_analytics(
+            _make_df(self._manual_win() + self._algo_win()), START, END, _ACCOUNT)
         assert result["campaigns_closed"] == 1
-        assert result["avg_win_r"] == pytest.approx(0.5)  # $50 / $100 target_risk
+        assert result["win_rate"] == pytest.approx(1.0)
+        assert result["excluded_count"] == 1
+
+    def test_algo_excluded_from_expectancy(self):
+        # manual loss (-0.5R) + ALGO huge win → expectancy reflects only the loss
+        result = m.compute_period_analytics(
+            _make_df(self._manual_loss() + self._algo_win()), START, END, _ACCOUNT)
+        assert result["campaigns_closed"] == 1
+        assert result["expectancy_r"] == pytest.approx(-0.5)
+        assert result["excluded_count"] == 1
+
+    def test_algo_excluded_from_profit_factor(self):
+        # manual win + manual loss + ALGO win → PF = 200 / 50 = 4.0 (ALGO 600 not added)
+        result = m.compute_period_analytics(
+            _make_df(self._manual_win() + self._manual_loss() + self._algo_win()),
+            START, END, _ACCOUNT)
+        assert result["campaigns_closed"] == 2
+        assert result["profit_factor"] == pytest.approx(4.0)
+
+    def test_data_incomplete_excluded(self):
+        # manual win + DATA_INCOMPLETE win → only the manual win counts
+        result = m.compute_period_analytics(
+            _make_df(self._manual_win() + self._data_incomplete()), START, END, _ACCOUNT)
+        assert result["campaigns_closed"] == 1
+        assert result["excluded_count"] == 1
+        assert result["win_rate"] == pytest.approx(1.0)
+
+    def test_excluded_pnl_reported(self):
+        # ALGO win $600 + DATA_INCOMPLETE win $300 → excluded_pnl = $900
+        result = m.compute_period_analytics(
+            _make_df(self._manual_loss() + self._algo_win() + self._data_incomplete()),
+            START, END, _ACCOUNT)
+        assert result["excluded_count"] == 2
+        assert result["excluded_pnl"] == pytest.approx(900.0)
+
+    def test_all_excluded_returns_empty_with_disclosure(self):
+        # only ALGO + DATA_INCOMPLETE → no countable campaigns, ok stays True
+        result = m.compute_period_analytics(
+            _make_df(self._algo_win() + self._data_incomplete()), START, END, _ACCOUNT)
+        assert result["campaigns_closed"] == 0
+        assert result["ok"] is True
+        assert result["excluded_count"] == 2
+        assert result["excluded_pnl"] == pytest.approx(900.0)
+
+    def test_setup_breakdown_excludes_algo(self):
+        result = m.compute_period_analytics(
+            _make_df(self._manual_win() + self._algo_win()), START, END, _ACCOUNT)
+        assert "ALGO" not in result["setup_breakdown"]
+        assert "EP" in result["setup_breakdown"]
+
+    def test_pure_manual_unaffected_regression(self):
+        # No ALGO/incomplete → numbers identical to pre-fix behavior
+        result = m.compute_period_analytics(
+            _make_df(self._manual_win() + self._manual_loss()), START, END, _ACCOUNT)
+        assert result["campaigns_closed"] == 2
+        assert result["excluded_count"] == 0
+        assert result["excluded_pnl"] == pytest.approx(0.0)
+        assert result["win_rate"] == pytest.approx(0.5)
+        assert result["profit_factor"] == pytest.approx(4.0)   # 200 / 50

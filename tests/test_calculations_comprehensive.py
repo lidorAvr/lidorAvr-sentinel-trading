@@ -75,15 +75,19 @@ class TestRMultiplePrecision:
         result = ae.compute_period_analytics(df, START, END, ACCOUNT)
         assert result["total_r_net"] == pytest.approx(-1.0, abs=1e-9)
 
-    def test_r_falls_back_to_target_risk_when_no_initial_stop(self):
-        """No initial stop → use target_risk_usd as denominator."""
-        # target_risk = 10000 * 1% = $100
+    def test_no_initial_stop_is_data_incomplete_and_excluded(self):
+        """No initial stop → DATA_INCOMPLETE → excluded from edge stats
+        (AGENTS.md invariant #8). Previously this asserted the bug: the
+        campaign was counted in total_r_net via the target_risk fallback."""
         df = pd.DataFrame([
             _trade("c1", "BUY",  "2025-01-07", 100, 10, 0,   0),  # no stop
             _trade("c1", "SELL", "2025-01-09", 100, 10, 100, 0),
         ])
         result = ae.compute_period_analytics(df, START, END, ACCOUNT)
-        assert result["total_r_net"] == pytest.approx(1.0, abs=1e-9)
+        assert result["total_r_net"] == pytest.approx(0.0, abs=1e-9)
+        assert result["campaigns_closed"] == 0
+        assert result["excluded_count"] == 1
+        assert result["excluded_pnl"] == pytest.approx(100.0, abs=1e-9)
 
     def test_r_sums_correctly_across_multiple_campaigns(self):
         df = pd.DataFrame([

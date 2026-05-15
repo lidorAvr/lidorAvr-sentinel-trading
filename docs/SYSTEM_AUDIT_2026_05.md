@@ -650,9 +650,20 @@ bot      = telebot.TeleBot(TOKEN)           # לא קורס עכשיו...
 ```
 קריסה ראשונה תהיה רק בפנייה הראשונה מ-Telegram — בלי הודעת שגיאה ברורה ב-log. סעיף זה נשאר פתוח. עדיפות נמוכה כי המערכת לא משוחררת multi-tenant; ב-Hyperscaler Phase A נדרשת validation נוקשה (`docs/teams/HYPERSCALER_DESIGN_V0.md`).
 
-### 5.6 Issue F (NEW, HIGH) — analytics_engine doesn't filter ALGO/DATA_INCOMPLETE
+### 5.6 Issue F (NEW, HIGH) — analytics_engine doesn't filter ALGO/DATA_INCOMPLETE — **RESOLVED (Sprint 10)**
 
-**ההפרה:** AGENTS.md invariant #8 — *"Win Rate and Expectancy must never include DATA_INCOMPLETE or ALGO_OBSERVED campaigns."*
+> **STATUS: RESOLVED.** `analytics_engine.compute_period_analytics` now applies
+> two distinct filters: edge stats (WR/Expectancy/PF/R/best-worst/setup-breakdown)
+> count only `is_stat_countable` campaigns (excludes ALGO_OBSERVED + DATA_INCOMPLETE,
+> mirroring `adaptive_risk_engine._is_disc` and `dashboard.py`); process-discipline
+> stats (`missing_stop_rate`, `oversized_rate`) count manual campaigns including
+> DATA_INCOMPLETE (a missing stop is exactly what they measure) and exclude only
+> ALGO. New `excluded_count` / `excluded_pnl` fields added for report disclosure.
+> 9 new tests in `tests/test_analytics_engine.py::TestStatBucketExclusion`; two
+> pre-existing tests that encoded the bug were corrected. Full suite green
+> (1329 passed). Follow-up: surface `excluded_count` in `report_renderer.py`.
+
+**ההפרה (V2, pre-fix):** AGENTS.md invariant #8 — *"Win Rate and Expectancy must never include DATA_INCOMPLETE or ALGO_OBSERVED campaigns."*
 
 **Code evidence:**
 

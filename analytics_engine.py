@@ -40,29 +40,27 @@ def compute_period_analytics(
         if campaigns.empty:
             return {**_empty(), "target_risk_usd": t_risk}
 
-        wins   = campaigns[campaigns["net_pnl"] > 0]
-        losses = campaigns[campaigns["net_pnl"] <= 0]
-        n      = len(campaigns)
+        # Two distinct filters (AGENTS.md invariant #8):
+        #   • Edge stats (WR / Expectancy / PF / R / best-worst / breakdown)
+        #     count ONLY stat-countable campaigns — never ALGO_OBSERVED or
+        #     DATA_INCOMPLETE. Mirrors adaptive_risk_engine._is_disc and
+        #     dashboard.py so the report matches the bot and dashboard.
+        #   • Process-discipline stats (missing_stop_rate / oversized_rate)
+        #     count MANUAL campaigns including DATA_INCOMPLETE — a missing
+        #     stop is precisely what that metric exists to surface. Only
+        #     ALGO (externally managed, no manual stop) is excluded there.
+        bucket    = campaigns["stat_bucket"]
+        countable = campaigns[bucket.apply(ec.is_stat_countable)]
+        manual    = campaigns[bucket != ec.STAT_BUCKET_ALGO]
+        excluded  = campaigns[~bucket.apply(ec.is_stat_countable)]
 
-        win_rate    = len(wins) / n if n else 0
-        avg_win_r   = float(wins["net_r"].mean())   if not wins.empty   else 0.0
-        avg_loss_r  = float(losses["net_r"].mean()) if not losses.empty else 0.0
-        expectancy  = win_rate * avg_win_r + (1 - win_rate) * avg_loss_r
+        excluded_count = int(len(excluded))
+        excluded_pnl   = float(excluded["net_pnl"].sum()) if not excluded.empty else 0.0
 
-        gross_profit = wins["net_pnl"].sum()   if not wins.empty   else 0.0
-        gross_loss   = abs(losses["net_pnl"].sum()) if not losses.empty else 0.0
-        profit_factor = gross_profit / gross_loss if gross_loss > 0 else (math.inf if gross_profit > 0 else 0.0)
-
-        total_r   = float(campaigns["net_r"].sum())
-        real_pnl  = float(campaigns["net_pnl"].sum())
-
-        best  = campaigns.loc[campaigns["net_pnl"].idxmax()]
-        worst = campaigns.loc[campaigns["net_pnl"].idxmin()]
-
-        # Execution quality
+        # Execution quality — over MANUAL campaigns (DATA_INCOMPLETE kept).
         buy_in_period = df[
             df["side"].str.upper().eq("BUY") &
-            df["campaign_id"].isin(campaigns["campaign_id"])
+            df["campaign_id"].isin(manual["campaign_id"])
         ].copy()
         n_buys = len(buy_in_period)
 
@@ -79,13 +77,40 @@ def compute_period_analytics(
                 over = (has_stop["actual_risk"] > t_risk * 1.25).sum()
                 oversized_rate = over / len(has_stop)
 
+        if countable.empty:
+            return {**_empty(), "target_risk_usd": t_risk,
+                    "missing_stop_rate": float(missing_stop_rate),
+                    "oversized_rate":    float(oversized_rate),
+                    "excluded_count":    excluded_count,
+                    "excluded_pnl":      excluded_pnl}
+
+        wins   = countable[countable["net_pnl"] > 0]
+        losses = countable[countable["net_pnl"] <= 0]
+        n      = len(countable)
+
+        win_rate    = len(wins) / n if n else 0
+        avg_win_r   = float(wins["net_r"].mean())   if not wins.empty   else 0.0
+        avg_loss_r  = float(losses["net_r"].mean()) if not losses.empty else 0.0
+        expectancy  = win_rate * avg_win_r + (1 - win_rate) * avg_loss_r
+
+        gross_profit = wins["net_pnl"].sum()   if not wins.empty   else 0.0
+        gross_loss   = abs(losses["net_pnl"].sum()) if not losses.empty else 0.0
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else (math.inf if gross_profit > 0 else 0.0)
+
+        total_r   = float(countable["net_r"].sum())
+        real_pnl  = float(countable["net_pnl"].sum())
+
+        best  = countable.loc[countable["net_pnl"].idxmax()]
+        worst = countable.loc[countable["net_pnl"].idxmin()]
+
         # R / day (clip days to ≥1 to avoid div/0)
-        campaigns["days_held"] = campaigns["days_held"].clip(lower=1)
-        avg_r_per_day = float((campaigns["net_r"] / campaigns["days_held"]).mean())
+        countable = countable.copy()
+        countable["days_held"] = countable["days_held"].clip(lower=1)
+        avg_r_per_day = float((countable["net_r"] / countable["days_held"]).mean())
 
         # Setup breakdown
         setup_breakdown = {}
-        for setup, grp in campaigns.groupby("setup_type"):
+        for setup, grp in countable.groupby("setup_type"):
             g_wins   = grp[grp["net_pnl"] > 0]
             g_losses = grp[grp["net_pnl"] <= 0]
             gw_pnl   = g_wins["net_pnl"].sum()   if not g_wins.empty   else 0
@@ -116,6 +141,8 @@ def compute_period_analytics(
             "oversized_rate":    float(oversized_rate),
             "avg_r_per_day":     avg_r_per_day,
             "target_risk_usd":   t_risk,
+            "excluded_count":    excluded_count,
+            "excluded_pnl":      excluded_pnl,
         }
 
     except Exception as e:
@@ -252,8 +279,14 @@ def _aggregate_campaigns(closed: pd.DataFrame, target_risk_usd: float) -> pd.Dat
         _risk_row = {"price": entry, "quantity": qty, "initial_stop": init_sl,
                      "side": str(fb.get("side", "BUY"))}
         _metrics  = ec.get_campaign_risk_metrics(_risk_row)
-        orig_risk = _metrics["original_risk"] if _metrics["valid"] else target_risk_usd
+        true_orig_risk = _metrics["original_risk"] if _metrics["valid"] else 0.0
+        # net_r keeps the target_risk fallback so the displayed R stays usable,
+        # but stat_bucket is classified from the TRUE risk — otherwise the
+        # fallback would mask a missing stop and misclassify a DATA_INCOMPLETE
+        # campaign as countable.
+        orig_risk = true_orig_risk if true_orig_risk > 0 else target_risk_usd
         net_r     = net_pnl / orig_risk if orig_risk > 0 else 0.0
+        stat_bucket = ec.classify_stat_bucket(setup, true_orig_risk)
 
         entry_date     = buys["trade_date"].iloc[0]
         last_sell_date = sells["trade_date"].max() if not sells.empty else entry_date
@@ -263,6 +296,7 @@ def _aggregate_campaigns(closed: pd.DataFrame, target_risk_usd: float) -> pd.Dat
             "campaign_id": cid, "symbol": sym, "setup_type": setup,
             "net_pnl": net_pnl, "net_r": net_r,
             "orig_risk": orig_risk, "days_held": days_held,
+            "stat_bucket": stat_bucket,
         })
     return pd.DataFrame(records) if records else pd.DataFrame()
 
@@ -278,4 +312,5 @@ def _empty() -> dict:
         "setup_breakdown": {},
         "missing_stop_rate": 0.0, "oversized_rate": 0.0,
         "avg_r_per_day": 0.0, "target_risk_usd": 0.0,
+        "excluded_count": 0, "excluded_pnl": 0.0,
     }
