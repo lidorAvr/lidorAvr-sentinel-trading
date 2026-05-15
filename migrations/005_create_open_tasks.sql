@@ -1,6 +1,7 @@
 -- Sprint 10 — open_tasks table for the Action-Items (Open Tasks) engine.
--- DRAFT — authored by the Architecture team. NOT executed against any database.
--- Run in Supabase → SQL Editor. Safe: IF NOT EXISTS (no-op if already applied).
+-- APPLIED 2026-05-15 by the founder in Supabase SQL Editor
+-- (verification "null_user_id_rows = 0" confirmed). Authored by the
+-- Architecture team. Safe to re-run: IF NOT EXISTS (no-op if already applied).
 --
 -- Stores LIFECYCLE DELTAS ONLY (done / skipped / user notes). The set of *open*
 -- tasks is always re-derived from engine_core.compute_position_state(), so the
