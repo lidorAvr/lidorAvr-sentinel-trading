@@ -791,3 +791,80 @@ A closed free beta removes any need for a billing system in the near term (Hyper
 ### Constraint / unblocks
 
 No billing/payments work needed before Phase D. Marketing Q1 should plan for closed-beta recruitment, not paid acquisition. Pricing model is an explicit open item for a future decision (post-beta). Adaptive-UX onboarding can assume invited users (no public signup) for V1.
+
+---
+
+## DEC-20260515-006 — ALGO in Open Tasks: one consolidated button + non-binding recommendations
+
+Date: 2026-05-15
+Status: decided (product) — **conditional on Mark's observer-safe ruling (Sprint 11 Wave 1)**
+
+### Decision
+
+Replace the per-ALGO `task_algo_noop` popup with a SINGLE consolidated ALGO entry in the Open Tasks list. Tapping it shows: (1) an explicit disclaimer "המלצה בלבד, לא חובת ביצוע — מנוהל חיצונית", then (2) for each ALGO-managed position, the engine's *observed* recommended action. These are **info-only**: never a `Task` with a status, never counted, never enter Win-Rate/Expectancy, never instruct an ALGO stop write.
+
+### Rationale
+
+Founder wants visibility into what the system *observes* for ALGO positions instead of a dead-end popup. Surfacing the engine's existing observation as a clearly non-binding read-out preserves the value while keeping Sentinel out of ALGO management.
+
+### Constraint (hard — gates implementation)
+
+This shifts ALGO from "pure observation, no text" toward "advisory read-out", which is adjacent to the AGENTS.md ALGO-observer Red Line (DEC-20260511-001 / invariants #5, #8). **Implementation is blocked until Mark rules** (Sprint 11 Wave 1) on the exact observer-safe form: the wording must be descriptive of the engine's observation only, explicitly non-binding, produce no actionable `Task`, and never feed stats. If Mark cannot define a safe form, fall back to DEC option "consolidated button, no recommendations".
+
+### Alternatives considered
+
+- **Consolidated button, no recommendations** (red-line-safe fallback): one button "מנוהל חיצונית — אין פעולת Sentinel".
+- **Remove ALGO from tasks entirely**: cleanest, but loses the signal that ALGO positions exist.
+
+---
+
+## DEC-20260515-007 — Suppress the RUNNER task when the stop already meets the engine suggestion
+
+Date: 2026-05-15
+Status: decided (methodology) — Mark defines the epsilon (Sprint 11 Wave 1)
+
+### Decision
+
+`PROTECT_RUNNER_PROFIT` is **not** emitted when the campaign's current stop already satisfies the engine's own `compute_suggested_trail_stop()` — i.e. `current_stop >= suggested_stop - epsilon`. A RUNNER task appears only when there is a *material* tighten to perform.
+
+### Rationale
+
+Observed live (MRVL): current stop $157.70 vs engine suggestion $158.11 — a $0.41 (0.26%) "task" that is pure noise. A task list must contain *actionable* items; surfacing a no-op tighten erodes trust in the whole list.
+
+### Constraint
+
+`epsilon` is a methodology threshold, defined by Mark in Sprint 11 Wave 1 (not invented by engineering). The check is read-only over the engine's own suggested-stop output — zero new R/NAV/campaign math. Tightening that *is* material still surfaces unchanged.
+
+---
+
+## DEC-20260515-008 — Audit trail exposed to the USER as a retrospective review surface
+
+Date: 2026-05-15
+Status: decided (product)
+
+### Decision
+
+The recorded action trail (`audit_log`: stop changes incl. loosen-overrides, task done/skip, risk-pct changes, etc.) is exposed to the **user** — not buried in the developer menu — as a read-only "review my actions / performance" surface in the normal menu, in friendly Hebrew, most-recent-first.
+
+### Rationale
+
+The founder's goal is self-review ("שיכול לעבור אחרונה על הביצועים") — retrospective accountability over their own decisions. That is a first-class user need, not a dev/forensic one.
+
+### Constraint
+
+`audit_logger.py` is currently write-only **by design**. This adds a *deliberate, additive read path* (a new read function) — read-only, never mutates, honest data-source labels, still admin-only at the bot boundary (secure_runner unchanged). Mark (Sprint 11 Wave 1) confirms the read surface cannot present any fallback/derived number as authoritative (AGENTS.md #1).
+
+---
+
+## DEC-20260515-009 — Telegram rate-limit stays 8 msgs / 60s (secure_runner unchanged)
+
+Date: 2026-05-15
+Status: decided (security)
+
+### Decision
+
+The `telegram_bot_secure_runner.py` rate-limit (8 messages / 60s, 90s cooldown) is **kept as-is**. It tripped during intensive smoke-testing; that is the guardrail working. Work at a reasonable pace rather than weaken a security Red Line.
+
+### Rationale
+
+`telegram_bot_secure_runner.py` is a CLAUDE.md hard constraint. A single-user-admin convenience is not worth loosening anti-spam. Recorded so it is not re-litigated.
