@@ -700,9 +700,23 @@ win_rate    = len(wins) / n if n else 0
 
 **Severity: HIGH.** זו הפרה ישירה של Red Line #8 ושל Prime Directive #2 (explainability of R math). מנעת marketing claim על WR או expectancy עד שמתקנים.
 
-### 5.7 Issue N3 (NEW, HIGH) — Race on risk_monitor_state.json
+### 5.7 Issue N3 (NEW, HIGH) — Race on risk_monitor_state.json — **RESOLVED (Sprint 10)**
 
-**שני writers ללא תיאום, על אותו קובץ, מקונטיינרים שונים:**
+> **STATUS: RESOLVED.** New `state_io.py` provides `atomic_write_json`
+> (tempfile + `os.replace`, atomic on POSIX) and `file_lock`
+> (`fcntl.flock` on `<path>.lock`, cross-container via the shared /app
+> inode). `risk_monitor.save_state` and `bot_helpers._write_runner_decision`
+> now write under the same lock with atomic replace, so the file is never
+> torn and the bot's RMW never interleaves with risk-monitor's rewrite.
+> The catastrophic torn-read → silent-reset → empty-state-flush mode
+> (anomaly #2) and the reader-crash mode (anomaly #3) are eliminated;
+> the long-cycle stale-copy lost-update (anomaly #1) is greatly mitigated
+> and fully closes only in Hyperscaler Phase B (state → DB). 15 tests in
+> `tests/test_state_io.py` incl. a 20-thread concurrent-RMW stress test;
+> existing `_write_runner_decision` tests still green. Full suite: 1341
+> passed.
+
+**שני writers ללא תיאום, על אותו קובץ, מקונטיינרים שונים (V2, pre-fix):**
 
 Writer #1 — `risk_monitor.py:106-107` (קונטיינר `risk-monitor`):
 ```python

@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 import xml.etree.ElementTree as ET
 import engine_core as ec
 import adaptive_risk_engine as are
+import state_io
 
 _HEARTBEAT_DIR = "/app/state"
 
@@ -99,12 +100,14 @@ def _should_fire_state_alert(new_state: str, prev_alerted_type: str,
 
 
 def load_state():
-    try:
-        with open(STATE_FILE, "r", encoding="utf-8") as f: return json.load(f)
-    except: return {"positions": {}, "cluster": {}}
+    return state_io.read_json(STATE_FILE, {"positions": {}, "cluster": {}})
 
 def save_state(state):
-    with open(STATE_FILE, "w", encoding="utf-8") as f: json.dump(state, f, ensure_ascii=False, indent=2)
+    # Locked + atomic: serializes against the telegram-bot RMW in
+    # bot_helpers._write_runner_decision so the shared state file is never
+    # torn or reset. See state_io / SYSTEM_AUDIT §5.7 (Issue N3).
+    with state_io.file_lock(STATE_FILE):
+        state_io.atomic_write_json(STATE_FILE, state)
 
 def get_ibkr_nav():
     try:
