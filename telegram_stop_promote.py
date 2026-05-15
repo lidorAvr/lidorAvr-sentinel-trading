@@ -39,11 +39,12 @@ Red lines respected
 from telebot import types
 import pandas as pd
 
+import audit_logger
 import engine_core as ec
 import supabase_repository as repo
 from bot_core import bot, supabase, user_state, RTL
 from bot_helpers import get_account_settings, get_nav_and_risk
-from telegram_menus import get_portfolio_menu
+from telegram_menus import get_main_menu, get_portfolio_menu
 
 
 def _compute_open_r(row, target_risk_usd):
@@ -232,3 +233,162 @@ def handle_stop_promote_pick(chat_id, idx):
         f"{RTL}*הקלד את מחיר הסטופ החדש:*",
         reply_markup=markup, parse_mode="Markdown",
     )
+
+
+# ── Ratchet-up guard (MARK_DAY3_GUARDRAILS U3/C3; DEC: founder chose ──────────
+#    "explicit confirmation + audit"). Minervini rule: a long position's stop
+#    only ever moves UP. Lowering it ("loosening") is the single most
+#    methodology-violating action the bot can permit, so it requires an
+#    explicit, defaulted-NO confirmation and a write-only audit_log entry.
+#
+#    This module is the ONLY place the rule lives; both stop-write paths
+#    (input_new_sl, tighten_stop in telegram_bot.py) call guard_stop_write
+#    immediately before repo.update_stop_for_campaign. The stop *value* math
+#    is unchanged — this only gates whether the byte-identical write happens.
+_LOOSEN_EPS = 0.005  # ignore sub-cent float noise; stops are 2-dp dollar prices
+
+
+def _is_loosen(current_stop, new_sl) -> bool:
+    """True only when we can POSITIVELY determine new_sl loosens the stop.
+
+    Long-only assumption (this is a Minervini long-momentum system; no shorts
+    in the data model): loosening = moving the stop DOWN, i.e.
+    ``new_sl < current_stop``. Unknown / non-positive current stop (e.g. the
+    very first stop being set) → False, so legitimate first-time stop entry
+    and all tightening proceed byte-identically with zero added friction and
+    zero false positives.
+    """
+    try:
+        if current_stop is None:
+            return False
+        c = float(current_stop)
+        n = float(new_sl)
+        if c <= 0:
+            return False
+        return n < c - _LOOSEN_EPS
+    except (TypeError, ValueError):
+        return False
+
+
+def get_campaign_current_stop(campaign_id):
+    """Best-effort current stop for a campaign; None if not resolvable.
+
+    Used by the tighten_stop path, whose user_state carries only sym +
+    campaign_id (no stop). Uses the SAME data path as the position list
+    (repo.get_all_trades + ec.get_open_positions_campaign). If it cannot be
+    resolved the guard proceeds (does not block a runner-alert tighten we
+    cannot verify) — documented limitation; the high-value input_new_sl path
+    always has the current stop in state and is fully covered.
+    """
+    if not campaign_id:
+        return None
+    try:
+        df = pd.DataFrame(repo.get_all_trades(supabase))
+        pos_res = ec.get_open_positions_campaign(df)
+        if not pos_res["ok"]:
+            return None
+        for rec in pos_res["data"].to_dict("records"):
+            if str(rec.get("campaign_id")) == str(campaign_id):
+                sl = rec.get("stop_loss")
+                if sl in (None, ""):
+                    return None
+                return float(sl)
+    except Exception:
+        return None
+    return None
+
+
+def guard_stop_write(chat_id, *, cid, sym, new_sl, current_stop, resume) -> bool:
+    """Ratchet-up gate. Call immediately before repo.update_stop_for_campaign.
+
+    Returns True if the write was INTERCEPTED (a loosen): the caller MUST NOT
+    write and MUST return — a defaulted-NO confirmation has been sent and the
+    pending write stashed in user_state. Returns False to proceed
+    byte-identically (tighten / equal / unknown current stop).
+
+    resume: dict carried to finalize_pending_loosen, e.g. {'batch': bool}.
+    """
+    if not _is_loosen(current_stop, new_sl):
+        return False
+    cur = float(current_stop)
+    new = float(new_sl)
+    diff = cur - new
+    user_state[chat_id] = {
+        "action": "loosen_pending",
+        "pending": {
+            "cid": cid,
+            "sym": sym,
+            "new_sl": new,
+            "current_stop": cur,
+            "resume": resume or {},
+        },
+    }
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(types.InlineKeyboardButton(
+        "⚠️ כן, לרופף את הסטופ (יירשם ביומן הביקורת)",
+        callback_data="loosen_confirm|yes"))
+    markup.add(types.InlineKeyboardButton(
+        "✅ לא — השאר את הסטופ הקיים",
+        callback_data="loosen_confirm|no"))
+    bot.send_message(
+        chat_id,
+        f"{RTL}🛑 *אזהרת ריפוי סטופ — {sym}*\n"
+        f"{RTL}סטופ נוכחי: `${cur:.2f}`\n"
+        f"{RTL}סטופ מבוקש: `${new:.2f}`  (ירידה של `${diff:.2f}`)\n\n"
+        f"{RTL}הורדת סטופ מנוגדת לכלל ה-Ratchet של Minervini — "
+        f"סטופ של פוזיציית long רק עולה, לעולם לא יורד.\n"
+        f"{RTL}ברירת המחדל היא *לא לשנות*. אישור מפורש יירשם ביומן הביקורת.",
+        reply_markup=markup, parse_mode="Markdown",
+    )
+    return True
+
+
+def finalize_pending_loosen(chat_id, approved: bool):
+    """Resolve a pending loosen confirmation (called from the callback router).
+
+    Approved → write an audit_log row FIRST (fail-open), then the
+    byte-identical repo.update_stop_for_campaign, then resume the original
+    flow. Rejected (default) → leave the stop untouched.
+    """
+    st = user_state.get(chat_id, {})
+    pending = st.get("pending") if st.get("action") == "loosen_pending" else None
+    if not pending:
+        bot.send_message(chat_id, f"{RTL}⚠️ אין פעולת סטופ ממתינה.",
+                          reply_markup=get_main_menu())
+        return
+    user_state.pop(chat_id, None)
+    cid = pending["cid"]
+    sym = pending["sym"]
+    new_sl = pending["new_sl"]
+    cur = pending["current_stop"]
+    resume = pending.get("resume", {})
+
+    if not approved:
+        bot.send_message(
+            chat_id,
+            f"{RTL}✅ *בוטל — הסטופ לא שונה* ({sym})\n"
+            f"{RTL}הסטופ נשאר `${cur:.2f}`.",
+            reply_markup=get_main_menu(), parse_mode="Markdown")
+        return
+
+    audit_logger.log_action(
+        supabase, audit_logger.ACTION_SETTINGS_CHANGE,
+        chat_id=chat_id,
+        before={"stop_loss": cur},
+        after={"stop_loss": new_sl},
+        metadata={
+            "kind": "stop_loosen_override",
+            "symbol": sym,
+            "campaign_id": cid,
+            "loosen_usd": round(cur - new_sl, 4),
+        },
+    )
+    repo.update_stop_for_campaign(supabase, cid, new_sl)
+    bot.send_message(
+        chat_id,
+        f"{RTL}⚠️ *סטופ רופף ועודכן — {sym}*\n"
+        f"{RTL}סטופ חדש: `${new_sl:.2f}` (היה `${cur:.2f}`).\n"
+        f"{RTL}הפעולה נרשמה ביומן הביקורת.",
+        reply_markup=get_main_menu(), parse_mode="Markdown")
+    if resume.get("batch"):
+        handle_stop_promote_entry(chat_id)

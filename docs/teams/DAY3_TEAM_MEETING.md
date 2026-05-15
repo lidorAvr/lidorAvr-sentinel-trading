@@ -43,7 +43,7 @@
 - ✅ U5: stop **value write byte-identical** — verified `telegram_bot.py:453-474` / `:427-434` unchanged (`new_sl=float(text)` → `repo.update_stop_for_campaign`). No R/NAV/campaign math touched.
 - ✅ U6: batch loop does not bypass anti-spam / per-position state dedup.
 - ✅ U7: legacy typed-index path preserved as fallback.
-- ❌ **U3 / C3 — FAIL (OPEN, pre-existing, NOT a regression):** `input_new_sl` / `tighten_stop` still write any `float(text)` with **no comparison to the current stop** → a user can silently *loosen* a stop, violating the Minervini ratchet-up rule. Mark's guardrail required the redesign to *close* this (named loosen-confirmation + `audit_log`, default NO). The UX redesign deliberately kept the write byte-identical and did **not** add the guard. Mark explicitly noted this gap is **pre-existing** (it existed before Day 3), so shipping the UX improvement is strictly better, not worse — but Mark's gate is **not fully signed off** until U3 is closed.
+- ✅ **U3 / C3 — CLOSED (post-meeting, founder-directed).** The pre-existing gap (`input_new_sl` / `tighten_stop` wrote any `float(text)` with no current-stop comparison → silent stop *loosen*) is now guarded. Founder chose "explicit confirmation + audit". Implemented in `telegram_stop_promote.py` (`guard_stop_write` / `finalize_pending_loosen` / `get_campaign_current_stop`), wired before `repo.update_stop_for_campaign` in both paths + a `loosen_confirm|` callback. Long-only ratchet: a loosen (`new_sl < current_stop`) triggers a **defaulted-NO** inline confirmation; approval writes an `audit_log` `settings_change` row **before** the byte-identical write. Tighten / equal / unknown-current → byte-identical passthrough (zero added friction, no false positives — stop value math untouched). 21 tests (`tests/test_stop_ratchet_guard.py`); full suite 1466 passed. **Mark's gate now fully signed off.**
 
 ### Marketing (M1-M5) — PASS
 - ✅ No %/PnL/backtest (DEC-004); no "AI" claim; not investment advice; Minervini acknowledgment-only (DEC-001); closed-beta is the GTM (DEC-005).
@@ -69,7 +69,7 @@
 ---
 
 ## Recommended next (Sprint 10 P1)
-1. **U3/C3 ratchet-up guard** — top safety item; founder decision on block-vs-confirm, then implement with tests.
+1. ~~U3/C3 ratchet-up guard~~ — **DONE this session** (founder chose explicit-confirm + audit; 21 tests; suite 1466).
 2. `/clean` confirmation gate (pre-existing AGENTS.md bulk-write risk).
 3. Price-fallback labelling (pre-existing invariant #1 risk).
 4. Hyperscaler PR-A3+ (thread `user_id` through writes) — only after the founder is ready to move past single-user.

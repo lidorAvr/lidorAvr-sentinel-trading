@@ -75,6 +75,13 @@ def handle_queries(call):
         )
         return
 
+    # ── Ratchet-up loosen confirmation (MARK_DAY3_GUARDRAILS U3/C3) ──────────
+    if data.startswith("loosen_confirm|"):
+        bot.answer_callback_query(call.id)
+        approved = data.split("|", 1)[1] == "yes"
+        _tb.finalize_pending_loosen(chat_id, approved)
+        return
+
     if data == "start_trail_flow":
         # Tap-only path: show inline symbol buttons instead of asking the
         # user to TYPE a trade number while scrolling a long message.

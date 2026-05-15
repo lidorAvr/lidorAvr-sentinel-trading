@@ -36,7 +36,10 @@ from telegram_portfolio import handle_drilldown, handle_market_regime, handle_po
 
 from telegram_stop_promote import (handle_stop_promote_entry,  # noqa: E402 — re-exported for telegram_callbacks lazy import
                                     handle_stop_promote_pick,
-                                    build_stop_promote_keyboard)
+                                    build_stop_promote_keyboard,
+                                    guard_stop_write,
+                                    get_campaign_current_stop,
+                                    finalize_pending_loosen)
 
 @bot.message_handler(content_types=['document'])
 def handle_document_upload(message):
@@ -430,6 +433,11 @@ def handle_all_messages(message):
                 sym_ts  = state.get('sym', '')
                 cid_ts  = state.get('campaign_id', '')
                 if cid_ts:
+                    if guard_stop_write(chat_id, cid=cid_ts, sym=sym_ts,
+                                        new_sl=new_sl,
+                                        current_stop=get_campaign_current_stop(cid_ts),
+                                        resume={'batch': False}):
+                        return  # loosen — confirmation pending, do not write
                     repo.update_stop_for_campaign(supabase, cid_ts, new_sl)
                     bot.send_message(chat_id, f"{RTL}🔒 *סטופ עודכן — {sym_ts}*\nסטופ חדש: `${new_sl:.2f}`", reply_markup=get_main_menu(), parse_mode="Markdown")
                 else:
@@ -461,6 +469,12 @@ def handle_all_messages(message):
                 trade = state['selected_trade']
                 cid = trade.get('campaign_id')
                 if cid:
+                    if guard_stop_write(chat_id, cid=cid,
+                                        sym=trade.get('symbol', ''),
+                                        new_sl=new_sl,
+                                        current_stop=trade.get('stop_loss'),
+                                        resume={'batch': batch_mode}):
+                        return  # loosen — confirmation pending, do not write
                     repo.update_stop_for_campaign(supabase, cid, new_sl)
                     if batch_mode:
                         bot.send_message(
