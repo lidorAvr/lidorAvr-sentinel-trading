@@ -955,5 +955,33 @@ Mark (Sprint 15 Wave 1) defines the band thresholds (grounded, no invented numbe
 
 ### Open (NOT decided — for the Sprint 15 team meeting / pending founder input)
 
-- **ALGO Oversight Gate** (founder-proposed, "bring to team for everyone's review"): block ALGO size-up / new ALGO assets / exposure-up while ANY of {ALGO Net PnL < −5R, rolling expectancy negative over last 20–30 trades, Profit Factor < 1, Visibility < 70, stop/max-loss unknown}. → Mark evaluates methodologically in Wave 1; becomes a DEC only after founder confirmation.
+- **ALGO Oversight Gate** — **RESOLVED → see DEC-20260515-014 below** (founder accepted Mark's REFINE; structure locked, numeric thresholds pending founder's real-ALGO-data fine-tuning).
 - **BLOCKED pending founder's ALGO rules** (founder will provide): ALGO open-position data quality (`State/InitStop/CurrStop unknown`, `Visibility 40/100` not good enough); strategy-adaptive "dead money" alert when no smart follow-through. Team designs the *framework to absorb* the rules; no ALGO logic invented.
+
+---
+
+## DEC-20260515-014 — ALGO Oversight Gate (Mark's refined structure, accepted)
+
+Date: 2026-05-16
+Status: **structure accepted (founder)** — numeric thresholds pending founder's real-ALGO-data fine-tuning; **NOT to be built** until that data + tuning are in.
+
+### Decision
+
+The founder accepted Mark's `REFINE` (`MARK_SPRINT15_RULINGS.md §4`). The Gate's **structure is locked**; the founder will supply a full review with real ALGO data to fine-tune the exact numbers.
+
+**Locked structure:**
+- **Advisory only.** The Gate withholds the *founder's own* discretionary ALGO size-up / new-asset / exposure-up decision. It NEVER instructs the ALGO, never alters an ALGO trade, emits at most `Review Required` (DEC-20260511-001 display rule) — never `Action Required`. This is the methodological clearance: advisory oversight ≠ management, so it is admissible under DEC-20260511-001.
+- **Triggers (any → Gate engages):**
+  1. ALGO Net PnL `< −5R` on an explicit **Account-R** basis (ALGO has no real stop; per DEC-20260515-011) — must be stated.
+  2. Rolling expectancy negative over the last 20–30 ALGO trades, computed on an **ALGO-segregated cohort that is EXCLUDED from headline Win-Rate/Expectancy** (invariant #8) — a separate observer metric, never leaking into main stats.
+  3. ALGO Profit Factor `< 1`, same ALGO-segregated cohort, same #8 isolation.
+  4. Stop / max-loss unknown → gates **new ALGO assets ONLY** (not size-up on existing, not a blanket exposure freeze).
+- **DROPPED:** the original `Visibility < 70` condition — vacuous (ALGO visibility is capped at 40 by design, `compute_risk_visibility_score:298-299`, so `<70` is always true). The existing visibility score already encodes the intent; if a visibility trigger is wanted it must be reframed (e.g. `Visibility == 20` / no target risk), to be decided with the real data.
+
+### Rationale
+
+Founder's risk-discipline intent is sound; Mark cleared the observer-mode compatibility (advisory, `Review Required` only). The exact thresholds (−5R basis, 20–30 window, PF<1, any reframed visibility trigger) interlock with the founder's real ALGO performance data and forthcoming ALGO rules — locking the structure now while fine-tuning numbers against real data avoids both rework and an invented-number red-line breach.
+
+### Constraint / next
+
+NOT built this sprint or until: (a) the founder's full real-ALGO-data review arrives, (b) Mark + team fine-tune the numeric thresholds against it, (c) it is re-confirmed. The ALGO-segregated expectancy/PF cohort must never contaminate headline stats (#8). Build also stays gated on the still-pending founder ALGO rules (the same data feeds the BLOCKED #4/#5 framework above).
