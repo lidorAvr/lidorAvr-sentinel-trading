@@ -11,6 +11,7 @@ import json
 import xml.etree.ElementTree as ET
 import engine_core as ec
 import adaptive_risk_engine as are
+import telegram_formatters as tf  # Sprint-15: import-pure helpers (no telebot/supabase/engine import inside tf)
 import state_io
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -115,6 +116,12 @@ if total_deposited != settings.get("total_deposited") or risk_pct_input != setti
 target_risk_usd = current_acc_size * (risk_pct_input / 100)
 st.sidebar.info(f"⚖️ **Risk Profile:** You are risking **{risk_pct_input:.2f}%** (${target_risk_usd:,.0f}) per trade.")
 
+# Sprint-15 / DEC-20260515-012 — Risk Capital Basis declaration (labelling
+# only; the engine still derives target risk from NAV — no basis change).
+_nav_source = "broker" if "nav" in settings else "deposited"
+st.sidebar.caption(tf.fmt_risk_capital_basis(current_acc_size, target_risk_usd,
+                                             nav_source=_nav_source, ai_copy=True))
+
 all_time_return_pct = ((current_acc_size - total_deposited) / total_deposited) * 100 if total_deposited > 0 else 0
 
 st.sidebar.markdown("---")
@@ -189,9 +196,25 @@ def compute_live_portfolio_data(open_trades_dict, _acc_size, _target_risk_usd, _
         r_eff = ec.compute_r_efficiency(total_campaign_r, days_held)
         mfe_mae = ec.compute_mfe_mae(sym, row.get('entry_date'), base_price, init_sl)
 
+        # Sprint-15 / DEC-20260515-011 — dual R via the EXISTING engine
+        # functions, SAME open_pnl input as the inline open_r_val above (no
+        # new R math). Open_R stays the byte-identical PRIMARY number; a
+        # sibling Account_R column is ADDED (design §2.2 — no format change to
+        # Open_R).
+        _is_algo_dash = str(setup).upper() == 'ALGO'
+        _structure_r_dash = ec.compute_r_true(open_pnl, original_campaign_risk)
+        _account_r_dash = ec.compute_r_target(open_pnl, _target_risk_usd)
+        _rbasis_dash = tf.dual_r_basis(
+            original_campaign_risk=original_campaign_risk,
+            frozen_target_risk_usd=_target_risk_usd,
+            is_algo=_is_algo_dash,
+        )
         live_positions.append({
             'Symbol': sym, 'Setup': setup, 'Exposure_USD': pos_value, 'Exposure_Pct': weight_pct,
             'PnL': open_pnl, 'Open_R': open_r_val, 'Total_R': total_campaign_r, 'Score': score, 'Status': status, 'Sizing': sizing_status,
+            'Structure_R': (_structure_r_dash if _rbasis_dash['structure_valid'] else None),
+            'Account_R': (_account_r_dash if _rbasis_dash['account_valid'] else None),
+            'R_Basis': _rbasis_dash['primary_basis_label'],
             'Sector': sec_b.get('sector') or "Other", 'Entry': entry, 'Current': curr,
             'OriginalRisk': original_campaign_risk, 'GivebackRisk': giveback_risk_usd, 'LockedProfit': locked_profit_usd,
             'CapitalRisk': current_open_loss_risk,
@@ -408,10 +431,30 @@ else:
     st.sidebar.subheader("⚖️ Data Reconciliation")
     st.sidebar.write(f"Broker NAV: **${current_acc_size:,.2f}**")
     st.sidebar.write(f"Expected DB Equity: **${db_equity_expected:,.2f}**")
-    if abs(reconciliation_gap) > 10:
-        st.sidebar.warning(f"Unrecorded Legacy PnL: **${reconciliation_gap:,.2f}**\n\n*(הפרש נובע מעסקאות/הפקדות ישנות שאינן ב-DB)*")
+    # Sprint-15 / DEC-20260515-013 — classify the ALREADY-computed
+    # reconciliation_gap (dashboard.py:404-405, reused read-only — NOT
+    # recomputed) into Mark's 4 bands. dashboard.py:412 previously ASSERTED a
+    # single cause ("Unrecorded Legacy PnL … עסקאות/הפקדות ישנות") which
+    # violates invariant #1 — replaced with Mark's verbatim non-asserting
+    # "cause unverified … manual verification required" wording.
+    try:
+        _max_open_risk = float(live_df["OriginalRisk"].max()) if (not live_df.empty and "OriginalRisk" in live_df) else 0.0
+    except Exception:
+        _max_open_risk = 0.0
+    _recon_status = tf.classify_broker_reconciliation(
+        current_acc_size, total_deposited, total_pnl_net,
+        reconciliation_gap=reconciliation_gap,
+        risk_pct_input=risk_pct_input,
+        nav_source=_nav_source,
+        max_open_campaign_risk=_max_open_risk,
+    )
+    _recon_line = tf.fmt_broker_reconciliation(_recon_status, ai_copy=True)
+    if _recon_status["band"] == "Balanced":
+        st.sidebar.success(_recon_line)
+    elif _recon_status["band"] in ("Minor Difference", "Material Gap"):
+        st.sidebar.warning(_recon_line)
     else:
-        st.sidebar.success(f"System completely synced. (Gap: ${reconciliation_gap:,.2f})")
+        st.sidebar.error(_recon_line)
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("🎯 Adaptive Risk")
@@ -517,6 +560,14 @@ else:
     ai_str += f"- Win Rate (Combined countable): {combined_stats['win_rate']*100:.1f}% ({combined_stats['count']} trades)\n"
     ai_str += f"- ALGO campaigns: {algo_stats['count']} | ALGO Net PnL: ${algo_stats['total_pnl']:,.2f}\n"
     ai_str += f"- DB Net PnL (all): ${total_pnl_net:.2f}\n"
+    # Sprint-15 / DEC-20260515-012 — Risk Capital Basis declaration (NAV).
+    ai_str += f"- {tf.fmt_risk_capital_basis(current_acc_size, target_risk_usd, nav_source=_nav_source, ai_copy=True)}\n"
+    # Sprint-15 / DEC-20260515-013 — Broker Reconciliation Status (reuses the
+    # same dashboard.py:404-405 gap; non-asserting wording, Mark §3).
+    try:
+        ai_str += f"- {tf.fmt_broker_reconciliation(_recon_status, ai_copy=True)}\n"
+    except Exception:
+        pass
     ai_str += f"- Expectancy: {expectancy_r:.2f}R per trade | Adjusted R/R: {adj_rr:.2f}:1\n\n"
     ai_str += f"## 🔭 2. Live Battlefield (Open Positions)\n"
     # שימוש במחירים שכבר חושבו ב-live_df — ללא קריאת רשת כפולה
@@ -532,17 +583,35 @@ else:
             init_sl_clean = init_sl if (init_sl > 0 and init_sl < base_price) else 0
             original_campaign_risk = (base_price - init_sl_clean) * base_qty if init_sl_clean > 0 else 0
             
-            if str(setup).upper() == 'ALGO':
-                open_r_str = f"{(open_pnl / target_risk_usd):.2f}R (Target Base)"
+            is_algo_pos = str(setup).upper() == 'ALGO'
+            # Sprint-15 / Mark §1 — the conflated single OpenR + standalone
+            # RiskBasis token (the clearest mislabel: a manual Structure-R
+            # number printed next to `RiskBasis: Target`) is replaced by the
+            # canonical dual-R fragment. Both numbers come from the EXISTING
+            # engine functions with the SAME open_pnl input — Structure R
+            # (compute_r_true) is byte-identical to today's manual OpenR;
+            # Account R (compute_r_target) is byte-identical to today's ALGO
+            # OpenR. risk_basis stays an internal field (not displayed).
+            _struct_r_ai = ec.compute_r_true(open_pnl, original_campaign_risk)
+            _acct_r_ai = ec.compute_r_target(open_pnl, target_risk_usd)
+            _rbasis_ai = tf.dual_r_basis(
+                original_campaign_risk=original_campaign_risk,
+                frozen_target_risk_usd=target_risk_usd,
+                is_algo=is_algo_pos,
+            )
+            open_r_str = tf.fmt_dual_r(
+                _struct_r_ai, _acct_r_ai,
+                structure_valid=_rbasis_ai["structure_valid"],
+                account_valid=_rbasis_ai["account_valid"],
+                is_algo=is_algo_pos, ai_copy=True,
+            )
+            if is_algo_pos:
                 risk_dev = ""
             elif original_campaign_risk > 0:
-                open_r_str = f"{(open_pnl / original_campaign_risk):.2f}R"
                 risk_dev = f" | Planned Risk: ${target_risk_usd:.0f} | Original Campaign Risk: ${original_campaign_risk:,.0f}"
             else:
-                open_r_str = "N/A"
                 risk_dev = " | ⚠️ Missing Initial Stop Data"
-                
-            is_algo_pos = str(setup).upper() == 'ALGO'
+
             mgmt_mode = ec.classify_management_mode(setup, sym)
             risk_basis = ec.classify_risk_basis(sl, base_price, setup, target_risk_usd)
             risk_vis = ec.compute_risk_visibility_score(setup, sl, base_price, target_risk_usd)
@@ -584,8 +653,12 @@ else:
                        if _ev.get('active') else "Clear")
             _state_str = _ctx['state_label'] or _ctx['position_state'] or "unknown"
 
-            ai_str += f"- {sym} [{setup}] | Mode: {mgmt_mode} | RiskBasis: {risk_basis} | Visibility: {risk_vis}/100\n"
-            ai_str += f"  Entry: ${entry:.2f} | Curr: ${curr_p:.2f} | InitStop: {init_stop_str} | CurrStop: {stop_display} | OpenPnL: ${open_pnl:.2f} | OpenR: {open_r_str}{risk_dev}\n"
+            # Sprint-15 / Mark §1: standalone misleading `RiskBasis:` display
+            # token removed (it could read `Target` next to a Structure-R
+            # number). risk_basis kept as an internal/runtime field only. The
+            # dual labelled R fragment carries the correct basis now.
+            ai_str += f"- {sym} [{setup}] | Mode: {mgmt_mode} | Visibility: {risk_vis}/100\n"
+            ai_str += f"  Entry: ${entry:.2f} | Curr: ${curr_p:.2f} | InitStop: {init_stop_str} | CurrStop: {stop_display} | OpenPnL: ${open_pnl:.2f} | {open_r_str}{risk_dev}\n"
             ai_str += f"  Earnings: {earnings_str} | EventRisk: {_ev_str}\n"
             ai_str += f"  State: {_state_str} | Sizing: {_sizing_str}\n"
             if not is_algo_pos and _ctx['has_profit']:
