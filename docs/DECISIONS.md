@@ -1173,3 +1173,23 @@ Real data shows manual EP/VCP campaigns where `initial_stop` is the `-1` sentine
 
 ### Hard constraints
 Strictly read-only WS-A (no Supabase write/snap_save/scheduler-state); admin protection preserved (no secure_runner bypass, no telegram_bot.py wholesale rewrite); #8 ALGO segregation; #1 honesty (never silent-zero, never fabricated); no campaign/R/NAV math change outside an explicit Mark WS-C ruling + guards; preserve 920be95/bcf32f5/Sprint-16/18/19/20; no migration/compose change.
+
+---
+
+## DEC-20260516-019 — Sprint 22: production "0" ROOT CAUSE = tz-aware bounds vs tz-naive trade_date (Mark-gated full sprint)
+
+Date: 2026-05-16
+Status: **decided (founder: "ספרינט Mark-gated מלא"); Sprint 22, full Wave-1/2 rigor, analytics-engine MOST-protected.**
+
+### The proven root cause (supersedes the WS-A "data-delivery" hypothesis as the PRIMARY production defect)
+Same `tests/test_real_data_april_regression.py::_april_df()` fixture through the REAL `analytics_engine.compute_period_analytics`:
+- tz-**naive** bounds (what 100% of the test suite passes): **8 campaigns / +$180.49** ✅
+- tz-**aware** bounds (what PRODUCTION actually passes): **0 campaigns / $0.00** ❌ (silent all-False, no raise)
+
+`report_on_demand.py:96-113` (and `report_scheduler.py:251,363`) build `now = datetime.now(sched.ISRAEL_TZ)` → `last_complete_*_ref` → `_weekly/_monthly_period` ⇒ **tz-aware** `period_start/period_end`. `analytics_engine.py:30` `pd.to_datetime(df["trade_date"])` ⇒ **tz-naive** Series. `_get_closed_campaigns:334` `sells["trade_date"] >= start` and the Sprint-21 WS-B unlinked block `:54-55` compare tz-naive Series vs tz-aware scalar → in this pandas this **silently yields all-False** (in the probe's own pre-filter it RAISED `Invalid comparison between dtype=datetime64[ns] and datetime` — same defect, different surface). Production weekly/monthly reports therefore show "0 קמפיינים" while the engine math is correct. Every "engine PROVEN on real data" claim held ONLY on the tz-naive path — never the production tz-aware path (#1 false-confidence gap; stated plainly).
+
+### Sprint-22 scope (Mark-gated, analytics-engine MOST-protected per CLAUDE.md)
+Single-point tz-normalization at the comparison boundary INSIDE `compute_period_analytics` (normalize BOTH sides to tz-naive: strip tz from `period_start`/`period_end` if present; ensure `trade_date` tz-naive post-coerce) so ALL callers (on-demand + scheduled + probe-via-`_get_closed_campaigns`) are fixed at one site. Mirror the SAME normalization in `period_data_probe.py`'s own pre-pipeline window filter (it filters before delegating). NO R/NAV/campaign/Expectancy math change — pure boundary tz-normalization.
+
+### Hard constraints
+tz-**naive** path (entire suite + the LOCKED `test_real_data_april_regression.py`) byte-identical — normalization is a no-op for naive inputs. NEW regression: tz-**aware** bounds MUST return EXACTLY the tz-naive numbers (April 8/+$180.49/WR .375/PF 2.626/excl 2; weekly 0/excl 3). #1 honesty (fix must not mask/fabricate). #8 ALGO segregation untouched. WS-C stays DEFERRED (not reopened). Preserve 920be95/bcf32f5/Sprint-16..21 + WS-B `unlinked_*` + admin gate + secure_runner; no migration/compose/telegram_bot.py wholesale change. Baseline full suite **1846**.
