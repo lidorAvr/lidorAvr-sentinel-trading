@@ -17,10 +17,13 @@ HARD constraints (SPRINT17_PLAN.md Scope item B; verified by test):
     and NEVER touches the scheduler period-dedup
     (`report_scheduler._mark_ran` / `_save_state` / `STATE_FILE`). The real
     Saturday/monthly run + its "vs previous" comparison stay byte-identical in
-    behaviour. "vs previous" comparison is intentionally OMITTED here
-    (read-only, no snapshot read needed; an isolated test run has no business
-    asserting against the real scheduled history) — see
-    SPRINT17_WAVE2_IMPL.md §3 for the no-mutation proof.
+    behaviour. Sprint-19 §2f: "vs previous" + "vs average" are now rendered
+    READ-ONLY from existing history (`load_previous`/`load_recent` are pure
+    file reads — report_snapshot_store.py:99-128); on-demand still NEVER
+    writes the snapshot it just read, and < N history honestly shows the §2c
+    baseline-pending token (identical to the scheduled path). See
+    SPRINT17_WAVE2_IMPL.md §3 + SPRINT19_WAVE2_IMPL.md §4 for the
+    no-mutation proof.
 
 This module has NO ALGO-governance overlap (Workstream A); it lives in its own
 file and is wired only from the developer menu (admin-gated via the existing
@@ -83,9 +86,10 @@ def run_on_demand(period_type: str, now: datetime = None,
 
     import account_state as acc_mod
     from analytics_engine import (compute_period_analytics,
-                                  compute_trader_development_score)
+                                  compute_trader_development_score,
+                                  compute_period_comparison)
     from report_renderer import (render_weekly, render_monthly,
-                                  build_summary_text)
+                                  build_summary_text, compute_period_average)
     from report_delivery import deliver_report
     import report_open_book as rob
 
@@ -112,18 +116,31 @@ def run_on_demand(period_type: str, now: datetime = None,
 
         # Sprint-18: build the open-book for RENDERING ONLY (read-only — same
         # df, command-room source). On-demand is read-only w.r.t. the snapshot
-        # store (Scope-B invariant): NO snap_save. mark_delta is intentionally
-        # None here — an isolated test run must NOT read the real scheduled
-        # snapshot history; the delta surfaces the baseline-pending token.
+        # store (Scope-B invariant): NO snap_save.
         open_book = rob.build_open_book(
             df, account, period_start=period_start, period_end=period_end)
-        mark_delta = None
 
-        # NOTE: comparison is intentionally None — an on-demand test run must
-        # NOT read/write the real scheduled snapshot history (no snap_save, no
-        # load_previous-driven mutation). The report content is otherwise the
-        # SAME render path; only the optional "vs previous" block is absent.
-        comparison = None
+        # Sprint-19 §2f — on-demand MAY now READ existing per-host snapshot
+        # history and render comparison/average READ-ONLY. load_previous /
+        # load_recent are PURE file reads (report_snapshot_store.py:99-128 →
+        # os.listdir/json.load); they NEVER write. The Scope-B invariant
+        # (this file:15-23) is preserved by construction: NO
+        # report_snapshot_store.save, NO report_scheduler._mark_ran/_save_state
+        # is ever called here. When < N history exists the §2c
+        # baseline-pending token is shown — honest, identical to the scheduled
+        # path (#1: never a fabricated mean; on-demand never writes what it
+        # read). mark_delta + period-over-period reuse the unchanged
+        # compute_mark_delta / compute_period_comparison.
+        from report_snapshot_store import load_previous, load_recent
+        prev_snap = load_previous(period_type, period_start)   # READ-ONLY
+        comparison = (compute_period_comparison(analytics, prev_snap)
+                      if prev_snap else None)
+        mark_delta = rob.compute_mark_delta(open_book, prev_snap)
+        recent_snaps = load_recent(period_type,
+                                   n=rob.OPEN_BOOK_HISTORY_MIN_N + 2)  # RO
+        period_avg = compute_period_average(recent_snaps)
+        ob_history = rob.compute_open_book_history(
+            open_book, recent_snaps, prev_snap)
 
         if period_type == "weekly":
             coaching = sched._weekly_coaching_insights(analytics)
@@ -141,6 +158,8 @@ def run_on_demand(period_type: str, now: datetime = None,
                     risk_adherence_rate=analytics.get("risk_adherence_rate"),
                     open_book=open_book,
                     mark_delta=mark_delta,
+                    period_average=period_avg,
+                    open_book_history=ob_history,
                 )
                 if not sched._is_pdf_path(pdf_path):
                     pdf_degraded = True
@@ -175,6 +194,8 @@ def run_on_demand(period_type: str, now: datetime = None,
                     weekly_breakdown=weekly_breakdown,
                     open_book=open_book,
                     mark_delta=mark_delta,
+                    period_average=period_avg,
+                    open_book_history=ob_history,
                 )
                 if not sched._is_pdf_path(pdf_path):
                     pdf_degraded = True
@@ -199,7 +220,9 @@ def run_on_demand(period_type: str, now: datetime = None,
         summary_text = build_summary_text(analytics, period_label,
                                           period_type, risk_rec=risk_rec,
                                           open_book=open_book,
-                                          mark_delta=mark_delta)
+                                          mark_delta=mark_delta,
+                                          period_average=period_avg,
+                                          open_book_history=ob_history)
         if pdf_degraded:
             summary_text = f"{summary_text}\n\n{sched._DEGRADED_PDF_NOTE}"
 

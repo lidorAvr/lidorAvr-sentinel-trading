@@ -23,6 +23,107 @@ _TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
 _REPORTS_DIR   = "/app/reports"
 _CSS_PATH      = os.path.join(_TEMPLATES_DIR, "report_base.css")
 
+# Sprint-19 §2c (MARK_SPRINT19_RULINGS.md:118-131) — minimum prior same-type
+# snapshots before a realized "מול ממוצע" is shown. N=3 (smallest count where
+# a mean is not dominated by a single period; matches the
+# adaptive_risk_engine ≥3-closed precedent). NEVER a partial mean (#1).
+_PERIOD_AVG_MIN_N = 3
+# §2b — vs-average column / label wording. {k} = the REAL count averaged
+# (state the real N used; never a rounded claim).
+_PERIOD_AVG_LABEL = "מול ממוצע {k} {unit}"
+# §2c verbatim baseline-pending token (realized vs-average), {k} = real
+# available count of same-type prior snapshots. Never a number in its place.
+_PERIOD_AVG_BASELINE_PENDING = (
+    "📊 מול ממוצע: — · ממתין ל-3 תקופות בסיס (קיימות {k} מתוך 3)"
+)
+# §2a — the realized vs-previous label MUST read "(ממומש בלבד)" so it is never
+# read as including the open book.
+_CMP_VS_PREV_LABEL = "מול תקופה קודמת (ממומש בלבד)"
+
+# Sprint-19 §1 — period-honest headline wording (verbatim from
+# MARK_SPRINT19_RULINGS.md §1a/§1c). Nothing invented.
+_HEADLINE_BADGE_TEXT = "📌 {period_word} ללא סגירות — ספר פתוח פעיל"
+_HEADLINE_BADGE_CLASS = "neutral"          # → verdict-neutral (existing class)
+_HEADLINE_REALIZED_SUBHEADING = "📉 ביצועים ממומשים (0 קמפיינים נסגרו בתקופה)"
+_HEADLINE_REALIZED_PNL_LABEL = "רווח ממומש (0 בתקופה)"
+# §1b promoted open-book banner (RTL, ALGO segregated on its own line).
+_HEADLINE_BANNER_L1 = (
+    '✅ 0 קמפיינים נסגרו בתקופה — אין ביצועים *ממומשים* (זה לא "ללא מסחר").'
+)
+_HEADLINE_BANNER_L2 = (
+    "📌 ספר פתוח (לא ממומש): {n_disc} דיסקרציוני · "
+    "צף ${floating_disc:+,.0f} · חשיפה {exposure_disc:.1f}%"
+)
+_HEADLINE_BANNER_L3_OPENED = "🆕 {n_opened_total} פוזיציות נפתחו בתקופה זו"
+_HEADLINE_BANNER_L3_HELD = (
+    "↳ כולן מוחזקות מתקופה קודמת (פעילות פתוחה לאורך החלון)"
+)
+_HEADLINE_BANNER_L4 = "📅 חלון: {period_label} · מקור: {source}"
+_HEADLINE_BANNER_ALGO = (
+    "🟠 ALGO (פיקוח בלבד · לא הוראה): {n_algo} פוז' · "
+    "צף ${floating_algo:+,.0f} · חשיפה {exposure_algo:.1f}% — "
+    "מנוהל חיצונית, ללא הוראת Sentinel"
+)
+
+
+def compute_period_average(snapshots: Optional[list],
+                           n: int = _PERIOD_AVG_MIN_N) -> dict:
+    """Sprint-19 §2b — realized "מול ממוצע", PURE presentation helper.
+
+    Arithmetic mean of the SAME stored snapshot KPI floats that
+    `report_snapshot_store.save:48-58` already persisted and that
+    `compute_period_comparison:207-208` already compares — `win_rate`,
+    `expectancy_r`, `profit_factor`, `total_r_net`, `realized_pnl`,
+    `missing_stop_rate`, `oversized_rate`, `avg_r_per_day`. It computes **NO**
+    R / NAV / campaign / Expectancy / PF math — only `mean()` of values the
+    realized engine already produced. `profit_factor` stored as `None`
+    (inf-guarded by `_safe_float` on save) is skipped PER-METRIC so the mean
+    stays honest.
+
+    `snapshots`: the `report_snapshot_store.load_recent(period_type, ...)`
+    list (newest first), READ-ONLY. The current period is NOT yet written when
+    this is called (snap_save happens after render), so each is a true prior.
+
+    #1 — returns ``{"available": False, ...}`` when fewer than `n` prior
+    snapshots exist (baseline-pending). A partial mean over 1–2 periods is
+    NEVER computed or shown — that would present a fabricated/unstable mean as
+    "the average". Never raises.
+    """
+    metrics = ["win_rate", "expectancy_r", "profit_factor", "total_r_net",
+               "realized_pnl", "missing_stop_rate", "oversized_rate",
+               "avg_r_per_day"]
+    try:
+        snaps = [s for s in (snapshots or []) if isinstance(s, dict)]
+        k = len(snaps)
+        if k < n:
+            return {"available": False, "n_have": k, "n_need": n,
+                    "baseline_pending_text":
+                        _PERIOD_AVG_BASELINE_PENDING.format(k=k),
+                    "metrics": {}}
+        used = snaps[:n]
+        kk = len(used)
+        out = {}
+        for m in metrics:
+            vals = []
+            for s in used:
+                v = s.get(m)
+                # profit_factor None (inf-guarded on save) → skip per-metric.
+                if v is None:
+                    continue
+                try:
+                    vals.append(float(v))
+                except (TypeError, ValueError):
+                    continue
+            if vals:
+                out[m] = round(sum(vals) / len(vals), 4)
+        return {"available": True, "n_have": k, "n_need": n,
+                "n_used": kk, "baseline_pending_text": "", "metrics": out}
+    except Exception as e:
+        return {"available": False, "n_have": 0, "n_need": n,
+                "baseline_pending_text":
+                    _PERIOD_AVG_BASELINE_PENDING.format(k=0),
+                "metrics": {}, "error": str(e)}
+
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
@@ -38,6 +139,8 @@ def render_weekly(
     risk_adherence_rate: Optional[float] = None,
     open_book: Optional[dict] = None,
     mark_delta: Optional[dict] = None,
+    period_average: Optional[dict] = None,
+    open_book_history: Optional[dict] = None,
 ) -> str:
     """
     Render weekly PDF report. Returns path to PDF file.
@@ -47,12 +150,19 @@ def render_weekly(
     None ⇒ byte-identical for callers/tests not passing them). They surface the
     unrealized open-book via SEPARATE `open_book_*` ctx keys only — the realized
     KPI keys in `_base_ctx` are never touched (realized-byte-identical proof).
+
+    Sprint-19: `period_average`/`open_book_history` ADDITIVE optional (default
+    None ⇒ byte-identical). They feed the §1 period-honest headline + §2
+    vs-average context via `headline_*`/`cmp_*`/`obcmp_*` keys only — same
+    additive-seam pattern; `_base_ctx` realized keys + `compute_verdict`
+    untouched.
     """
     from analytics_engine import compute_verdict
     verdict, verdict_class = compute_verdict(analytics)
 
     output_dir = os.path.join(_REPORTS_DIR, "weekly")
-    charts     = _generate_weekly_charts(analytics, _period_label(period_start, period_end), output_dir)
+    period_label = _period_label(period_start, period_end)
+    charts     = _generate_weekly_charts(analytics, period_label, output_dir)
 
     ctx = _base_ctx(analytics, account_state, period_start, period_end,
                     verdict, verdict_class, dev_score_data, system_health,
@@ -62,8 +172,11 @@ def render_weekly(
         "coaching_insights": coaching_insights or [],
         **charts,
     })
-    ctx.update(_open_book_ctx(analytics, open_book, mark_delta,
-                              _period_label(period_start, period_end)))
+    ctx.update(_open_book_ctx(analytics, open_book, mark_delta, period_label))
+    ctx.update(_headline_ctx(analytics, open_book, mark_delta,
+                             period_label, period_word="שבוע"))
+    ctx.update(_comparison_ctx(comparison, period_average,
+                               open_book_history, "weekly"))
 
     filename = f"sentinel_weekly_{period_start.strftime('%Y-%m-%d')}.pdf"
     return _render("weekly_report.html.j2", ctx, output_dir, filename)
@@ -82,19 +195,27 @@ def render_monthly(
     weekly_breakdown: Optional[list] = None,
     open_book: Optional[dict] = None,
     mark_delta: Optional[dict] = None,
+    period_average: Optional[dict] = None,
+    open_book_history: Optional[dict] = None,
 ) -> str:
     """
     Render monthly PDF report. Returns path to PDF file.
 
     Sprint-18: `open_book`/`mark_delta` additive optional (default None ⇒
     byte-identical). Same SEPARATE `open_book_*` ctx-key seam as weekly.
+
+    Sprint-19: `period_average`/`open_book_history` additive optional (default
+    None ⇒ byte-identical). Feed §1 headline + §2 vs-average via
+    `headline_*`/`cmp_*`/`obcmp_*` keys only; `_base_ctx`/`compute_verdict`
+    untouched.
     """
     from analytics_engine import compute_verdict
     verdict, verdict_class = compute_verdict(analytics, period_word="חודש")
 
     output_dir = os.path.join(_REPORTS_DIR, "monthly")
     wb         = weekly_breakdown or []
-    charts     = _generate_monthly_charts(analytics, wb, _period_label(period_start, period_end), output_dir)
+    period_label = _period_label(period_start, period_end)
+    charts     = _generate_monthly_charts(analytics, wb, period_label, output_dir)
 
     ctx = _base_ctx(analytics, account_state, period_start, period_end,
                     verdict, verdict_class, dev_score_data, system_health,
@@ -105,8 +226,11 @@ def render_monthly(
         "weekly_breakdown":  wb,
         **charts,
     })
-    ctx.update(_open_book_ctx(analytics, open_book, mark_delta,
-                              _period_label(period_start, period_end)))
+    ctx.update(_open_book_ctx(analytics, open_book, mark_delta, period_label))
+    ctx.update(_headline_ctx(analytics, open_book, mark_delta,
+                             period_label, period_word="חודש"))
+    ctx.update(_comparison_ctx(comparison, period_average,
+                               open_book_history, "monthly"))
 
     filename = f"sentinel_monthly_{period_start.strftime('%Y-%m')}.pdf"
     return _render("monthly_report.html.j2", ctx, output_dir, filename)
@@ -119,6 +243,8 @@ def build_summary_text(
     risk_rec: Optional[dict] = None,
     open_book: Optional[dict] = None,
     mark_delta: Optional[dict] = None,
+    period_average: Optional[dict] = None,
+    open_book_history: Optional[dict] = None,
 ) -> str:
     """
     Build the short Telegram summary message sent before the PDF.
@@ -162,6 +288,13 @@ def build_summary_text(
             f"",
         ]
         head += rob.empty_state_lines(open_book, period_label)
+        # Sprint-19 §2 — additive open-book cross-period context (ALGO
+        # segregated, baseline-pending honest). Realized vs-average is
+        # absent here because campaigns_closed == 0 (no realized to compare).
+        ob_cmp = _summary_open_book_cmp_lines(open_book_history)
+        if ob_cmp:
+            head.append("")
+            head.extend(ob_cmp)
         if risk_rec is not None:
             from telegram_formatters import fmt_heat_thermometer
             head.append("")
@@ -183,6 +316,24 @@ def build_summary_text(
         f"⚙️ Missing Stop: `{analytics.get('missing_stop_rate', 0)*100:.1f}%`  |  "
         f"Oversized: `{analytics.get('oversized_rate', 0)*100:.1f}%`",
     ]
+    # Sprint-19 §2a/§2b: realized vs-previous + vs-average summary line —
+    # ADDITIVE, after the realized KPI block, never modifying lines above.
+    # Honest baseline-pending until N≥3 (#1 — never a fabricated mean).
+    pa = period_average if isinstance(period_average, dict) else {}
+    if pa:
+        lines.append("")
+        if pa.get("available"):
+            avg = pa.get("metrics", {})
+            unit = "חודשים" if period_type == "monthly" else "שבועות"
+            k = pa.get("n_used", pa.get("n_have", 0))
+            lines.append(
+                f"📊 {_PERIOD_AVG_LABEL.format(k=k, unit=unit)} "
+                f"(ממומש בלבד): "
+                f"Net R `{avg.get('total_r_net', 0):+.2f}R` · "
+                f"Win% `{avg.get('win_rate', 0)*100:.1f}%` · "
+                f"Exp `{avg.get('expectancy_r', 0):+.2f}R`")
+        else:
+            lines.append(f"`{pa.get('baseline_pending_text', '')}`")
     # Sprint-18 §1.4: open-book summary APPENDED after the realized KPI block,
     # before the heat thermometer — realized lines above are NOT modified.
     if open_book is not None:
@@ -193,6 +344,10 @@ def build_summary_text(
             lines.extend(ob_lines)
         if mark_delta is not None and mark_delta.get("text"):
             lines.append(f"`{mark_delta['text']}`")
+        # Sprint-19 §2d open-book cross-period context (ALGO segregated).
+        ob_cmp = _summary_open_book_cmp_lines(open_book_history)
+        if ob_cmp:
+            lines.extend(ob_cmp)
     if risk_rec is not None:
         from telegram_formatters import fmt_heat_thermometer
         lines.append("")
@@ -240,6 +395,31 @@ def _no_charts() -> dict:
         "chart_equity_curve": None,
         "chart_win_loss":     None,
     }
+
+
+def _summary_open_book_cmp_lines(open_book_history: Optional[dict]) -> list:
+    """Sprint-19 §2d — compact open-book cross-period summary lines.
+
+    ADDITIVE; ALWAYS labelled "(לא ממומש)" (via the source strings) so it is
+    never read as realized. ALGO on its OWN observation-only line, never
+    merged into the disc figure (#8). Returns [] when nothing to show.
+    """
+    obh = open_book_history if isinstance(open_book_history, dict) else {}
+    if not obh:
+        return []
+    out = []
+    if obh.get("available"):
+        avg_txt = obh.get("avg_text", "")
+        if avg_txt:
+            out.append(f"`{avg_txt}`")
+        algo_txt = obh.get("avg_algo_text", "")
+        if algo_txt:
+            out.append(f"`{algo_txt}`")
+    else:
+        bp = obh.get("baseline_pending_text", "")
+        if bp:
+            out.append(f"`{bp}`")
+    return out
 
 
 # ── Internals ──────────────────────────────────────────────────────────────────
@@ -351,6 +531,127 @@ def _open_book_ctx(analytics: dict, open_book: Optional[dict],
     }
 
 
+def _headline_ctx(analytics: dict, open_book: Optional[dict],
+                  mark_delta: Optional[dict], period_label: str,
+                  period_word: str = "שבוע") -> dict:
+    """Sprint-19 §1 — period-honest headline. STRICTLY ADDITIVE seam.
+
+    Returns ONLY `headline_*`-namespaced keys; never reads or writes a
+    `_base_ctx` realized key. `compute_verdict` is still called unchanged in
+    `render_*`; its `verdict`/`verdict_class` stay in ctx byte-identical. The
+    TEMPLATE merely chooses which to show under the trigger condition (§1a):
+    `analytics.campaigns_closed == 0` AND `open_book is not None` AND
+    `open_book["open_book_present"] == True` (Sprint-18 wired-caller path;
+    legacy `open_book is None` callers keep the byte-identical 920be95 path —
+    NO regression). Realized KPI cards stay numerically byte-identical, only
+    reframed/demoted (§1c). ALGO is NEVER in the headline badge or the disc
+    figures (#8 / DEC-20260511-001) — it is on its OWN segregated line only.
+    """
+    import report_open_book as rob
+
+    campaigns_closed = analytics.get("campaigns_closed", 0)
+    ob = open_book or {}
+    present = bool(ob.get("open_book_present"))
+    # §1 trigger: 0 closed AND a Sprint-18-wired live book spanned the period.
+    mode = (campaigns_closed == 0) and (open_book is not None) and present
+
+    if not mode:
+        # Off ⇒ legacy badge path (truly-empty §1d or non-zero campaigns).
+        return {
+            "headline_open_book_mode": False,
+            "headline_badge_text": "",
+            "headline_badge_class": "",
+            "headline_banner_lines": [],
+            "headline_realized_subheading": "",
+            "headline_realized_pnl_label": "",
+        }
+
+    t = ob.get("open_book_totals", {})
+    src = ob.get("open_book_data_source", rob.DATA_SOURCE_LIVE)
+    n_disc = int(t.get("n_disc", 0))
+    n_algo = int(t.get("n_algo", 0))
+    floating_disc = float(t.get("floating_pnl_disc", 0.0) or 0.0)
+    floating_algo = float(t.get("floating_pnl_algo", 0.0) or 0.0)
+    exposure_disc = float(t.get("exposure_pct_disc", 0.0) or 0.0)
+    exposure_algo = float(t.get("exposure_pct_algo", 0.0) or 0.0)
+    n_opened_total = int(t.get("n_opened_total", 0))
+
+    # §1b promoted banner — disc only (ALGO NEVER summed into disc figures).
+    lines = [
+        _HEADLINE_BANNER_L1,
+        _HEADLINE_BANNER_L2.format(
+            n_disc=n_disc, floating_disc=floating_disc,
+            exposure_disc=exposure_disc),
+    ]
+    if n_opened_total > 0:
+        lines.append(_HEADLINE_BANNER_L3_OPENED.format(
+            n_opened_total=n_opened_total))
+    else:
+        lines.append(_HEADLINE_BANNER_L3_HELD)
+    lines.append(_HEADLINE_BANNER_L4.format(
+        period_label=period_label, source=src))
+    # ALGO on its OWN segregated, observation-only line (never in headline #).
+    if n_algo > 0:
+        lines.append(_HEADLINE_BANNER_ALGO.format(
+            n_algo=n_algo, floating_algo=floating_algo,
+            exposure_algo=exposure_algo))
+    # §2 mark-to-market Δ appended ONLY per the baseline-pending token.
+    md = mark_delta or {}
+    md_text = md.get("text") if md else None
+    if md_text:
+        lines.append(md_text)
+
+    return {
+        "headline_open_book_mode": True,
+        "headline_badge_text": _HEADLINE_BADGE_TEXT.format(
+            period_word=period_word),
+        "headline_badge_class": _HEADLINE_BADGE_CLASS,
+        "headline_banner_lines": lines,
+        "headline_realized_subheading": _HEADLINE_REALIZED_SUBHEADING,
+        "headline_realized_pnl_label": _HEADLINE_REALIZED_PNL_LABEL,
+    }
+
+
+def _comparison_ctx(comparison: Optional[dict],
+                    period_average: Optional[dict],
+                    open_book_history: Optional[dict],
+                    period_type: str) -> dict:
+    """Sprint-19 §2 — period-over-period + vs-average. ADDITIVE seam.
+
+    Emits ONLY `cmp_*` / `obcmp_*` namespaced keys; never mutates `comparison`
+    (which stays the unchanged `compute_period_comparison` dict) and never a
+    realized KPI key. `period_average` is the `compute_period_average` dict
+    (baseline-pending honest until N≥3 — #1). `open_book_history` is the
+    `report_open_book.compute_open_book_history` dict (ALGO segregated).
+    """
+    pa = period_average or {}
+    obh = open_book_history or {}
+    unit = "חודשים" if period_type == "monthly" else "שבועות"
+    avg_metrics = pa.get("metrics", {}) if pa.get("available") else {}
+    k_have = pa.get("n_have", 0)
+    return {
+        # §2a realized vs-previous — label only; the table still consumes the
+        # unchanged `comparison` dict. "(ממומש בלבד)" so it is never read as
+        # including the open book.
+        "cmp_vs_prev_label": _CMP_VS_PREV_LABEL,
+        # §2b/§2c realized vs-average.
+        "cmp_vs_avg_available": bool(pa.get("available")),
+        "cmp_vs_avg_label": _PERIOD_AVG_LABEL.format(
+            k=pa.get("n_used", k_have), unit=unit),
+        "cmp_vs_avg": avg_metrics,
+        "cmp_vs_avg_baseline_pending": pa.get(
+            "baseline_pending_text", ""),
+        "cmp_avg_n_have": k_have,
+        "cmp_avg_n_need": pa.get("n_need", _PERIOD_AVG_MIN_N),
+        # §2d open-book period-over-period + vs-average (ALGO segregated).
+        "obcmp_available": bool(obh.get("available")),
+        "obcmp_prev_delta_text": (obh.get("prev_delta") or {}).get("text", ""),
+        "obcmp_avg_text": obh.get("avg_text", ""),
+        "obcmp_avg_algo_text": obh.get("avg_algo_text", ""),
+        "obcmp_baseline_pending": obh.get("baseline_pending_text", ""),
+    }
+
+
 def _load_weasyprint():
     """
     Lazily import WeasyPrint's HTML class.
@@ -420,9 +721,18 @@ def _load_css() -> str:
 
 
 def _period_label(start: datetime, end: datetime) -> str:
+    # Sprint-19 §3b (MARK_SPRINT19_RULINGS.md:195-206): `period_end` from
+    # _weekly_period (Saturday 23:59:59) AND _monthly_period (last_of_prev =
+    # 23:59:59 of the final day) is the INCLUSIVE last instant of the final
+    # day — `.day` is ALREADY the correct calendar day. The historic
+    # `end.day - 1` assumed an EXCLUSIVE end and under-counted by one in BOTH
+    # branches: monthly April rendered "1–29 באפריל" (April has 30 days),
+    # weekly under-counted symmetrically (masked, never reported). Ruling:
+    # render the inclusive end day itself — no `- 1` in either branch.
+    # Arithmetic-only; _weekly_period/_monthly_period definitions unchanged.
     _HE_MONTHS = ["ינואר", "פברואר", "מרץ", "אפריל", "מאי", "יוני",
                   "יולי", "אוגוסט", "ספטמבר", "אוקטובר", "נובמבר", "דצמבר"]
     if start.month == end.month and start.year == end.year:
-        return f"{start.day}–{end.day - 1} ב{_HE_MONTHS[start.month - 1]} {start.year}"
+        return f"{start.day}–{end.day} ב{_HE_MONTHS[start.month - 1]} {start.year}"
     return (f"{start.day} ב{_HE_MONTHS[start.month - 1]} – "
-            f"{end.day - 1} ב{_HE_MONTHS[end.month - 1]} {end.year}")
+            f"{end.day} ב{_HE_MONTHS[end.month - 1]} {end.year}")

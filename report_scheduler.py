@@ -168,14 +168,37 @@ def _monthly_period(ref: datetime):
 
 
 def _build_system_health() -> dict:
-    """Quick best-effort health snapshot for report context."""
-    sync_ok = os.path.exists("/app/ibkr_last_sync_result.json")
+    """Quick best-effort health snapshot for report context.
+
+    Sprint-19 §3a (MARK_SPRINT19_RULINGS.md:166-193, RCA confirmed): the old
+    `f"✅ Sync {status} — {message[:60]}"` blindly prefixed `✅` on every state
+    AND echoed the raw IBKR-flex `message` (e.g. IBKR_ERROR_CLASSES[1001] =
+    "הדוח לא נוצר כרגע …" — ibkr_sync_runner.py:16) into a delivered Sentinel
+    report, where "הדוח" reads as *the Sentinel report* (actively false, #1).
+    Fix: switch on `status` and emit a Sentinel-authored Hebrew label by the
+    IBKR class taxonomy (success / temporary|rate_limit / fatal / unknown).
+    NEVER `✅` on a non-success state; the raw flex `message` is NEVER
+    interpolated (the `temporary` line explicitly says it does not affect this
+    report so it can never be misread as the Sentinel report failing).
+    """
     try:
         with open("/app/ibkr_last_sync_result.json") as f:
             last = json.load(f)
-        sync_label = f"✅ Sync {last.get('status','?')} — {last.get('message','')[:60]}"
+        status = (last.get("status") or "").lower()
+        if status in ("ok", "success"):
+            sync_label = "✅ סנכרון IBKR תקין"
+        elif status in ("temporary", "rate_limit"):
+            sync_label = ("⏳ סנכרון IBKR — עיכוב זמני בצד IBKR "
+                          "(לא משפיע על דוח זה)")
+        elif status == "fatal":
+            sync_label = ("🔴 סנכרון IBKR — תקלה, נדרשת בדיקה "
+                          "(NAV עלול להיות לא עדכני)")
+        else:
+            # status absent / unrecognised → unknown (never ✅)
+            sync_label = "⚠️ סנכרון IBKR — מצב לא ידוע"
     except Exception:
-        sync_label = "⚠️ Sync — אין מידע זמין"
+        # file missing / parse-fail → unknown (never ✅; never raw flex string)
+        sync_label = "⚠️ סנכרון IBKR — מצב לא ידוע"
 
     return {
         "sync_status": sync_label,
@@ -212,8 +235,10 @@ def _run_weekly(now: datetime):
                                        compute_trader_development_score,
                                        compute_period_comparison,
                                        compute_verdict)
-        from report_snapshot_store import save as snap_save, load_previous
-        from report_renderer import render_weekly, build_summary_text
+        from report_snapshot_store import (save as snap_save, load_previous,
+                                            load_recent)
+        from report_renderer import (render_weekly, build_summary_text,
+                                      compute_period_average)
         from report_delivery import deliver_report
         import report_open_book as rob
 
@@ -238,6 +263,17 @@ def _run_weekly(now: datetime):
             df, account, period_start=period_start, period_end=period_end)
         mark_delta = rob.compute_mark_delta(open_book, prev_snap)
 
+        # Sprint-19 §2: vs-average context — READ-ONLY load_recent (pure file
+        # reads; the current period is NOT yet snap_save'd → every snapshot is
+        # a true prior). Honest baseline-pending until N≥3 (#1). The open-book
+        # cross-period view reuses the Sprint-18 open_marks history + the
+        # unchanged compute_mark_delta for the prev leg (ALGO segregated).
+        recent_snaps  = load_recent("weekly",
+                                    n=rob.OPEN_BOOK_HISTORY_MIN_N + 2)
+        period_avg    = compute_period_average(recent_snaps)
+        ob_history    = rob.compute_open_book_history(
+            open_book, recent_snaps, prev_snap)
+
         coaching = _weekly_coaching_insights(analytics)
 
         # Sprint 16: PDF rendering is best-effort. A render failure (WeasyPrint
@@ -260,6 +296,8 @@ def _run_weekly(now: datetime):
                 risk_adherence_rate=analytics.get("risk_adherence_rate"),
                 open_book=open_book,
                 mark_delta=mark_delta,
+                period_average=period_avg,
+                open_book_history=ob_history,
             )
             if not _is_pdf_path(pdf_path):
                 pdf_degraded = True
@@ -281,7 +319,9 @@ def _run_weekly(now: datetime):
         risk_rec     = _compute_risk_rec(df, account)
         summary_text = build_summary_text(analytics, period_label, "weekly",
                                           risk_rec=risk_rec, open_book=open_book,
-                                          mark_delta=mark_delta)
+                                          mark_delta=mark_delta,
+                                          period_average=period_avg,
+                                          open_book_history=ob_history)
         if pdf_degraded:
             summary_text = f"{summary_text}\n\n{_DEGRADED_PDF_NOTE}"
         caption      = f"📊 Sentinel Weekly Report | {period_label}"
@@ -309,7 +349,8 @@ def _run_monthly(now: datetime):
                                        compute_trader_development_score,
                                        compute_period_comparison)
         from report_snapshot_store import save as snap_save, load_previous, load_recent
-        from report_renderer import render_monthly, build_summary_text
+        from report_renderer import (render_monthly, build_summary_text,
+                                      compute_period_average)
         from report_delivery import deliver_report
         import report_open_book as rob
 
@@ -330,6 +371,17 @@ def _run_monthly(now: datetime):
         open_book  = rob.build_open_book(
             df, account, period_start=period_start, period_end=period_end)
         mark_delta = rob.compute_mark_delta(open_book, prev_snap)
+
+        # Sprint-19 §2: monthly vs-average — READ-ONLY load_recent("monthly")
+        # (the current month is NOT yet snap_save'd → all are true priors).
+        # Honest baseline-pending until N≥3 (#1). Open-book cross-period view
+        # reuses Sprint-18 open_marks + unchanged compute_mark_delta.
+        recent_monthly = load_recent("monthly",
+                                     n=rob.OPEN_BOOK_HISTORY_MIN_N + 2)
+        period_avg     = compute_period_average(recent_monthly)
+        ob_history     = rob.compute_open_book_history(
+            open_book, recent_monthly, prev_snap)
+
         coaching    = _monthly_coaching_insights(analytics)
         weekly_snaps = load_recent("weekly", n=5)
         weekly_breakdown = _build_weekly_breakdown(weekly_snaps, period_start, period_end)
@@ -352,6 +404,8 @@ def _run_monthly(now: datetime):
                 weekly_breakdown=weekly_breakdown,
                 open_book=open_book,
                 mark_delta=mark_delta,
+                period_average=period_avg,
+                open_book_history=ob_history,
             )
             if not _is_pdf_path(pdf_path):
                 pdf_degraded = True
@@ -375,7 +429,9 @@ def _run_monthly(now: datetime):
         risk_rec     = _compute_risk_rec(df, account)
         summary_text = build_summary_text(analytics, period_label, "monthly",
                                           risk_rec=risk_rec, open_book=open_book,
-                                          mark_delta=mark_delta)
+                                          mark_delta=mark_delta,
+                                          period_average=period_avg,
+                                          open_book_history=ob_history)
         if pdf_degraded:
             summary_text = f"{summary_text}\n\n{_DEGRADED_PDF_NOTE}"
         caption      = f"📊 Sentinel Monthly Report | {period_label}"

@@ -374,14 +374,33 @@ class TestScopeBNoSnapshotMutation:
         src = open(os.path.join(os.path.dirname(os.path.dirname(__file__)),
                                 "report_on_demand.py")).read()
         tree = ast.parse(src)
-        # No `snap_save`/`save` from report_snapshot_store is imported or
-        # called; only the read-only `load_recent` is.
+        # Scope-B HARD invariant (unchanged): the on-demand module NEVER
+        # imports/calls `save` (snap_save) from report_snapshot_store. Sprint-19
+        # §2f permits the PURE READ helpers (`load_recent`/`load_previous`) so
+        # on-demand can render comparison/average READ-ONLY — they only
+        # os.listdir/json.load, they never write (report_snapshot_store.py:
+        # 99-128). The mutation guard is the `save` exclusion below.
+        _READ_ONLY_OK = {"load_recent", "load_previous"}
+        imported = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) \
                     and node.module == "report_snapshot_store":
                 names = {n.name for n in node.names}
                 assert "save" not in names
-                assert names <= {"load_recent"}
+                assert names <= _READ_ONLY_OK, (
+                    f"unexpected report_snapshot_store import(s): "
+                    f"{names - _READ_ONLY_OK}")
+                imported |= names
+        # Belt-and-suspenders (AST, not substring — the module docstring
+        # legitimately mentions "snap_save"): no `report_snapshot_store.save`
+        # attribute access and no call to a `save`-bound name anywhere.
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr == "save":
+                val = node.value
+                assert not (isinstance(val, ast.Name)
+                            and val.id == "report_snapshot_store"), \
+                    "report_snapshot_store.save attribute access found"
+        assert "save" not in imported
 
     def test_graceful_degradation_still_works(self):
         with patch("report_snapshot_store.save") as snap_save, \

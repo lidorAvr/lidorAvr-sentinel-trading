@@ -83,6 +83,17 @@ EMPTY_STATE_TRULY_EMPTY = (
 # accuracy over confidence, #1) — surfaced verbatim until a prior open-mark.
 DELTA_BASELINE_PENDING = "Δ שבועי (mark-to-market): — · ממתין לבסיס שבוע קודם"
 
+# Sprint-19 §2c/§2d (MARK_SPRINT19_RULINGS.md:118-146) — minimum prior
+# snapshots before an average is shown (3 = the smallest count where the mean
+# is not dominated by a single period; matches the adaptive_risk_engine
+# ≥3-closed precedent). NEVER a partial/fabricated mean (#1).
+OPEN_BOOK_HISTORY_MIN_N = 3
+# §2c verbatim baseline-pending token (open-book vs-average), same style as
+# the realized §2c token. {k} = the real available open_marks-bearing count.
+OPEN_BOOK_AVG_BASELINE_PENDING = (
+    "📊 מול ממוצע (לא ממומש): — · ממתין ל-3 תקופות בסיס (קיימות {k} מתוך 3)"
+)
+
 # §5 — PERIOD-SCOPED activity attribution (founder binding criterion
 # 2026-05-16, SPRINT18_PLAN.md). A position is attributed by its entry_date
 # (engine_core.get_open_positions_campaign already computes it = first buy
@@ -467,3 +478,122 @@ def compute_mark_delta(open_book: dict, prev_snapshot: Optional[dict]) -> dict:
         "delta_floating_disc": d_disc,
         "delta_floating_algo": d_algo,
     }
+
+
+def compute_open_book_history(open_book: Optional[dict],
+                              snapshots: Optional[list],
+                              prev_snapshot: Optional[dict] = None,
+                              n: int = OPEN_BOOK_HISTORY_MIN_N) -> dict:
+    """Sprint-19 §2d — open-book period-over-period + vs-average, PURE.
+
+    Reuses ONLY stored `open_marks` floats (report_snapshot_store.save:81-94)
+    and `compute_mark_delta` for the prev leg — NO get_live_price, NO new
+    PnL/R/exposure math (mirrors compute_mark_delta:419 "pure subtraction of
+    two stored floats"). ALGO is segregated on its OWN observation-only line,
+    NEVER folded into the disc mean (#8 / DEC-20260511-001).
+
+    `snapshots`: the `load_recent(period_type, ...)` list (newest first),
+    READ-ONLY. The current period's own snapshot is NOT yet written when this
+    is called from the scheduled/on-demand path (snap_save happens after
+    render in _run_*), so every snapshot in the list is a genuine PRIOR.
+
+    vs-average is gated by the SAME N≥3 rule + SAME baseline-pending token
+    style as the realized §2c — a partial mean over 1–2 periods is NEVER
+    computed (#1, accuracy > confidence). Returns a presentation-only dict;
+    never raises (open-book must never block the realized report).
+    """
+    try:
+        # Period-over-period leg — REUSE compute_mark_delta verbatim (its own
+        # DELTA_BASELINE_PENDING token until a prior open-mark exists).
+        prev_delta = compute_mark_delta(open_book, prev_snapshot)
+
+        snaps = snapshots or []
+        # Only snapshots that actually carry an `open_marks` block (old
+        # Sprint-pre-18 snapshots lack it — report_snapshot_store.py:30-31).
+        marks = [s.get("open_marks") for s in snaps
+                 if isinstance(s, dict) and s.get("open_marks")]
+        k = len(marks)
+
+        if k < n:
+            # #1 — never a fabricated/partial mean. Verbatim token (k real).
+            return {
+                "available": False,
+                "prev_delta": prev_delta,
+                "n_have": k,
+                "n_need": n,
+                "baseline_pending_text":
+                    OPEN_BOOK_AVG_BASELINE_PENDING.format(k=k),
+                "avg_floating_disc": None,
+                "avg_floating_algo": None,
+                "avg_exposure_pct": None,
+                "avg_text": OPEN_BOOK_AVG_BASELINE_PENDING.format(k=k),
+            }
+
+        used = marks[:n]
+        kk = len(used)
+
+        def _mean(key):
+            vals = [float(m.get(key))
+                    for m in used
+                    if m.get(key) is not None]
+            return (sum(vals) / len(vals)) if vals else None
+
+        avg_disc = _mean("floating_pnl_disc")
+        avg_algo = _mean("floating_pnl_algo")   # ALGO segregated — own number
+        avg_expo = _mean("open_exposure_pct")
+
+        cur = (open_book or {}).get("open_book_totals", {}) \
+            if open_book and open_book.get("open_book_present") else {}
+        cur_disc = cur.get("floating_pnl_disc")
+        cur_algo = cur.get("floating_pnl_algo")
+
+        parts = []
+        if avg_disc is not None:
+            d_txt = ""
+            if cur_disc is not None:
+                d_txt = f" (נוכחי ${float(cur_disc):+,.0f})"
+            parts.append(
+                f"דיסקרציוני: ממוצע ${avg_disc:+,.0f}{d_txt}")
+        if avg_expo is not None:
+            parts.append(f"חשיפה ממוצעת {avg_expo:.1f}%")
+        disc_text = "📊 מול ממוצע (לא ממומש) · " + " · ".join(parts) \
+            if parts else OPEN_BOOK_AVG_BASELINE_PENDING.format(k=kk)
+
+        # ALGO on its OWN segregated, observation-only line — never merged.
+        algo_text = ""
+        if avg_algo is not None:
+            a_cur = ""
+            if cur_algo is not None:
+                a_cur = f" (נוכחי ${float(cur_algo):+,.0f})"
+            algo_text = (
+                f"🟠 ALGO ({ALGO_OBSERVATION_LABEL}) מול ממוצע: "
+                f"צף ממוצע ${avg_algo:+,.0f}{a_cur} — {ALGO_EXTERNAL_CAVEAT}"
+            )
+
+        return {
+            "available": True,
+            "prev_delta": prev_delta,
+            "n_have": k,
+            "n_need": n,
+            "baseline_pending_text": "",
+            "avg_floating_disc": avg_disc,
+            "avg_floating_algo": avg_algo,
+            "avg_exposure_pct": avg_expo,
+            "avg_text": disc_text,
+            "avg_algo_text": algo_text,
+        }
+    except Exception as e:  # never block the realized report
+        return {
+            "available": False,
+            "prev_delta": {"available": False,
+                           "text": DELTA_BASELINE_PENDING},
+            "n_have": 0,
+            "n_need": n,
+            "baseline_pending_text":
+                OPEN_BOOK_AVG_BASELINE_PENDING.format(k=0),
+            "avg_floating_disc": None,
+            "avg_floating_algo": None,
+            "avg_exposure_pct": None,
+            "avg_text": OPEN_BOOK_AVG_BASELINE_PENDING.format(k=0),
+            "error": str(e),
+        }

@@ -302,13 +302,22 @@ class TestOnDemandNoSnapSave:
                                    token="tok", chat_id="123")
 
         assert res["ok"] is True
-        # Scope-B HARD invariant: snapshot store NEVER written on-demand.
+        # Scope-B HARD invariant (unchanged by Sprint-19): the snapshot store
+        # is NEVER written on-demand.
         spy_save.assert_not_called()
         # Yet the open-book WAS built and passed into the render path.
         _, kwargs = r_weekly.call_args
         assert "open_book" in kwargs
         assert kwargs["open_book"]["open_book_present"] is True
-        assert kwargs["mark_delta"] is None  # no scheduled history read
+        # Sprint-19 §2f: on-demand now reads existing history READ-ONLY and
+        # produces mark_delta/period_average/open_book_history (pure
+        # load_previous/load_recent reads — NO snap_save, asserted above). The
+        # Sprint-18-era `mark_delta is None` was superseded; the delta is the
+        # honest baseline-pending token when no prior open-mark exists.
+        assert kwargs["mark_delta"] is not None
+        assert kwargs["mark_delta"].get("available") is False
+        assert "period_average" in kwargs
+        assert "open_book_history" in kwargs
 
 
 # ── bcf32f5 regression — prev_snap passed directly (no ["analytics"]) ────────

@@ -138,6 +138,9 @@ p  { margin-bottom: 2mm; }
 .kpi-green  { border-color: #6ee7b7; background: #f0fdf4; }
 .kpi-red    { border-color: #fca5a5; background: #fff1f2; }
 .kpi-yellow { border-color: #fcd34d; background: #fffbeb; }
+/* Sprint-19 §1c — honest sub-heading that demotes the realized KPI grid
+   under the period-honest headline (values stay byte-identical). */
+.kpi-frame-note { font-size: 8.5pt; color: #6b7280; margin: 2mm 0 1mm 0; font-weight: 600; }
 
 /* ── Metrics table ───────────────────────────────────────────────────────── */
 .metrics-table {
