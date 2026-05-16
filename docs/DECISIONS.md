@@ -1100,3 +1100,29 @@ The founder's period closes ARE real, ARE campaign-linked, ARE in the data — b
 
 ### Hard constraints
 No campaign/R/NAV/Expectancy math change (excluded_pnl already computed); countable realized KPIs byte-identical (guard). #8 ALGO/DATA_INCOMPLETE never in countable; #1 honest ("לא-מאומת", explicit incomplete-data disclosure, never fabricated). Preserve 920be95/bcf32f5/Sprint-16/Sprint-18 period-scoping/Sprint-19. No migration/compose/secure_runner change. No wholesale renderer rewrite — additive presentation.
+
+---
+
+## DEC-20260516-018 — Full-DB read-only diagnostic ("where are my closes")
+
+Date: 2026-05-16
+Status: **decided (founder); Sprint 21, Mark-led — read-only diagnostic, no analytics/campaign-math change.**
+
+### Trigger (founder smoke-test of deployed Sprint-20 8e6834b)
+
+Sprint-20 verified live: NO excluded-disclosure block appears for the 03–09/05 weekly or April monthly windows → `excluded_count==0` AND `campaigns_closed==0` for those windows. The report is now HONEST and correct across all three legs (countable / excluded-closed / open-book + opened-in-period). The 52 missing-stop CLOSED records from `🏥 בריאות מערכת` are GLOBAL/all-time (that check is unwindowed) — they are NOT dated within the tested windows (else Sprint-20's `excluded_count>0` block would render). Conclusion: this is no longer a report-logic defect — it is a **data-location / visibility** question: *where in time are the founder's closes, and why are they not in the tested windows?* Founder direction: **look at the FULL database**, not a single window.
+
+### Decision (Sprint 21, Mark-led)
+
+Build a strictly **read-only, admin-gated** diagnostic surfacing the FULL trades history so the founder can SEE the real distribution:
+- Total trades; `trade_date` min/max; per-month breakdown (recent N months): #BUY, #SELL, #closed campaigns split countable vs excluded(no-stop)/ALGO, Σ realized `pnl_usd`, #round-trips (opened&closed same month).
+- The missing-stop CLOSED records listed WITH their actual close dates + symbol + pnl (so the founder sees which periods the 52 fall in).
+- Windowed null/blank `campaign_id` reconfirm (bot_health is global-clean; confirm per-window).
+- #1-honest labels (Live/Cached, "לא-מאומת" for no-stop, explicit "אין סגירות בחלון" vs "סגירות קיימות בחודש X"); #8 ALGO segregated in the breakdown (observation-only, never merged into edge).
+
+### Hard constraints
+
+- **Strictly read-only:** no Supabase write, no `snap_save`, no scheduler state mutation; reuse the existing read path (`_fetch_trades_df`-style select) — NO new campaign/R/NAV/Expectancy math (counts + already-stored `pnl_usd` sums only).
+- **Admin protection preserved (AGENTS.md / CLAUDE.md):** wire ONLY via the EXISTING dev-menu admin/PIN gate; do NOT remove admin protection, do NOT bypass `telegram_bot_secure_runner.py`, do NOT rewrite `telegram_bot.py` wholesale — minimal additive handler + one menu entry.
+- No secrets in output (no account numbers / tokens / NAV-source internals beyond what existing reports already show).
+- Preserve 920be95 / bcf32f5 / Sprint-16 / Sprint-18 period-scoping / Sprint-19 / Sprint-20 disclosure. No migration / compose / secure_runner change.
