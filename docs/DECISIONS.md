@@ -1011,3 +1011,32 @@ Sprint 18 adds to the weekly/monthly report:
 - Advisory/observation only for ALGO (DEC-20260511-001). Backtest/Live/Cached honesty (#1).
 - New snapshot field is additive (Hyperscaler: no migration; per-host derived state).
 - No wholesale rewrite; reuse `get_open_positions_campaign` (battle-tested in the command room) — invent no new position math.
+
+---
+
+## DEC-20260516-016 — Period-honest headline + period-over-period context + System-Health #1 bug
+
+Date: 2026-05-16
+Status: **decided (founder); Sprint 19, Mark-led** — not built until Mark rulings + checkpoint.
+
+### Trigger (founder smoke-test of deployed Sprint-18 f43a94c)
+
+Sprint-18 shipped & verified live: the open book now renders in weekly/monthly, period-scoped (opened-in-period / held-from-before / opened-after-window excluded), ALGO-segregated, honest empty-state line. Real progress on the founder's prior asks. Re-test surfaced THREE remaining issues:
+
+1. **Headline still reads "0 / ללא עסקאות".** Despite the new honest empty-state LINE, the dominant visuals — the big `verdict-badge` ("שבוע/חודש ללא עסקאות") and the all-zero KPI cards (WR/Exp/PF/Realized $0) — still scream "no trading / zero" while a live book (+$72 weekly, +$224 monthly, 33–34% exposure, 4 opened-in-period) spanned the period. Founder: "עדיין הנתונים אפסיים, אין התייחסות לנתונים ביחס לשבוע/חודש ביחס לתיק."
+2. **No period-over-period / vs-average context.** Founder: "אין התייחסות לגבי השבוע/החודש שנבדקו ביחס לשבועות/חודשים קודמים ולעומת שבוע/חודש ממוצעים." `compute_period_comparison` ("vs previous") is omitted in on-demand by design and only fires for scheduled runs once a prior snapshot exists; there is NO "vs average" metric anywhere; the open book has no period-over-period view.
+3. **System-Health #1 bug (RCA done).** `ibkr_sync_runner.py:16` `IBKR_ERROR_CLASSES[1001]=("temporary","הדוח לא נוצר כרגע — ניסיון מאוחר יותר")` is the IBKR **flex-query** status; `report_scheduler._build_system_health` blindly renders it as `✅ Sync temporary — הדוח לא נוצר כרגע …` INSIDE a successfully delivered Sentinel report. Two faults: (a) "הדוח" reads as the Sentinel report → actively misleading (#1); (b) `✅` prefix on a non-ok/temporary state. Minor sibling: monthly PDF header shows "1–29 באפריל" (April=30) — suspected `_period_label` off-by-one.
+
+### Decision (Sprint 19, Mark-led)
+
+1. **Period-honest headline (presentation only — NO realized-math / `compute_verdict` / 920be95 / #8 change):** when 0 closed but an active book spanned the period, the verdict badge + KPI framing must NOT visually read "no trading / zero". Surface the period's OPEN-BOOK performance prominently (floating PnL, exposure, # opened-in-period, mark-to-market Δ once a baseline exists) clearly separated from realized; realized KPI cards stay byte-identical but are framed as "0 ממומש" not the dominant verdict.
+2. **Period-over-period + vs-average context:** add "מול תקופה קודמת" and "מול ממוצע" for BOTH realized (existing snapshot history via `load_recent`) and the open book (new `open_marks` history). Honest baseline-pending until ≥N prior snapshots accumulate (#1 — never a fabricated average). On-demand may show it READ-ONLY from existing history (no snap_save — Scope-B invariant holds).
+3. **Fix System-Health #1 bug:** `_build_system_health` must map sync status to an honest, non-self-contradictory line — no `✅` on `temporary`; never surface the IBKR-flex "הדוח לא נוצר" string verbatim where it reads as the Sentinel report. Mark rules exact Hebrew. Check & fix the monthly `_period_label` "1–29" off-by-one.
+
+### Hard constraints
+
+- No realized R/NAV/campaign/Expectancy math change; `analytics_engine.py` realized path byte-identical (guard). `compute_verdict` 920be95 signature + bcf32f5 + Sprint-16 graceful + Sprint-18 period-scoping all preserved.
+- Realized vs unrealized strictly separated; ALGO #8-segregated & observation-only (DEC-20260511-001) in every new comparison too — ALGO never in headline/realized comparison.
+- #1: never fabricate an average/comparison without enough history — explicit baseline-pending; never present sync-temporary as ✅ or as "report not created".
+- On-demand stays NO snap_save; comparison/average read-only from existing history. Hyperscaler: comparison uses existing per-host snapshot files; no migration.
+- No wholesale renderer rewrite; presentation-layer + additive ctx; reuse `compute_period_comparison` + `load_recent` + the Sprint-18 `open_marks`.
