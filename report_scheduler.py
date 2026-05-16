@@ -31,6 +31,24 @@ def _touch_heartbeat(name: str) -> None:
     except Exception:
         pass
 
+# Sprint 16 — honest degraded-mode trailer appended to the text summary when the
+# PDF could not be rendered (WeasyPrint missing / native-lib OSError / render
+# exception). Exact Hebrew is Mark's binding ruling
+# (docs/teams/MARK_SPRINT16_RULINGS.md §1, "Honest degraded-mode note") — do NOT
+# reword: no "temporarily"/future-PDF/optimistic claim. The text IS the
+# authoritative full report; only the PDF *rendering* is unavailable.
+_DEGRADED_PDF_NOTE = "⚠️ ה-PDF לא נוצר בריצה זו. סיכום הטקסט למעלה הוא הנתון הקובע והמלא."
+
+
+def _is_pdf_path(path) -> bool:
+    """True only if `path` is a truthy string ending in `.pdf` (a real rendered
+    PDF). `render_*` returns an `.html` path when WeasyPrint is unavailable; the
+    degraded path may also use a safe falsy value. Used to decide whether to
+    append the honest degraded trailer and to keep a non-PDF path from reaching
+    `send_pdf`/`os.path.exists` as a bad value."""
+    return bool(path) and isinstance(path, str) and path.endswith(".pdf")
+
+
 # Schedule: (weekday, hour, minute) — weekday 5 = Saturday (Python: Mon=0, Sun=6)
 _WEEKLY_WEEKDAY = 5
 _WEEKLY_HOUR    = 8
@@ -212,23 +230,45 @@ def _run_weekly(now: datetime):
 
         coaching = _weekly_coaching_insights(analytics)
 
-        pdf_path = render_weekly(
-            analytics=analytics,
-            account_state=account,
-            period_start=period_start,
-            period_end=period_end,
-            comparison=comparison,
-            dev_score_data=dev_data,
-            system_health=health,
-            coaching_insights=coaching,
-            risk_adherence_rate=analytics.get("risk_adherence_rate"),
-        )
+        # Sprint 16: PDF rendering is best-effort. A render failure (WeasyPrint
+        # missing / native-lib OSError / render exception) MUST NOT abort the
+        # founder's text summary. Guard ONLY the render step; on failure degrade
+        # to text-only with the honest trailer (Mark §1). `render_weekly` itself
+        # no longer raises on PDF failure (it returns an .html path), but we
+        # still catch defensively so any future exception cannot drop the report.
+        pdf_degraded = False
+        try:
+            pdf_path = render_weekly(
+                analytics=analytics,
+                account_state=account,
+                period_start=period_start,
+                period_end=period_end,
+                comparison=comparison,
+                dev_score_data=dev_data,
+                system_health=health,
+                coaching_insights=coaching,
+                risk_adherence_rate=analytics.get("risk_adherence_rate"),
+            )
+            if not _is_pdf_path(pdf_path):
+                pdf_degraded = True
+                log("WARNING weekly: PDF render failed (no .pdf produced) "
+                    "— text summary delivered")
+        except Exception as e:
+            pdf_degraded = True
+            pdf_path = ""
+            log(f"WARNING weekly: PDF render failed ({type(e).__name__}: "
+                f"{str(e)[:200]}) — text summary delivered")
+
+        if pdf_degraded:
+            pdf_path = ""   # safe falsy: avoids os.path.exists(None) TypeError in send_pdf
 
         snap_save("weekly", period_start, period_end, analytics, account, pdf_path)
 
         period_label = f"{period_start.strftime('%d/%m')}–{period_end.strftime('%d/%m/%Y')}"
         risk_rec     = _compute_risk_rec(df, account)
         summary_text = build_summary_text(analytics, period_label, "weekly", risk_rec=risk_rec)
+        if pdf_degraded:
+            summary_text = f"{summary_text}\n\n{_DEGRADED_PDF_NOTE}"
         caption      = f"📊 Sentinel Weekly Report | {period_label}"
 
         token   = os.environ.get("TELEGRAM_TOKEN", "")
@@ -272,18 +312,35 @@ def _run_monthly(now: datetime):
         weekly_snaps = load_recent("weekly", n=5)
         weekly_breakdown = _build_weekly_breakdown(weekly_snaps, period_start, period_end)
 
-        pdf_path = render_monthly(
-            analytics=analytics,
-            account_state=account,
-            period_start=period_start,
-            period_end=period_end,
-            comparison=comparison,
-            dev_score_data=dev_data,
-            system_health=health,
-            coaching_insights=coaching,
-            risk_adherence_rate=analytics.get("risk_adherence_rate"),
-            weekly_breakdown=weekly_breakdown,
-        )
+        # Sprint 16: identical best-effort PDF contract as _run_weekly. Guard
+        # ONLY the render step; degrade to text-only with the honest trailer
+        # (Mark §1) on any PDF failure — never abort the founder's text summary.
+        pdf_degraded = False
+        try:
+            pdf_path = render_monthly(
+                analytics=analytics,
+                account_state=account,
+                period_start=period_start,
+                period_end=period_end,
+                comparison=comparison,
+                dev_score_data=dev_data,
+                system_health=health,
+                coaching_insights=coaching,
+                risk_adherence_rate=analytics.get("risk_adherence_rate"),
+                weekly_breakdown=weekly_breakdown,
+            )
+            if not _is_pdf_path(pdf_path):
+                pdf_degraded = True
+                log("WARNING monthly: PDF render failed (no .pdf produced) "
+                    "— text summary delivered")
+        except Exception as e:
+            pdf_degraded = True
+            pdf_path = ""
+            log(f"WARNING monthly: PDF render failed ({type(e).__name__}: "
+                f"{str(e)[:200]}) — text summary delivered")
+
+        if pdf_degraded:
+            pdf_path = ""   # safe falsy: avoids os.path.exists(None) TypeError in send_pdf
 
         snap_save("monthly", period_start, period_end, analytics, account, pdf_path)
 
@@ -292,6 +349,8 @@ def _run_monthly(now: datetime):
         period_label = f"{month_names[period_start.month - 1]} {period_start.year}"
         risk_rec     = _compute_risk_rec(df, account)
         summary_text = build_summary_text(analytics, period_label, "monthly", risk_rec=risk_rec)
+        if pdf_degraded:
+            summary_text = f"{summary_text}\n\n{_DEGRADED_PDF_NOTE}"
         caption      = f"📊 Sentinel Monthly Report | {period_label}"
 
         token   = os.environ.get("TELEGRAM_TOKEN", "")

@@ -1,23 +1,23 @@
 """
 report_renderer.py — build HTML from Jinja2 templates and convert to PDF via WeasyPrint.
-Falls back to HTML-only if WeasyPrint is not installed (useful in dev).
+Falls back to HTML-only if WeasyPrint is unavailable for ANY reason (Sprint 16:
+the live incident is an OSError — missing native libs — not an ImportError, so the
+WeasyPrint import is loaded lazily and guarded by a broad Exception catch instead
+of being a module-top import that can abort every importer).
 Charts are generated via chart_generator (Plotly+Kaleido); skipped gracefully if unavailable.
 """
 import os
+import logging
 from datetime import datetime
 from typing import Optional
+
+_log = logging.getLogger(__name__)
 
 try:
     from jinja2 import Environment, FileSystemLoader, select_autoescape
     _JINJA2_OK = True
 except ImportError:
     _JINJA2_OK = False
-
-try:
-    from weasyprint import HTML as WeasyHTML
-    _WEASYPRINT_OK = True
-except ImportError:
-    _WEASYPRINT_OK = False
 
 _TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
 _REPORTS_DIR   = "/app/reports"
@@ -234,8 +234,37 @@ def _base_ctx(analytics, account_state, period_start, period_end,
     }
 
 
+def _load_weasyprint():
+    """
+    Lazily import WeasyPrint's HTML class.
+
+    Returns the ``HTML`` class on success, or ``None`` if WeasyPrint cannot be
+    loaded for ANY reason. The catch is intentionally a broad ``Exception``
+    (NOT just ``ImportError``): the live Sprint-16 incident is
+    ``OSError: cannot load library 'libgobject-2.0-0'`` raised at import time
+    from ``weasyprint/text/ffi.py``, which is not an ``ImportError``. Catching
+    only ``ImportError`` (the old module-top behaviour) let that ``OSError``
+    leak and abort the entire weekly/monthly run. No global side effects.
+    """
+    try:
+        from weasyprint import HTML as WeasyHTML
+        return WeasyHTML
+    except Exception as e:
+        _log.warning(
+            "WeasyPrint unavailable (%s: %s) — reports will degrade to text/HTML-only",
+            type(e).__name__, str(e)[:200],
+        )
+        return None
+
+
 def _render(template_name: str, ctx: dict, output_dir: str, filename: str) -> str:
-    """Render HTML template → PDF. Returns output path."""
+    """Render HTML template → PDF. Returns output path.
+
+    On any PDF failure (WeasyPrint missing / native-lib OSError / render-time
+    exception) this falls back to returning the ``.html`` path — the existing
+    dev-fallback contract — instead of raising, so the scheduler can still send
+    the text summary to the founder.
+    """
     if not _JINJA2_OK:
         raise RuntimeError("jinja2 is not installed — cannot render reports")
 
@@ -251,10 +280,17 @@ def _render(template_name: str, ctx: dict, output_dir: str, filename: str) -> st
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(html_str)
 
-    if _WEASYPRINT_OK:
+    WeasyHTML = _load_weasyprint()
+    if WeasyHTML is None:
+        return html_path
+    try:
         WeasyHTML(string=html_str, base_url=_TEMPLATES_DIR).write_pdf(pdf_path)
         return pdf_path
-    else:
+    except Exception as e:
+        _log.warning(
+            "PDF render failed (%s: %s) — falling back to HTML-only for %s",
+            type(e).__name__, str(e)[:200], filename,
+        )
         return html_path
 
 
