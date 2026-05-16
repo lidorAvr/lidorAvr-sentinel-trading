@@ -1216,3 +1216,9 @@ Exact line-item reconciliation of the live 10/+$336 against raw Supabase rows st
 
 ### NEW defect (separate, now blocking the reconciliation tool) — probe "message too long"
 At 20:22 the founder's `🔬 בדיקת נתוני תקופה (Probe)` failed **twice**: `Telegram API ... Error code: 400 ... message is too long`. The Sprint-21/22 probe builds one Telegram string exceeding the 4096-char limit. Note: it failed on LENGTH, not on `Invalid comparison` → the Sprint-22 tz-mirror in the probe plausibly held, but the probe is **unusable** and is exactly the tool needed for the line-item reconciliation above. Candidate fix (Sprint-23): chunk/trim the probe output to Telegram limits (≤~3900 chars/message, split per window) — pure formatting, READ-ONLY contract unchanged, no math. Scope/priority = founder decision.
+
+### Founder decision (post-reconciliation question): **"עצור — אבדוק ידנית קודם"**
+Founder will MANUALLY reconcile the live April **10 / +$336** against the raw Supabase rows and report back. Therefore:
+- The probe "message too long" fix is **HELD / not started** (no Sprint-23 yet) — pending the founder's manual finding (which may confirm 10/$336 as correct full-dataset, or surface a real over-count to investigate).
+- **No code change** from this turn beyond the already-shipped Sprint-22 fix (`638d845`) + this doc trail. Worktree stays clean; nothing touched on the probe or analytics.
+- Awaiting: founder's manual line-item reconciliation of 10/+$336 (+ the 10 ALGO / $+218 observe-only and weekly 0/3-ALGO). The Sprint 11–22 smoke-test remains **closed for the PRIMARY tz defect**; full sign-off pends the founder's manual number check.
