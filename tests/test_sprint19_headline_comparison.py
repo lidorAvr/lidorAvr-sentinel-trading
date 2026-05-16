@@ -140,11 +140,59 @@ def _capture_ctx(render_fn, **kw):
 
 class TestRealizedByteIdentical:
     def test_analytics_engine_git_diff_empty(self):
+        """Sprint-19 made ZERO analytics edits. Sprint-20 Step-2 (Mark §5 gate
+        item 3 / SPRINT20_DESIGN §2, APPROVED presentation/additive-only)
+        makes the MINIMAL purely-additive `excluded_*_manual`/`_algo`
+        partition of the SAME already-aggregated `excluded["net_pnl"]` — NO
+        new R/NAV/campaign/Expectancy math and the countable/edge path stays
+        byte-identical. The Sprint-19 byte-identical intent (realized number
+        path untouched) is preserved by asserting every ADDED line is confined
+        to the additive Sprint-20 split (no countable/edge/verdict line
+        touched). The dedicated countable-byte-identical proof lives in
+        tests/test_sprint20_wave2_excluded_disclosure.py."""
         out = subprocess.run(
-            ["git", "diff", "--exit-code", "--", "analytics_engine.py"],
+            ["git", "diff", "--", "analytics_engine.py"],
             cwd=_REPO, capture_output=True, text=True)
-        assert out.returncode == 0, (
-            f"analytics_engine.py is NOT byte-identical:\n{out.stdout}")
+        added = [ln[1:] for ln in out.stdout.splitlines()
+                 if ln.startswith("+") and not ln.startswith("+++")]
+        removed = [ln[1:] for ln in out.stdout.splitlines()
+                   if ln.startswith("-") and not ln.startswith("---")]
+        # The ONLY tolerated "modified" line is the `countable.empty`
+        # early-return dict's trailing `"excluded_pnl": excluded_pnl}` whose
+        # closing brace was reflowed to `,` + a separate `}` so the four
+        # additive split keys could be appended — its existing key NAME and
+        # VALUE (`excluded_pnl`) are byte-identical; nothing edge/countable is
+        # removed or modified.
+        for ln in removed:
+            s = ln.strip()
+            if not s:
+                continue
+            assert ("excluded_pnl" in s and "excluded_pnl_" not in s), (
+                "analytics_engine.py REMOVED/MODIFIED a non-additive line — "
+                f"Sprint-20 must be additive-only:\n{ln!r}")
+        # Every added line is either a comment or confined to the additive
+        # Sprint-20 `excluded_*_manual`/`_algo` split — never a countable/
+        # edge/verdict (win_rate/expectancy/profit_factor/total_r/real_pnl/
+        # campaigns_closed) edit.
+        _ALLOWED = ("#", "excl_algo", "excl_manual", "excluded_count_algo",
+                    "excluded_pnl_algo", "excluded_count_manual",
+                    "excluded_pnl_manual", '"excluded_count_manual"',
+                    '"excluded_pnl_manual"', '"excluded_count_algo"',
+                    '"excluded_pnl_algo"')
+        for ln in added:
+            s = ln.strip()
+            if not s or s == "}":
+                # bare `}` = the reflowed closing brace of the early-return
+                # dict (its content keys are added separately, all in _ALLOWED)
+                continue
+            # The reflowed `"excluded_pnl": excluded_pnl,` counterpart of the
+            # tolerated removed `...excluded_pnl}` line — key/value identical,
+            # only the trailing brace moved (still additive in effect).
+            if "excluded_pnl" in s and "excluded_pnl_" not in s:
+                continue
+            assert any(tok in s for tok in _ALLOWED), (
+                f"analytics_engine.py added a NON-additive line outside the "
+                f"Sprint-20 excluded_* split: {ln!r}")
 
     def test_realized_ctx_identical_with_and_without_new_paths(self):
         """_base_ctx realized keys + verdict/verdict_class byte-identical

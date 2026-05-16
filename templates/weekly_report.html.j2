@@ -169,6 +169,45 @@
 </table>
 {% endif %}
 
+{# ══ Sprint-20 Step-2: CLOSED-but-excluded realized leg (DATA_INCOMPLETE /
+   ALGO) — realized cash, but UNVERIFIED (no initial stop). NEVER in
+   WR/Exp/PF/Net-R (#8 — no R without a stop; methodologically correct). A
+   DISTINCT disclosure block, NOT a KPI card, NEVER adjacent-summed (Mark §1
+   hard-rule 4). On the REALIZED side: AFTER extremes, BEFORE the Sprint-18
+   unrealized open book. Reconciles with the Sprint-19 "0 בתקופה" framing —
+   countable 0 AND excluded N are both true, no contradiction (Mark §1
+   hard-rule 3). Shown iff excluded_count > 0. ALGO on its OWN
+   observation-only row (Mark §2 / DEC-20260511-001). #}
+{% if excl_present %}
+<h3>{{ excl_heading }}</h3>
+<p style="font-size:9pt; color:#374151;">{{ excl_caveat }}</p>
+<table class="metrics-table no-break">
+  <tr><th>שכבה</th><th>קמפיינים</th><th>רווח/הפסד ממומש (לא-מאומת)</th></tr>
+  {% if excl_count_manual > 0 %}
+  <tr>
+    <td>{{ excl_row_manual }}</td>
+    <td class="num">{{ excl_count_manual }}</td>
+    <td class="num {{ 'good' if excl_pnl_manual >= 0 else 'bad' }}"><span class="ltr">{{ "{:+,.0f}".format(excl_pnl_manual) }}$</span></td>
+  </tr>
+  {% endif %}
+  {% if excl_count_algo > 0 %}
+  <tr>
+    <td>{{ excl_row_algo }}</td>
+    <td class="num">{{ excl_count_algo }}</td>
+    <td class="num {{ 'good' if excl_pnl_algo >= 0 else 'bad' }}"><span class="ltr">{{ "{:+,.0f}".format(excl_pnl_algo) }}$</span></td>
+  </tr>
+  {% endif %}
+  <tr>
+    <td><strong>{{ excl_row_total }}</strong></td>
+    <td class="num"><strong>{{ excl_count }}</strong></td>
+    <td class="num {{ 'good' if excl_pnl >= 0 else 'bad' }}"><strong><span class="ltr">{{ "{:+,.0f}".format(excl_pnl) }}$</span></strong></td>
+  </tr>
+</table>
+{% if excl_manual_line %}<p style="font-size:8.5pt; color:#374151;">{{ excl_manual_line }}</p>{% endif %}
+{% if excl_count_algo > 0 %}<p class="caveat" style="font-size:8.5pt; color:#9ca3af;">🟠 ALGO — {{ excl_algo_caveat }}.</p>{% endif %}
+{% if excl_founder_note %}<p style="font-size:8.5pt; color:#9ca3af;">{{ excl_founder_note }}</p>{% endif %}
+{% endif %}
+
 {# ══ Sprint-18: OPEN BOOK (unrealized) — additive, separate from realized ══
    Reuses ec.get_open_positions_campaign (command-room source). Realized vs
    unrealized strictly separated; ALGO segregated + observation-only

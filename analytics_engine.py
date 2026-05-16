@@ -57,6 +57,23 @@ def compute_period_analytics(
         excluded_count = int(len(excluded))
         excluded_pnl   = float(excluded["net_pnl"].sum()) if not excluded.empty else 0.0
 
+        # ── Sprint-20 Step-2 (Mark §2 / DEC-20260516-017 UPDATE §2 /
+        # DEC-20260511-001 / #8) — ADDITIVE manual-vs-ALGO partition of the
+        # SAME already-aggregated `excluded["net_pnl"]`. NO new R / NAV /
+        # campaign / Expectancy math: a pure read-only split of the existing
+        # `excluded` frame by the existing `stat_bucket` series (the predicate
+        # already at :54-55), so the silent excluded leg can be disclosed with
+        # the actionable manual leg kept distinct from the observation-only
+        # externally-managed ALGO leg. `excluded_count`/`excluded_pnl` and the
+        # `countable`/`manual`/edge semantics are UNCHANGED — these four keys
+        # are strictly additive. invariant: manual + algo == excluded.
+        excl_algo   = excluded[excluded["stat_bucket"] == ec.STAT_BUCKET_ALGO]
+        excl_manual = excluded[excluded["stat_bucket"] != ec.STAT_BUCKET_ALGO]
+        excluded_count_algo   = int(len(excl_algo))
+        excluded_pnl_algo     = float(excl_algo["net_pnl"].sum())   if not excl_algo.empty   else 0.0
+        excluded_count_manual = int(len(excl_manual))
+        excluded_pnl_manual   = float(excl_manual["net_pnl"].sum()) if not excl_manual.empty else 0.0
+
         # Execution quality — over MANUAL campaigns (DATA_INCOMPLETE kept).
         buy_in_period = df[
             df["side"].str.upper().eq("BUY") &
@@ -82,7 +99,11 @@ def compute_period_analytics(
                     "missing_stop_rate": float(missing_stop_rate),
                     "oversized_rate":    float(oversized_rate),
                     "excluded_count":    excluded_count,
-                    "excluded_pnl":      excluded_pnl}
+                    "excluded_pnl":      excluded_pnl,
+                    "excluded_count_manual": excluded_count_manual,
+                    "excluded_pnl_manual":   excluded_pnl_manual,
+                    "excluded_count_algo":   excluded_count_algo,
+                    "excluded_pnl_algo":     excluded_pnl_algo}
 
         wins   = countable[countable["net_pnl"] > 0]
         losses = countable[countable["net_pnl"] <= 0]
@@ -143,6 +164,10 @@ def compute_period_analytics(
             "target_risk_usd":   t_risk,
             "excluded_count":    excluded_count,
             "excluded_pnl":      excluded_pnl,
+            "excluded_count_manual": excluded_count_manual,
+            "excluded_pnl_manual":   excluded_pnl_manual,
+            "excluded_count_algo":   excluded_count_algo,
+            "excluded_pnl_algo":     excluded_pnl_algo,
         }
 
     except Exception as e:
@@ -316,4 +341,8 @@ def _empty() -> dict:
         "missing_stop_rate": 0.0, "oversized_rate": 0.0,
         "avg_r_per_day": 0.0, "target_risk_usd": 0.0,
         "excluded_count": 0, "excluded_pnl": 0.0,
+        # Sprint-20 Step-2 — additive manual/ALGO partition of excluded (0 on
+        # the empty path; existing excluded_count/excluded_pnl untouched).
+        "excluded_count_manual": 0, "excluded_pnl_manual": 0.0,
+        "excluded_count_algo": 0, "excluded_pnl_algo": 0.0,
     }

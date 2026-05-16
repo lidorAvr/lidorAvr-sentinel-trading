@@ -330,6 +330,17 @@ class TestStatBucketExclusion:
             START, END, _ACCOUNT)
         assert result["excluded_count"] == 2
         assert result["excluded_pnl"] == pytest.approx(900.0)
+        # Sprint-20 Step-2 — ADDITIVE manual/ALGO split of the SAME total.
+        # Existing excluded_count/excluded_pnl semantics UNCHANGED above.
+        assert result["excluded_count_manual"] == 1          # DATA_INCOMPLETE
+        assert result["excluded_pnl_manual"] == pytest.approx(300.0)
+        assert result["excluded_count_algo"] == 1            # ALGO
+        assert result["excluded_pnl_algo"] == pytest.approx(600.0)
+        # invariant: manual + algo == existing excluded total.
+        assert (result["excluded_count_manual"]
+                + result["excluded_count_algo"] == result["excluded_count"])
+        assert (result["excluded_pnl_manual"] + result["excluded_pnl_algo"]
+                == pytest.approx(result["excluded_pnl"]))
 
     def test_all_excluded_returns_empty_with_disclosure(self):
         # only ALGO + DATA_INCOMPLETE → no countable campaigns, ok stays True
@@ -339,6 +350,12 @@ class TestStatBucketExclusion:
         assert result["ok"] is True
         assert result["excluded_count"] == 2
         assert result["excluded_pnl"] == pytest.approx(900.0)
+        # Sprint-20 Step-2 — the countable.empty early-return path must ALSO
+        # carry the additive split keys (founder scenario: 0 countable).
+        assert result["excluded_count_manual"] == 1
+        assert result["excluded_pnl_manual"] == pytest.approx(300.0)
+        assert result["excluded_count_algo"] == 1
+        assert result["excluded_pnl_algo"] == pytest.approx(600.0)
 
     def test_setup_breakdown_excludes_algo(self):
         result = m.compute_period_analytics(

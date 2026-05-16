@@ -65,6 +65,48 @@ _HEADLINE_BANNER_ALGO = (
     "מנוהל חיצונית, ללא הוראת Sentinel"
 )
 
+# ── Sprint-20 Step-2 — CLOSED-but-excluded (DATA_INCOMPLETE / ALGO) realized
+# leg. Honest disclosure of the silent excluded leg already computed at
+# analytics_engine.py:57-58,144-145 (excluded_count/excluded_pnl) + the new
+# additive manual/ALGO partition. ALL wording is VERBATIM from
+# docs/teams/MARK_SPRINT20_RULINGS.md (§1/§2/§4) — nothing invented. NEVER
+# summed into realized KPIs; a DISTINCT disclosure block; ALGO segregated
+# observation-only (#8 / DEC-20260511-001). Each constant cites its Mark slot.
+# §1 — manual-incomplete realized-excluded line (the mandatory "לא-מאומת"
+# wording; raw realized $ with NO R/WR/PF attached). MARK_SPRINT20:§1 line.
+_EXCL_MANUAL_LINE = (
+    "ℹ️ {n} קמפיינים נסגרו בתקופה אך הוחרגו מסטטיסטיקת ה-edge (חסר stop) — "
+    "רווח/הפסד ממומש לא-מאומת: ${x:+,.0f}. השלם entry/stop כדי להיכלל."
+)
+# §2 — ALGO observation-only line. Carries NO instruction, NO `השלם`, never
+# in headline/verdict/edge (DEC-20260511-001). MARK_SPRINT20:§2.2.
+_EXCL_ALGO_LINE = (
+    "🔭 {n} קמפייני ALGO נסגרו בתקופה — מנוהל חיצונית, פיקוח בלבד · לא הוראה. "
+    "ממומש לא-מאומת: ${x:+,.0f} (לא נספר ב-edge)."
+)
+# §4 — founder-side data-completion note (mirrors bot_health.py:147 honest
+# "אינו נספר" tone — a data task, NOT a system error). Shown iff
+# excluded_count_manual > 0; NO instruction for the ALGO subset. MARK_SPRINT20:§4.
+_EXCL_FOUNDER_NOTE = (
+    "📋 {n} קמפיינים נסגרו ללא initial_stop ולכן לא נכנסו לסטטיסטיקת ה-edge. "
+    "זו השלמת נתונים — לא תקלת מערכת. השלם entry/stop בכל קמפיין כדי שייספר "
+    "ב-WR/Expectancy/PF/Net-R."
+)
+# Section heading + per-row labels for the PDF disclosure block. Derived from
+# the Mark §1/§2 wording (RTL; same Hebrew terms Mark uses verbatim in the
+# §1/§2 lines: "הוחרגו מסטטיסטיקת ה-edge", "חסר stop", "ALGO · פיקוח בלבד · לא
+# הוראה", "ממומש לא-מאומת").
+_EXCL_HEADING = "📕 קמפיינים שנסגרו בתקופה אך הוחרגו מסטטיסטיקת ה-edge"
+_EXCL_CAVEAT = (
+    "רווח/הפסד ממומש לא-מאומת · חסר initial stop · "
+    "לא נספר ב-WR / Expectancy / PF / Net-R (#8 — אין R ללא stop)"
+)
+_EXCL_ROW_MANUAL = "ידני · חסר stop (DATA_INCOMPLETE)"
+_EXCL_ROW_ALGO = "🟠 ALGO · פיקוח בלבד · לא הוראה"
+_EXCL_ROW_TOTAL = "סה\"כ מוחרג (לא-מאומת)"
+# ALGO observation-only caveat — reuse the canonical Sprint-18 constant
+# (report_open_book.ALGO_EXTERNAL_CAVEAT) so the wording is identical.
+
 
 def compute_period_average(snapshots: Optional[list],
                            n: int = _PERIOD_AVG_MIN_N) -> dict:
@@ -177,6 +219,9 @@ def render_weekly(
                              period_label, period_word="שבוע"))
     ctx.update(_comparison_ctx(comparison, period_average,
                                open_book_history, "weekly"))
+    # Sprint-20 Step-2 — additive `excl_*` disclosure ctx (disjoint namespace;
+    # gated `excluded_count>0`; realized KPIs byte-identical by construction).
+    ctx.update(_excluded_ctx(analytics))
 
     filename = f"sentinel_weekly_{period_start.strftime('%Y-%m-%d')}.pdf"
     return _render("weekly_report.html.j2", ctx, output_dir, filename)
@@ -231,6 +276,9 @@ def render_monthly(
                              period_label, period_word="חודש"))
     ctx.update(_comparison_ctx(comparison, period_average,
                                open_book_history, "monthly"))
+    # Sprint-20 Step-2 — additive `excl_*` disclosure ctx (disjoint namespace;
+    # gated `excluded_count>0`; realized KPIs byte-identical by construction).
+    ctx.update(_excluded_ctx(analytics))
 
     filename = f"sentinel_monthly_{period_start.strftime('%Y-%m')}.pdf"
     return _render("monthly_report.html.j2", ctx, output_dir, filename)
@@ -295,6 +343,14 @@ def build_summary_text(
         if ob_cmp:
             head.append("")
             head.extend(ob_cmp)
+        # Sprint-20 Step-2 — the founder's exact scenario: campaigns_closed==0
+        # because the in-window closes lack a stop (DATA_INCOMPLETE) → they
+        # populate excluded_* but were silent. Disclose them honestly here too
+        # (realized-but-unverified; NEVER "ללא עסקאות" — Mark §1 hard-rule 3),
+        # independent of the open-book lines above.
+        excl_lines = _summary_excluded_lines(analytics)
+        if excl_lines:
+            head.extend(excl_lines)
         if risk_rec is not None:
             from telegram_formatters import fmt_heat_thermometer
             head.append("")
@@ -334,6 +390,14 @@ def build_summary_text(
                 f"Exp `{avg.get('expectancy_r', 0):+.2f}R`")
         else:
             lines.append(f"`{pa.get('baseline_pending_text', '')}`")
+    # Sprint-20 Step-2 — CLOSED-but-excluded realized leg, ADDITIVE block
+    # appended AFTER the realized KPI + vs-average lines and BEFORE the
+    # Sprint-18 open-book append, so realized · excluded · unrealized read in
+    # that order. NEVER summed into the realized lines above (Mark §1
+    # hard-rule 1); the "לא-מאומת" wording is mandatory (Mark §1 hard-rule 2);
+    # ALGO on its OWN observation-only line (Mark §2 / DEC-20260511-001);
+    # founder data-completion note mirrors bot_health honest tone (Mark §4).
+    lines.extend(_summary_excluded_lines(analytics))
     # Sprint-18 §1.4: open-book summary APPENDED after the realized KPI block,
     # before the heat thermometer — realized lines above are NOT modified.
     if open_book is not None:
@@ -419,6 +483,37 @@ def _summary_open_book_cmp_lines(open_book_history: Optional[dict]) -> list:
         bp = obh.get("baseline_pending_text", "")
         if bp:
             out.append(f"`{bp}`")
+    return out
+
+
+def _summary_excluded_lines(analytics: dict) -> list:
+    """Sprint-20 Step-2 — Telegram summary lines for the CLOSED-but-excluded
+    realized leg. ADDITIVE; built from `_excluded_ctx` (same disjoint `excl_*`
+    namespace; reads ONLY the already-computed `excluded_*` keys). Returns []
+    when `excluded_count == 0` ⇒ existing callers byte-identical.
+
+    Renders (Mark §1/§2/§4, all verbatim):
+      • manual-incomplete line  — iff `excluded_count_manual > 0`; carries the
+        mandatory "לא-מאומת" token + raw realized $ with NO R/WR/PF attached
+        + the actionable "השלם entry/stop" hint.
+      • ALGO observation-only line — iff `excluded_count_algo > 0`; never
+        merged with the manual figure, never an instruction, never in headline
+        (DEC-20260511-001 / #8).
+      • founder data-completion note — iff `excluded_count_manual > 0`; framed
+        as a data task, NOT a system error (bot_health.py:147 honest tone).
+    These three are INDEPENDENT (Mark §2.3). NEVER summed into any realized
+    KPI line (Mark §1 hard-rule 1) — this is a separate disclosure block.
+    """
+    ec_ctx = _excluded_ctx(analytics)
+    if not ec_ctx.get("excl_present"):
+        return []
+    out = [""]
+    if ec_ctx.get("excl_manual_line"):
+        out.append(ec_ctx["excl_manual_line"])
+    if ec_ctx.get("excl_algo_line"):
+        out.append(ec_ctx["excl_algo_line"])
+    if ec_ctx.get("excl_founder_note"):
+        out.append(f"`{ec_ctx['excl_founder_note']}`")
     return out
 
 
@@ -649,6 +744,71 @@ def _comparison_ctx(comparison: Optional[dict],
         "obcmp_avg_text": obh.get("avg_text", ""),
         "obcmp_avg_algo_text": obh.get("avg_algo_text", ""),
         "obcmp_baseline_pending": obh.get("baseline_pending_text", ""),
+    }
+
+
+def _excluded_ctx(analytics: dict) -> dict:
+    """Sprint-20 Step-2 — CLOSED-but-excluded realized leg. STRICTLY ADDITIVE
+    seam (same disjoint-namespace discipline as `_headline_ctx`/
+    `_comparison_ctx`).
+
+    Returns ONLY `excl_*`-namespaced keys; it NEVER reads or writes a
+    `_base_ctx` realized KPI key, `_headline_ctx`/`_comparison_ctx`/
+    `_open_book_ctx` key, `compute_verdict`, or `analytics`'s number path. It
+    merely re-presents the ALREADY-computed `excluded_count`/`excluded_pnl`
+    (`analytics_engine.py:57-58,144-145`) plus the additive
+    `excluded_*_manual`/`excluded_*_algo` partition — ZERO R/NAV/campaign/
+    Expectancy math (proof by construction; guard test asserts `_base_ctx`
+    dict identical with vs without this call + key-set disjointness).
+
+    Gate: the whole block is shown **iff** `excluded_count > 0` (Mark §1) —
+    exactly the founder scenario (real linked closes with no `initial_stop`).
+    `excluded_pnl` is NEVER summed into `realized_pnl`/`total_r_net`/
+    `win_rate`/`expectancy_r`/`profit_factor` (Mark §1 hard-rule 1); the
+    Sprint-19 "0 בתקופה" framing (countable 0) coexists with no contradiction
+    — countable 0 AND excluded N are both true (Mark §1 hard-rule 3).
+
+    The manual line / ALGO line / founder note are INDEPENDENT: manual line +
+    founder note shown iff `excluded_count_manual > 0`; ALGO line shown iff
+    `excluded_count_algo > 0` (Mark §2.3). ALGO is observation-only — carries
+    NO instruction, NEVER in headline/verdict/edge (DEC-20260511-001 / #8).
+    """
+    import report_open_book as rob
+
+    n          = int(analytics.get("excluded_count", 0) or 0)
+    pnl        = float(analytics.get("excluded_pnl", 0.0) or 0.0)
+    n_manual   = int(analytics.get("excluded_count_manual", 0) or 0)
+    pnl_manual = float(analytics.get("excluded_pnl_manual", 0.0) or 0.0)
+    n_algo     = int(analytics.get("excluded_count_algo", 0) or 0)
+    pnl_algo   = float(analytics.get("excluded_pnl_algo", 0.0) or 0.0)
+    present    = n > 0
+
+    return {
+        "excl_present":      present,
+        "excl_count":        n,
+        "excl_pnl":          pnl,
+        "excl_count_manual": n_manual,
+        "excl_pnl_manual":   pnl_manual,
+        "excl_count_algo":   n_algo,
+        "excl_pnl_algo":     pnl_algo,
+        "excl_heading":      _EXCL_HEADING,
+        "excl_caveat":       _EXCL_CAVEAT,
+        "excl_row_manual":   _EXCL_ROW_MANUAL,
+        "excl_row_algo":     _EXCL_ROW_ALGO,
+        "excl_row_total":    _EXCL_ROW_TOTAL,
+        # §1 manual-incomplete line ("לא-מאומת" mandatory; raw $ no R/WR/PF) —
+        # only meaningful when n_manual>0 (template/summary gate on it).
+        "excl_manual_line":  _EXCL_MANUAL_LINE.format(n=n_manual, x=pnl_manual)
+        if n_manual > 0 else "",
+        # §2 ALGO observation-only line — only when n_algo>0; no instruction.
+        "excl_algo_line":    _EXCL_ALGO_LINE.format(n=n_algo, x=pnl_algo)
+        if n_algo > 0 else "",
+        # §4 founder data-completion note — only when n_manual>0 (no note for
+        # the ALGO subset; DEC-20260511-001).
+        "excl_founder_note": _EXCL_FOUNDER_NOTE.format(n=n_manual)
+        if n_manual > 0 else "",
+        # ALGO observation-only caveat — canonical Sprint-18 constant reused.
+        "excl_algo_caveat":  rob.ALGO_EXTERNAL_CAVEAT,
     }
 
 
