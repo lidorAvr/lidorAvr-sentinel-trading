@@ -1152,3 +1152,24 @@ Corroborating real data issues (independent of the delivery gap):
 ### Sprint-21 re-target (no logic change)
 
 The read-only admin-gated probe must run **inside the live environment** and report, for the on-demand weekly/monthly windows: `_fetch_trades_df` row count, `trade_date` min/max, #SELL in-window, #closed campaigns the real pipeline computes, per-campaign classification (campaign_id/setup/initial_stop/original_risk+valid+reason/bucket/countable/net_pnl), and in-window NULL-`campaign_id` count. This catches the production data-delivery gap definitively. Still strictly read-only, existing admin/PIN gate, no campaign-math, no Supabase write.
+
+---
+
+## DEC-20260516-018 — UPDATE 2: comprehensive 3-workstream fix (founder: "תיקון מלא וזהיר")
+
+Date: 2026-05-16
+Status: **decided (founder); Sprint 21 COMPREHENSIVE, Mark-led, full Wave-1/2 rigor.**
+
+Engine PROVEN correct on real data (April→8 closed/+$180.49; weekly→3 ALGO-excluded; `tests/test_real_data_april_regression.py`). Production "0" = data-delivery. Founder chose a full, careful, team-divided treatment. Sprint-21 = 3 bounded workstreams:
+
+### WS-A — Live read-only diagnostic probe (LOW risk)
+Admin-gated, strictly read-only module that runs the REAL `_fetch_trades_df` in the live env for the on-demand weekly/monthly windows and reports: rows fetched, `trade_date` min/max, #SELL in-window, #closed campaigns the real pipeline computes, per-campaign classification (campaign_id/setup/initial_stop/original_risk+valid+reason/bucket/countable/net_pnl), #in-window NULL-`campaign_id`, and the effective Supabase key/RLS context (no secret values — only "service-role vs anon", row visibility). Localizes WHY production input is empty (RLS/key vs runtime-failure vs data). Reuse existing dev-menu admin/PIN gate; minimal additive handler; no telegram_bot.py wholesale rewrite.
+
+### WS-B — NULL-`campaign_id` honest surfacing + repair runbook (MED risk)
+Code: trades with NULL/blank `campaign_id` currently vanish silently from BOTH realized (`analytics_engine.py:258 .dropna()`) and open-book (`engine_core.py:479 notnull()`). #1 violation. Add an HONEST disclosure (count + Σpnl of in-window unlinked trades) — never silently zero; NEVER auto-mutate Supabase from a read flow. Plus a documented manual repair query/runbook the founder runs to re-link the 8 rows from 2026-05-11+ (parent_trade_id/symbol-based). Realized/open-book countable values stay byte-identical (guard).
+
+### WS-C — `initial_stop` vs `initial_risk_price` fallback (HIGH risk — Mark-GATED, may DEFER)
+Real data shows manual EP/VCP campaigns where `initial_stop` is the `-1` sentinel or set ABOVE entry (data-entry error) while the genuine stop sits in `initial_risk_price` (e.g. AEHR 54.85, RVMD 127.8). These become DATA_INCOMPLETE → excluded though a real stop exists. **Campaign-math = CLAUDE.md most-protected.** Mark must rule the EXACT policy: (a) is `initial_risk_price`/`stop_loss` a valid fallback for `get_campaign_risk_metrics` when `initial_stop` is sentinel/invalid? (b) or is this strictly a founder data-correction task (no code change)? If a code change is ruled: everything currently countable must stay byte-identical; extensive new tests; the real-data regression (`test_real_data_april_regression.py`) updated only with Mark sign-off. DEFER if any ambiguity (#1: accuracy over confidence).
+
+### Hard constraints
+Strictly read-only WS-A (no Supabase write/snap_save/scheduler-state); admin protection preserved (no secure_runner bypass, no telegram_bot.py wholesale rewrite); #8 ALGO segregation; #1 honesty (never silent-zero, never fabricated); no campaign/R/NAV math change outside an explicit Mark WS-C ruling + guards; preserve 920be95/bcf32f5/Sprint-16/18/19/20; no migration/compose change.
