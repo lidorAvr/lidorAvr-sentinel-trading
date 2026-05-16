@@ -167,6 +167,26 @@ def _window_block(period_type: str, now: datetime) -> str:
         if col in work.columns:
             work[col] = pd.to_numeric(work[col], errors="coerce").fillna(0)
 
+    # ── Sprint-22 (DEC-20260516-019 / MARK_SPRINT22_RULINGS.md §4 /
+    # SPRINT22_DESIGN §3) — MIRROR analytics_engine §1.2. The probe filters
+    # its OWN window (:178-179, :194-195) BEFORE delegating to
+    # `ae._get_closed_campaigns` (:184), so without this the tz-AWARE `now`
+    # default (`build_probe_report` → `datetime.now(sched.ISRAEL_TZ)` →
+    # `_weekly/_monthly_period`) makes the pre-filter RAISE `Invalid
+    # comparison between dtype=datetime64[ns] and datetime` (the original
+    # probe defect surface — same root cause as the engine all-False). SAME
+    # rule, SAME `ae._to_naive` helper (single source of truth — Mark §4 /
+    # SPRINT22_DESIGN §3 ⟨MARK⟩: reuse `ae._to_naive`, no new math/Supabase
+    # surface). Covers all three probe comparison sites (:178-179, :184
+    # delegation, :194-195). SAME no-op invariant (Mark §1.5/§4): tz-naive
+    # `now` path stays byte-identical. Sits AFTER the honest empty/fail
+    # branch (:151-157) so a genuinely empty/None fetch still emits the
+    # honest "input ריק/כשל" line BEFORE any normalization (Mark §3 #1).
+    period_start = ae._to_naive(period_start)
+    period_end = ae._to_naive(period_end)
+    if getattr(work["trade_date"].dt, "tz", None) is not None:
+        work["trade_date"] = work["trade_date"].dt.tz_localize(None)
+
     td = work["trade_date"]
     td_min = td.min()
     td_max = td.max()

@@ -32,6 +32,32 @@ def compute_period_analytics(
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
+        # ── Sprint-22 (DEC-20260516-019 / MARK_SPRINT22_RULINGS.md
+        # §1.2/§1.3 / SPRINT22_DESIGN §1.2) — SINGLE-POINT tz-normalization.
+        # Boundary-only: BOTH period bounds and the coerced `trade_date`
+        # Series become tz-NAIVE (wall-clock preserved — `_to_naive` strips
+        # tzinfo, never converts). PROVEN root cause: production passes
+        # tz-AWARE bounds (`datetime.now(ISRAEL_TZ)` → `_weekly/_monthly_period`)
+        # while `pd.to_datetime` (above) yields a tz-NAIVE Series → the WS-B
+        # unlinked filter (:54-55) and `_get_closed_campaigns` (:334, called
+        # at :72) silently compared tz-naive Series vs tz-aware scalar →
+        # all-False → "0 קמפיינים" in prod. This ONE site (Mark §1.3) covers
+        # the WS-B block, `_get_closed_campaigns` (transitively — it receives
+        # the SAME rebound bounds + SAME `df`), the execution-quality `df`
+        # slice, and EVERY external caller (on-demand + scheduled weekly +
+        # scheduled monthly — all share this engine path). `_get_closed_campaigns`
+        # gets NO own guard (Mark §1.4). Provable no-op for already-naive
+        # inputs (Mark §1.5): both branch conditions are False → zero
+        # reassignment → byte-identical downstream. Sits AFTER the `:26`
+        # `df.empty`/None guard (Mark §3 anti-masking #1) so a genuinely
+        # empty/failed fetch still short-circuits to the honest `_empty()`
+        # path BEFORE any normalization — the two concerns never interact.
+        # NO R / NAV / campaign / Expectancy / PnL math touched.
+        period_start = _to_naive(period_start)
+        period_end = _to_naive(period_end)
+        if getattr(df["trade_date"].dt, "tz", None) is not None:
+            df["trade_date"] = df["trade_date"].dt.tz_localize(None)
+
         # ── Sprint-21 WS-B (MARK_SPRINT21_RULINGS.md §B1/§B2/§B3 /
         # SPRINT21_DESIGN §B.2.a / #1) — ADDITIVE NULL/blank-`campaign_id`
         # honest-disclosure counters. STRICTLY ADDITIVE: computed here on the
@@ -327,6 +353,29 @@ def compute_verdict(analytics: dict, period_word: str = "שבוע") -> tuple:
 
 
 # ── Internals ──────────────────────────────────────────────────────────────────
+
+def _to_naive(ts):
+    """Sprint-22 (DEC-20260516-019 / MARK_SPRINT22_RULINGS.md §1.1) —
+    return `ts` as a tz-NAIVE datetime/Timestamp.
+
+    Direction RULED by Mark §1.1: STRIP the tzinfo WITHOUT shifting the
+    wall-clock value (`ts.replace(tzinfo=None)`) — NOT `astimezone(UTC)`,
+    NOT any clock conversion. `trade_date` from Supabase is wall-clock with
+    no offset; `period_start`/`period_end` derive from Israel-local calendar
+    arithmetic, so their tzinfo is incidental, not a UTC offset to honor.
+    Wall-clock preservation is mandatory: an `astimezone` shift would move a
+    day boundary by the Asia/Jerusalem offset and could re-bucket a
+    midnight-adjacent trade — a forbidden campaign-aggregation change.
+
+    If `ts` is already tz-naive (`tzinfo is None`) it is returned UNCHANGED
+    (identity) — this is the provable algebraic no-op for the entire
+    tz-naive suite + the LOCKED real-data regression (Mark §1.5). Pure
+    datetime handling: NO R / NAV / campaign / Expectancy / PnL math.
+    """
+    if getattr(ts, "tzinfo", None) is not None:
+        return ts.replace(tzinfo=None)
+    return ts
+
 
 def _get_closed_campaigns(df: pd.DataFrame, start: datetime, end: datetime) -> pd.DataFrame:
     """Return all trades belonging to campaigns whose last SELL falls in [start, end)."""

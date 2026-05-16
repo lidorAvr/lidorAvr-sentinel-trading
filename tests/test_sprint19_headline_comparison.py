@@ -190,8 +190,17 @@ class TestRealizedByteIdentical:
         # (MARK_SPRINT21_RULINGS §B2: "implement via a new unlinked_count/
         # unlinked_pnl pair ... additive ... countable/excluded byte-identical"
         # — exactly the precedent that admitted the Sprint-20 split tokens
-        # below). Never a countable/edge/verdict (win_rate/expectancy/
-        # profit_factor/total_r/real_pnl/campaigns_closed) edit.
+        # below) OR the Sprint-22 single-point tz-normalization
+        # (DEC-20260516-019 / MARK_SPRINT22_RULINGS §1.2/§6 gate item 1-2:
+        # the `_to_naive` helper + ONE boundary-normalization block strip
+        # tzinfo from `period_start`/`period_end` and guarantee `trade_date`
+        # tz-naive — PURE datetime-operand normalization, PROVABLE no-op for
+        # already-naive inputs per Mark §1.5, NO R/NAV/campaign/Expectancy
+        # math; the LOCKED tests/test_real_data_april_regression.py stays
+        # byte-identical and the tz-aware==tz-naive contract is proven by
+        # tests/test_sprint22_tz_regression.py). Never a countable/edge/
+        # verdict (win_rate/expectancy/profit_factor/total_r/real_pnl/
+        # campaigns_closed) edit.
         _ALLOWED = ("#", "excl_algo", "excl_manual", "excluded_count_algo",
                     "excluded_pnl_algo", "excluded_count_manual",
                     "excluded_pnl_manual", '"excluded_count_manual"',
@@ -203,7 +212,53 @@ class TestRealizedByteIdentical:
                     "_ul_side", "_ul_sell", "_ul_buy", "_unlinked_keys",
                     "unlinked_count", "unlinked_pnl", "unlinked_count_buy",
                     "unlinked_pnl_buy", '"unlinked_count"', '"unlinked_pnl"',
-                    '"unlinked_count_buy"', '"unlinked_pnl_buy"')
+                    '"unlinked_count_buy"', '"unlinked_pnl_buy"',
+                    )
+        # Sprint-22 single-point tz-normalization (DEC-20260516-019 /
+        # MARK_SPRINT22_RULINGS §1.2/§6 gate items 1-2): the authorized
+        # change is exactly (a) the pure `_to_naive` helper and (b) the ONE
+        # boundary-normalization block. Rather than enumerate every
+        # free-text docstring line as a brittle token, derive the AUTHORIZED
+        # added-line set from the live source between the documented
+        # anchors. Any added line whose stripped content is a member of
+        # this authorized region is admitted (pure datetime-operand
+        # normalization — no R/NAV/campaign/Expectancy math; LOCKED
+        # real-data regression byte-identical; tz-aware==tz-naive proven by
+        # tests/test_sprint22_tz_regression.py).
+        with open(os.path.join(_REPO, "analytics_engine.py")) as _f:
+            _ae_src = _f.read().splitlines()
+        _i_help = next(i for i, l in enumerate(_ae_src)
+                       if l.startswith("def _to_naive("))
+        _j_help = next(i for i in range(_i_help + 1, len(_ae_src))
+                       if _ae_src[i].startswith("def _get_closed_campaigns("))
+        _i_blk = next(i for i, l in enumerate(_ae_src)
+                      if "Sprint-22 (DEC-20260516-019" in l)
+        _j_blk = next(i for i in range(_i_blk + 1, len(_ae_src))
+                      if 'df["trade_date"] = df["trade_date"].dt.tz_localize'
+                      in _ae_src[i])
+        _SPRINT22_AUTHORIZED = {
+            ln.strip() for ln in
+            _ae_src[_i_help:_j_help] + _ae_src[_i_blk:_j_blk + 1]
+            if ln.strip()}
+        # Sprint-22 self-reference hardening (Mark consolidation ruling,
+        # DEC-20260516-019): _SPRINT22_AUTHORIZED is DERIVED from live
+        # source, so assert the authorized region ITSELF assigns no KPI/
+        # countable value — even a self-derived allowlist can then never
+        # admit a math/verdict edit smuggled inside the anchored spans
+        # (prose mentioning "Expectancy"/"PnL" is fine: no `kpi =`/`["kpi"]`).
+        import re as _re
+        _FORBIDDEN_KPI = _re.compile(
+            r'(\b(win_rate|expectancy|expectancy_r|profit_factor|total_r'
+            r'|total_r_net|real_pnl|realized_pnl|campaigns_closed|net_pnl'
+            r'|countable)\b\s*=(?!=)'
+            r'|\["(win_rate|expectancy|expectancy_r|profit_factor|total_r'
+            r'|total_r_net|real_pnl|realized_pnl|campaigns_closed|net_pnl'
+            r'|countable)"\])')
+        _viol = sorted(a for a in _SPRINT22_AUTHORIZED
+                       if _FORBIDDEN_KPI.search(a))
+        assert not _viol, (
+            "Sprint-22 authorized region must not assign any KPI/countable "
+            f"value (self-reference hardening): {_viol}")
         for ln in added:
             s = ln.strip()
             if not s or s == "}":
@@ -215,9 +270,12 @@ class TestRealizedByteIdentical:
             # only the trailing brace moved (still additive in effect).
             if "excluded_pnl" in s and "excluded_pnl_" not in s:
                 continue
+            if s in _SPRINT22_AUTHORIZED:
+                continue
             assert any(tok in s for tok in _ALLOWED), (
                 f"analytics_engine.py added a NON-additive line outside the "
-                f"Sprint-20 excluded_* split: {ln!r}")
+                f"Sprint-20 excluded_* / Sprint-21 unlinked_* / Sprint-22 "
+                f"tz-normalization authorized regions: {ln!r}")
 
     def test_realized_ctx_identical_with_and_without_new_paths(self):
         """_base_ctx realized keys + verdict/verdict_class byte-identical
