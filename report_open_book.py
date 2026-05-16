@@ -385,6 +385,35 @@ def open_book_summary_lines(open_book: dict) -> list:
     return lines
 
 
+_UNLINKED_OPEN_LINE = (
+    "⚠️ {n} עסקאות לא-מקושרות (חסר campaign_id) — לא נכללו · "
+    "${x:+,.2f} · דורש קישור"
+)
+
+
+def unlinked_open_line(analytics: dict) -> list:
+    """Sprint-21 WS-B — open-book NULL-`campaign_id` honest-disclosure line.
+
+    PURE, ADDITIVE, presentation-only helper. Reads ONLY the additive
+    `unlinked_count_buy`/`unlinked_pnl_buy` analytics keys (analytics_engine
+    §WS-B) and returns the verbatim MARK_SPRINT21_RULINGS §B2 line so the
+    BUY-side rows silently dropped at `engine_core.py:479` (`.notnull()`) are
+    NOT silently absent from the open book either (#1 / §B3). It NEVER touches
+    `build_open_book` / `get_open_positions_campaign` or ANY open-book figure
+    — every open-book number stays byte-identical (guard test §B). Returns []
+    when `unlinked_count_buy == 0` (no noise; §B2). The read flow NEVER
+    auto-mutates Supabase — re-linking is the founder-run manual runbook
+    docs/runbooks/SPRINT21_NULL_CAMPAIGN_REPAIR.md ONLY (§B3/§B4)."""
+    try:
+        n = int((analytics or {}).get("unlinked_count_buy", 0) or 0)
+        x = float((analytics or {}).get("unlinked_pnl_buy", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return []
+    if n <= 0:
+        return []
+    return [_UNLINKED_OPEN_LINE.format(n=n, x=x)]
+
+
 def empty_state_lines(open_book: dict, period_label: str) -> list:
     """Honest empty-state lines (Mark §2) for the 0-closed-campaigns case.
 

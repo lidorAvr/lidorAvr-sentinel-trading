@@ -249,6 +249,19 @@
 {% if excl_founder_note %}<p style="font-size:8.5pt; color:#9ca3af;">{{ excl_founder_note }}</p>{% endif %}
 {% endif %}
 
+{# ══ Sprint-21 WS-B: NULL-`campaign_id` honest disclosure — ADDITIVE,
+   disjoint `unlinked_*` namespace (mirrors the Sprint-20 excl_* block above).
+   Shown iff unlinked_present (in-window NULL/blank-campaign_id SELL count>0);
+   verbatim MARK_SPRINT21_RULINGS §B2. NEVER summed into any KPI; the read
+   flow NEVER auto-mutates Supabase — re-linking is the founder-run manual
+   runbook docs/runbooks/SPRINT21_NULL_CAMPAIGN_REPAIR.md ONLY. #}
+{% if unlinked_present %}
+<p style="font-size:9pt; color:#b45309;">{{ unlinked_line }}</p>
+{% endif %}
+{% if unlinked_present_buy %}
+<p style="font-size:9pt; color:#b45309;">{{ unlinked_line_buy }}</p>
+{% endif %}
+
 {# ══ Sprint-18: OPEN BOOK (unrealized) — additive, separate from realized.
    Same seam as weekly: reuse ec.get_open_positions_campaign; ALGO segregated
    + observation-only; floating PnL/R explicitly "לא ממומש". #}

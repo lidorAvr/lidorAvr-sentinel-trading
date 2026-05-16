@@ -303,6 +303,26 @@ def handle_all_messages(message):
         return bot.send_message(chat_id, _build_health_report(),
                                 reply_markup=get_developer_menu())
 
+    # ── Sprint-21 WS-A — live PURE READ-ONLY data-delivery probe ────────────
+    # Re-runs the EXACT scheduler `_fetch_trades_df` for BOTH on-demand
+    # windows read-only and reports, honestly, what the real pipeline yields
+    # (distinguishing "input ריק/כשל" from "0 closes"; no secrets — only the
+    # JWT role word). NO write/snap_save/state-mutation (AST-proven). Admin-
+    # gated by construction: this branch is in the developer-menu region,
+    # reachable ONLY inside an authenticated dev-PIN session (the EXISTING
+    # gate at telegram_bot.py:147-153 — unchanged, not bypassed). Mirrors the
+    # synchronous `🏥 בריאות מערכת` handler exactly.
+    if text == "🔬 בדיקת נתוני תקופה (Probe)":
+        try:
+            import period_data_probe
+            txt = period_data_probe.build_probe_report()
+            return bot.send_message(chat_id, txt,
+                                    reply_markup=get_developer_menu())
+        except Exception as e:
+            return bot.send_message(
+                chat_id, f"{RTL}❌ שגיאת Probe: `{str(e)[:300]}`",
+                reply_markup=get_developer_menu(), parse_mode="Markdown")
+
     # ── Sprint-17 Scope item B — on-demand report (dev/testing only) ─────────
     # Generates the weekly/monthly report for the LAST COMPLETE period using
     # the SAME scheduler period logic + render/deliver path (Sprint-16 graceful

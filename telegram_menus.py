@@ -28,6 +28,11 @@ def get_developer_menu():
     # Reuses the scheduler period logic + render/deliver path; NEVER mutates
     # the real snapshot store or the scheduler period-dedup.
     markup.add(telebot.types.KeyboardButton("📈 דוח שבועי עכשיו"), telebot.types.KeyboardButton("📆 דוח חודשי עכשיו"))
+    # Sprint-21 WS-A — live PURE READ-ONLY data-delivery probe (developer/
+    # testing only; admin-gated via the SAME existing dev-menu/PIN path).
+    # Re-runs the exact scheduler fetch read-only; NEVER writes/snap_save/
+    # mutates state and NEVER prints secrets (MARK_SPRINT21_RULINGS §WS-A).
+    markup.add(telebot.types.KeyboardButton("🔬 בדיקת נתוני תקופה (Probe)"))
     markup.add(telebot.types.KeyboardButton("📋 לוגים"), telebot.types.KeyboardButton("⬅️ חזרה לתפריט ראשי"))
     return markup
 

@@ -32,13 +32,55 @@ def compute_period_analytics(
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
+        # ── Sprint-21 WS-B (MARK_SPRINT21_RULINGS.md §B1/§B2/§B3 /
+        # SPRINT21_DESIGN §B.2.a / #1) — ADDITIVE NULL/blank-`campaign_id`
+        # honest-disclosure counters. STRICTLY ADDITIVE: computed here on the
+        # SAME coerced `df`, BEFORE `_get_closed_campaigns`, touching NOTHING
+        # else. `_get_closed_campaigns:286 .dropna()` SILENTLY drops these
+        # rows from realized stats (and the .notnull() filter at
+        # engine_core.py:479 drops them from the open book) — that silent zero
+        # of real activity is a #1 violation. We surface a count + Σ of the
+        # ALREADY-STORED `pnl_usd` (NO new R/NAV/campaign/Expectancy math —
+        # only `len()` + a stored-column `.sum()`). These keys NEVER enter
+        # `countable`/`excluded_*`/WR/Exp/PF/Net-R/realized_pnl — disjoint
+        # `unlinked_*` namespace, mirroring the Sprint-20 `excluded_*`
+        # additive pattern. Re-linking is the founder-run manual runbook
+        # ONLY (docs/runbooks/SPRINT21_NULL_CAMPAIGN_REPAIR.md); this read
+        # flow NEVER auto-mutates Supabase (AGENTS.md #4 / §B3).
+        _ul_cid = df["campaign_id"].astype(str).str.strip()
+        _null_mask = df["campaign_id"].isna() | _ul_cid.isin(("", "nan", "None", "NaT"))  # noqa: E501  Sprint-21 WS-B unlinked
+        _unlinked = df[_null_mask]
+        _ul_inwin = _unlinked[
+            (_unlinked["trade_date"] >= period_start) &
+            (_unlinked["trade_date"] < period_end)]
+        _ul_side = _ul_inwin["side"].astype(str).str.upper()
+        _ul_sell = _ul_inwin[_ul_side.eq("SELL")]
+        _ul_buy = _ul_inwin[_ul_side.eq("BUY")]
+        unlinked_count = int(len(_ul_sell))
+        unlinked_pnl = float(_ul_sell["pnl_usd"].sum()) \
+            if not _ul_sell.empty else 0.0
+        unlinked_count_buy = int(len(_ul_buy))
+        unlinked_pnl_buy = float(_ul_buy["pnl_usd"].sum()) \
+            if not _ul_buy.empty else 0.0
+        _unlinked_keys = {
+            "unlinked_count": unlinked_count,
+            "unlinked_pnl": unlinked_pnl,
+            "unlinked_count_buy": unlinked_count_buy,
+            "unlinked_pnl_buy": unlinked_pnl_buy,
+        }
+
         closed_trades = _get_closed_campaigns(df, period_start, period_end)
         if closed_trades.empty:
-            return {**_empty(), "target_risk_usd": t_risk}
+            # Sprint-21 WS-B — the founder's EXACT scenario: in-window SELLs
+            # exist but ALL have NULL/blank campaign_id, so .dropna() yields
+            # 0 closed campaigns. The realized stats are honestly empty, but
+            # the unlinked activity MUST still be disclosed (#1 never
+            # silent-zero) — additive, never enters the empty KPI block.
+            return {**_empty(), "target_risk_usd": t_risk, **_unlinked_keys}
 
         campaigns = _aggregate_campaigns(closed_trades, t_risk)
         if campaigns.empty:
-            return {**_empty(), "target_risk_usd": t_risk}
+            return {**_empty(), "target_risk_usd": t_risk, **_unlinked_keys}
 
         # Two distinct filters (AGENTS.md invariant #8):
         #   • Edge stats (WR / Expectancy / PF / R / best-worst / breakdown)
@@ -103,7 +145,10 @@ def compute_period_analytics(
                     "excluded_count_manual": excluded_count_manual,
                     "excluded_pnl_manual":   excluded_pnl_manual,
                     "excluded_count_algo":   excluded_count_algo,
-                    "excluded_pnl_algo":     excluded_pnl_algo}
+                    "excluded_pnl_algo":     excluded_pnl_algo,
+                    # Sprint-21 WS-B — additive unlinked disclosure (disjoint
+                    # namespace; never enters the empty KPI block).
+                    **_unlinked_keys}
 
         wins   = countable[countable["net_pnl"] > 0]
         losses = countable[countable["net_pnl"] <= 0]
@@ -168,6 +213,12 @@ def compute_period_analytics(
             "excluded_pnl_manual":   excluded_pnl_manual,
             "excluded_count_algo":   excluded_count_algo,
             "excluded_pnl_algo":     excluded_pnl_algo,
+            # Sprint-21 WS-B — additive NULL-`campaign_id` honest disclosure
+            # (disjoint `unlinked_*` namespace; NEVER summed into any KPI
+            # above — proof: these four keys are read ONLY by `_unlinked_ctx`
+            # / `_summary_unlinked_lines`; guard test asserts the countable
+            # KPI subset is byte-identical with vs without them).
+            **_unlinked_keys,
         }
 
     except Exception as e:
@@ -345,4 +396,10 @@ def _empty() -> dict:
         # the empty path; existing excluded_count/excluded_pnl untouched).
         "excluded_count_manual": 0, "excluded_pnl_manual": 0.0,
         "excluded_count_algo": 0, "excluded_pnl_algo": 0.0,
+        # Sprint-21 WS-B — additive unlinked disclosure defaults (0 on the
+        # truly-empty/None-fetch/error path; WS-A's honest "input ריק/כשל"
+        # rule governs the empty-fetch case so "0 unlinked" is never a
+        # misleading claim — §B2: count==0 ⇒ NO line shown).
+        "unlinked_count": 0, "unlinked_pnl": 0.0,
+        "unlinked_count_buy": 0, "unlinked_pnl_buy": 0.0,
     }

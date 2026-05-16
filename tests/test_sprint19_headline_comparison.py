@@ -157,28 +157,53 @@ class TestRealizedByteIdentical:
                  if ln.startswith("+") and not ln.startswith("+++")]
         removed = [ln[1:] for ln in out.stdout.splitlines()
                    if ln.startswith("-") and not ln.startswith("---")]
-        # The ONLY tolerated "modified" line is the `countable.empty`
-        # early-return dict's trailing `"excluded_pnl": excluded_pnl}` whose
-        # closing brace was reflowed to `,` + a separate `}` so the four
-        # additive split keys could be appended — its existing key NAME and
-        # VALUE (`excluded_pnl`) are byte-identical; nothing edge/countable is
-        # removed or modified.
+        # Tolerated "modified" lines — ALL are byte-identical-content brace
+        # reflows where ONLY a trailing `}` moved so an authorized additive
+        # block could be appended; nothing edge/countable is removed/modified:
+        #   • Sprint-20: `"excluded_pnl": excluded_pnl}` → `,` + separate `}`
+        #     for the additive `excluded_*_manual/_algo` split.
+        #   • Sprint-21 WS-B (MARK_SPRINT21_RULINGS §B2 — additive-only,
+        #     countable/excluded byte-identical): the two `_empty()` early
+        #     returns `return {**_empty(), "target_risk_usd": t_risk}` got
+        #     `, **_unlinked_keys` appended (content identical, brace moved),
+        #     and `"excluded_pnl_algo": excluded_pnl_algo}` got its brace
+        #     reflowed so the four `unlinked_*` keys append after it. The
+        #     disjoint `unlinked_*` namespace NEVER touches a countable/edge
+        #     value (proven byte-identical by tests/test_sprint21_wave2.py
+        #     TestWSBByteIdentical).
+        _TOL_REFLOW = (
+            'return {**_empty(), "target_risk_usd": t_risk}',
+            '"excluded_pnl_algo":     excluded_pnl_algo}',
+        )
         for ln in removed:
             s = ln.strip()
             if not s:
                 continue
+            if s in _TOL_REFLOW:
+                continue
             assert ("excluded_pnl" in s and "excluded_pnl_" not in s), (
                 "analytics_engine.py REMOVED/MODIFIED a non-additive line — "
-                f"Sprint-20 must be additive-only:\n{ln!r}")
+                f"Sprint-20/21 must be additive-only:\n{ln!r}")
         # Every added line is either a comment or confined to the additive
-        # Sprint-20 `excluded_*_manual`/`_algo` split — never a countable/
-        # edge/verdict (win_rate/expectancy/profit_factor/total_r/real_pnl/
-        # campaigns_closed) edit.
+        # Sprint-20 `excluded_*_manual`/`_algo` split OR the additive Sprint-21
+        # WS-B `unlinked_*` NULL-campaign_id disclosure namespace
+        # (MARK_SPRINT21_RULINGS §B2: "implement via a new unlinked_count/
+        # unlinked_pnl pair ... additive ... countable/excluded byte-identical"
+        # — exactly the precedent that admitted the Sprint-20 split tokens
+        # below). Never a countable/edge/verdict (win_rate/expectancy/
+        # profit_factor/total_r/real_pnl/campaigns_closed) edit.
         _ALLOWED = ("#", "excl_algo", "excl_manual", "excluded_count_algo",
                     "excluded_pnl_algo", "excluded_count_manual",
                     "excluded_pnl_manual", '"excluded_count_manual"',
                     '"excluded_pnl_manual"', '"excluded_count_algo"',
-                    '"excluded_pnl_algo"')
+                    '"excluded_pnl_algo"',
+                    # Sprint-21 WS-B additive `unlinked_*` namespace (disjoint
+                    # from countable/excluded; surfaced ONLY by _unlinked_ctx).
+                    "_null_mask", "_unlinked", "_ul_cid", "_ul_inwin",
+                    "_ul_side", "_ul_sell", "_ul_buy", "_unlinked_keys",
+                    "unlinked_count", "unlinked_pnl", "unlinked_count_buy",
+                    "unlinked_pnl_buy", '"unlinked_count"', '"unlinked_pnl"',
+                    '"unlinked_count_buy"', '"unlinked_pnl_buy"')
         for ln in added:
             s = ln.strip()
             if not s or s == "}":

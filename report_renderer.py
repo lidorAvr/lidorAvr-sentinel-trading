@@ -104,6 +104,20 @@ _EXCL_CAVEAT = (
 _EXCL_ROW_MANUAL = "ידני · חסר stop (DATA_INCOMPLETE)"
 _EXCL_ROW_ALGO = "🟠 ALGO · פיקוח בלבד · לא הוראה"
 _EXCL_ROW_TOTAL = "סה\"כ מוחרג (לא-מאומת)"
+# ── Sprint-21 WS-B — NULL-`campaign_id` honest disclosure line. The wording
+# is VERBATIM from docs/teams/MARK_SPRINT21_RULINGS.md §B2 — nothing invented,
+# nothing paraphrased. It is STRICTLY separated from countable edge stats
+# (WR/Expectancy/PF/Net-R) — never enters them, never the headline; additive
+# context only, in the disjoint `unlinked_*` namespace (mirrors the Sprint-20
+# `excluded_*` discipline). Shown iff in-window unlinked count > 0; NEVER a
+# line when 0 (§B2 — no noise); NEVER silent-zero when >0 (§B3 / #1). The read
+# flow NEVER auto-mutates Supabase to "fix" linkage — re-linking is the
+# founder-run manual runbook docs/runbooks/SPRINT21_NULL_CAMPAIGN_REPAIR.md
+# ONLY (§B3/§B4 / AGENTS.md #4). {N}=count, {X}=Σ stored pnl_usd (signed,2dp).
+_UNLINKED_LINE = (
+    "⚠️ {n} עסקאות לא-מקושרות (חסר campaign_id) — לא נכללו · "
+    "${x:+,.2f} · דורש קישור"
+)
 # ALGO observation-only caveat — reuse the canonical Sprint-18 constant
 # (report_open_book.ALGO_EXTERNAL_CAVEAT) so the wording is identical.
 
@@ -222,6 +236,10 @@ def render_weekly(
     # Sprint-20 Step-2 — additive `excl_*` disclosure ctx (disjoint namespace;
     # gated `excluded_count>0`; realized KPIs byte-identical by construction).
     ctx.update(_excluded_ctx(analytics))
+    # Sprint-21 WS-B — additive `unlinked_*` disclosure ctx (disjoint
+    # namespace; gated `unlinked_count>0`; realized + open-book figures
+    # byte-identical by construction — disclosure only, never silent-zero).
+    ctx.update(_unlinked_ctx(analytics))
 
     filename = f"sentinel_weekly_{period_start.strftime('%Y-%m-%d')}.pdf"
     return _render("weekly_report.html.j2", ctx, output_dir, filename)
@@ -279,6 +297,10 @@ def render_monthly(
     # Sprint-20 Step-2 — additive `excl_*` disclosure ctx (disjoint namespace;
     # gated `excluded_count>0`; realized KPIs byte-identical by construction).
     ctx.update(_excluded_ctx(analytics))
+    # Sprint-21 WS-B — additive `unlinked_*` disclosure ctx (disjoint
+    # namespace; gated `unlinked_count>0`; realized + open-book figures
+    # byte-identical by construction — disclosure only, never silent-zero).
+    ctx.update(_unlinked_ctx(analytics))
 
     filename = f"sentinel_monthly_{period_start.strftime('%Y-%m')}.pdf"
     return _render("monthly_report.html.j2", ctx, output_dir, filename)
@@ -343,6 +365,13 @@ def build_summary_text(
         if ob_cmp:
             head.append("")
             head.extend(ob_cmp)
+        # Sprint-21 WS-B — open-book (BUY-side) NULL-`campaign_id` disclosure
+        # in the open-book section (§B2: the line MUST appear in BOTH realized
+        # AND open-book whenever in-window N>0). Disclosure only — every
+        # open-book figure stays byte-identical (§B3 / guard test).
+        ob_unl = _summary_unlinked_open_lines(analytics)
+        if ob_unl:
+            head.extend(ob_unl)
         # Sprint-20 Step-2 — the founder's exact scenario: campaigns_closed==0
         # because the in-window closes lack a stop (DATA_INCOMPLETE) → they
         # populate excluded_* but were silent. Disclose them honestly here too
@@ -351,6 +380,13 @@ def build_summary_text(
         excl_lines = _summary_excluded_lines(analytics)
         if excl_lines:
             head.extend(excl_lines)
+        # Sprint-21 WS-B — the founder's EXACT scenario: campaigns_closed==0
+        # because the in-window SELLs have NULL/blank campaign_id (.dropna()
+        # at analytics_engine.py:286 drops them). Disclose them honestly here
+        # too (§B2 verbatim; #1 never silent-zero), independent of and
+        # additive to the open-book + excluded lines above. The open-book
+        # (BUY-side) unlinked line is appended in the open-book section below.
+        head.extend(_summary_unlinked_lines(analytics))
         if risk_rec is not None:
             from telegram_formatters import fmt_heat_thermometer
             head.append("")
@@ -398,6 +434,11 @@ def build_summary_text(
     # ALGO on its OWN observation-only line (Mark §2 / DEC-20260511-001);
     # founder data-completion note mirrors bot_health honest tone (Mark §4).
     lines.extend(_summary_excluded_lines(analytics))
+    # Sprint-21 WS-B — NULL-`campaign_id` realized disclosure (§B2 verbatim),
+    # ADDITIVE after the excluded block, never summed into the realized lines
+    # above (§B3 hard-rule; #1 never silent-zero). [] when count==0 ⇒ existing
+    # callers byte-identical.
+    lines.extend(_summary_unlinked_lines(analytics))
     # Sprint-18 §1.4: open-book summary APPENDED after the realized KPI block,
     # before the heat thermometer — realized lines above are NOT modified.
     if open_book is not None:
@@ -412,6 +453,14 @@ def build_summary_text(
         ob_cmp = _summary_open_book_cmp_lines(open_book_history)
         if ob_cmp:
             lines.extend(ob_cmp)
+        # Sprint-21 WS-B — open-book (BUY-side) NULL-`campaign_id` disclosure
+        # in the open-book section (§B2: the line MUST appear in BOTH realized
+        # AND open-book whenever in-window N>0; the rows dropped at
+        # engine_core.py:479 `.notnull()`). Disclosure only — every open-book
+        # figure stays byte-identical (§B3 / guard test).
+        ob_unl = _summary_unlinked_open_lines(analytics)
+        if ob_unl:
+            lines.extend(ob_unl)
     if risk_rec is not None:
         from telegram_formatters import fmt_heat_thermometer
         lines.append("")
@@ -810,6 +859,81 @@ def _excluded_ctx(analytics: dict) -> dict:
         # ALGO observation-only caveat — canonical Sprint-18 constant reused.
         "excl_algo_caveat":  rob.ALGO_EXTERNAL_CAVEAT,
     }
+
+
+def _unlinked_ctx(analytics: dict) -> dict:
+    """Sprint-21 WS-B — NULL-`campaign_id` honest-disclosure seam. STRICTLY
+    ADDITIVE, same disjoint-namespace discipline as `_excluded_ctx:750`
+    (Sprint-20) / `_headline_ctx`.
+
+    Returns ONLY `unlinked_*`-namespaced keys; it reads ONLY the four additive
+    analytics keys `unlinked_count`/`unlinked_pnl`/`unlinked_count_buy`/
+    `unlinked_pnl_buy` (analytics_engine §WS-B). It NEVER reads or writes a
+    `_base_ctx`/`_headline_ctx`/`_comparison_ctx`/`_open_book_ctx`/`_excluded_
+    ctx` key, `compute_verdict`, or any realized/open-book number — ZERO
+    R/NAV/campaign/Expectancy math (proof by construction; guard test asserts
+    the `_base_ctx`/countable dict is identical with vs without this call and
+    that the key-set is disjoint).
+
+    Gate (MARK_SPRINT21_RULINGS.md §B2): the block is shown **iff**
+    `unlinked_count > 0` (realized) / `unlinked_count_buy > 0` (open-book) —
+    NEVER silent-zero when >0 (#1 / §B3), NEVER a line when 0 (no noise). The
+    read flow NEVER auto-mutates Supabase — re-linking is the founder-run
+    manual runbook ONLY (§B3/§B4).
+    """
+    n          = int(analytics.get("unlinked_count", 0) or 0)
+    pnl        = float(analytics.get("unlinked_pnl", 0.0) or 0.0)
+    n_buy      = int(analytics.get("unlinked_count_buy", 0) or 0)
+    pnl_buy    = float(analytics.get("unlinked_pnl_buy", 0.0) or 0.0)
+
+    return {
+        "unlinked_present":      n > 0,
+        "unlinked_count":        n,
+        "unlinked_pnl":          pnl,
+        "unlinked_present_buy":  n_buy > 0,
+        "unlinked_count_buy":    n_buy,
+        "unlinked_pnl_buy":      pnl_buy,
+        # Verbatim §B2 realized line — only meaningful when n>0 (template/
+        # summary gate on `unlinked_present`).
+        "unlinked_line":         _UNLINKED_LINE.format(n=n, x=pnl)
+        if n > 0 else "",
+        # Verbatim §B2 line for the open-book (BUY-side) — same wording,
+        # gated on the BUY-side count so unlinked OPEN trades dropped at
+        # engine_core.py:479 are not silently absent either.
+        "unlinked_line_buy":     _UNLINKED_LINE.format(n=n_buy, x=pnl_buy)
+        if n_buy > 0 else "",
+    }
+
+
+def _summary_unlinked_lines(analytics: dict) -> list:
+    """Sprint-21 WS-B — Telegram summary lines for the NULL-`campaign_id`
+    silent-drop disclosure (realized leg). ADDITIVE; built from
+    `_unlinked_ctx` (same disjoint `unlinked_*` namespace; reads ONLY the four
+    additive analytics keys). Returns [] when `unlinked_count == 0` ⇒ existing
+    callers byte-identical (§B2 — no line when 0).
+
+    Renders the §B2 verbatim line; NEVER summed into any realized KPI line
+    (§B3 hard-rule); never the headline. Open-book BUY-side line is emitted by
+    `_summary_unlinked_open_lines` in the open-book section.
+    """
+    uc = _unlinked_ctx(analytics)
+    if not uc.get("unlinked_present"):
+        return []
+    return ["", uc["unlinked_line"]]
+
+
+def _summary_unlinked_open_lines(analytics: dict) -> list:
+    """Sprint-21 WS-B — open-book (BUY-side) NULL-`campaign_id` disclosure
+    line. ADDITIVE; same verbatim §B2 wording, gated on
+    `unlinked_count_buy > 0` so unlinked OPEN trades silently dropped at
+    `engine_core.py:479` (`.notnull()`) are honestly surfaced too. The
+    open-book figures themselves are NEVER altered (disclosure only — §B3;
+    `get_open_positions_campaign` and every open-book number byte-identical,
+    guard test §B). Returns [] when count == 0."""
+    uc = _unlinked_ctx(analytics)
+    if not uc.get("unlinked_present_buy"):
+        return []
+    return [uc["unlinked_line_buy"]]
 
 
 def _load_weasyprint():
