@@ -1234,3 +1234,19 @@ Founder's raw-row SQL (all campaigns with an April SELL, bucketed) reconciles th
 **8→10 fully explained (honest):** the LOCKED fixture's 8 + (a) **AEHR_9283303702** — fixture `initial_stop`=68.4 (ABOVE entry 60.3 → invalid → DATA_INCOMPLETE); the LIVE DB now stores `initial_stop`=54.85 (valid) → legitimately countable. The AEHR data was REPAIRED in the DB since the Sprint-21 RCA snapshot — confirmed by the raw SQL value, NOT a fix artifact. (b) **MRVL_9118118916** — a real EP campaign (+$86.31) simply absent from the curated RCA subset. The locked `test_real_data_april_regression.py` stays a valid frozen byte-stability anchor (intentionally NOT live) — still byte-identical.
 
 **Status:** the live accumulated smoke-test (Sprint 11–22) is **fully CLOSED** — primary tz defect fixed AND production numbers independently reconciled exact against raw rows. Remaining OPEN (separate, founder-decided HELD): probe "message too long" (Telegram 400) — formatting-only Sprint-23 candidate; the reconciliation it would have served is now complete via raw SQL, so it is non-blocking.
+
+---
+
+## DEC-20260516-020 — Sprint 23: probe "message too long" (Telegram 400) — formatting/delivery-only fix
+
+Date: 2026-05-16
+Status: **decided (founder: "תקן Probe (Sprint-23)"); Mark-gated-light, proven Wave-1→checkpoint→Wave-2→consolidation rhythm.**
+
+### Root cause (proven from code, not hypothesised)
+`telegram_bot.py:318` does `txt = period_data_probe.build_probe_report()` then `bot.send_message(chat_id, txt, …)` — ONE send of the FULL probe string. `build_probe_report(None)` returns `_RTL + weekly + "\n\n" + _RTL + monthly`; each `_window_block` emits a per-campaign line for EVERY closed campaign (`period_data_probe.py:~265` `f"{cid} · {sym} · {setup} · entry=… initial_stop=… irp=… sl=… risk_valid=… bucket=… נספר=… net=$…"`) + the WS-C candidate block. With ~20 campaigns × 2 windows this exceeds Telegram's 4096-char hard limit → `Bad Request: message is too long` (founder hit it twice 20:22). NOT a logic/data defect; the Sprint-22 tz-mirror in the probe plausibly held (it failed on LENGTH, not `Invalid comparison`).
+
+### Sprint-23 scope (formatting/delivery boundary ONLY)
+Split the probe output into ≤Telegram-limit parts at safe boundaries. An existing proven splitter exists — `telegram_portfolio.py:21 _send_long_message` (3900-char, separator/newline-aware, `reply_markup` on the last part only) — BUT it forces `parse_mode="Markdown"` while the probe is sent PLAIN-TEXT (probe `campaign_id`s contain `_` → Markdown would italicise/400). So a verbatim reuse is unsafe. The fix keeps the SPLIT+multi-send in the CALLER (the probe's binding contract: "delivery is the caller's job; the probe NEVER sends/persists" — AST-proven by `tests/test_sprint21_wave2.py`), preserving `period_data_probe.py` 100% untouched (Sprint-22 tz-mirror + honest empty/fail branch + READ-ONLY/no-secrets AST proof byte-identical). #1: **chunk, never truncate** — the probe's purpose is honest disclosure of every real row; pure trimming that hides rows is a #1 violation.
+
+### Hard constraints
+NO information loss (chunk, not truncate — #1). `period_data_probe.py` byte-identical (no probe change → Sprint-22 tz-mirror + §A1 READ-ONLY + §A3 no-secrets AST test untouched). Plain-text send preserved (NO `parse_mode` change — campaign_id `_` must not Markdown-break). Admin/dev-PIN gate (`telegram_bot.py:147-153`) untouched; no `telegram_bot.py` wholesale rewrite (one additive splitter in the existing dev-menu handler, mirroring `_send_long_message`'s proven shape); no secure_runner bypass; no migration/compose/schema. WS-C stays DEFERRED; #8 untouched. Preserve 920be95/bcf32f5/Sprint-16..22. Baseline full suite **1864**.
