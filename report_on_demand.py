@@ -60,10 +60,18 @@ def last_complete_monthly_ref(now: datetime) -> datetime:
     return now
 
 
-def run_on_demand(period_type: str, now: datetime = None) -> dict:
+def run_on_demand(period_type: str, now: datetime = None,
+                  token: str = None, chat_id: str = None) -> dict:
     """Generate + deliver the LAST COMPLETE `period_type` report on demand.
 
     period_type: "weekly" | "monthly".
+
+    token/chat_id: delivery credentials. The dev button runs INSIDE the
+    telegram-bot process, which uses TELEGRAM_BOT_TOKEN / TELEGRAM_ADMIN_ID
+    (`bot_core`), NOT the scheduler's TELEGRAM_TOKEN / TELEGRAM_CHAT_ID
+    convention (`report_scheduler` runs in the separate reporting-service
+    container). The caller passes its own working bot creds; we fall back
+    to the scheduler env convention only when not supplied.
 
     Returns a dict: {ok, period_label, summary_ok, pdf_ok, pdf_degraded,
     error}. NEVER calls snap_save and NEVER touches the scheduler dedup state
@@ -179,8 +187,9 @@ def run_on_demand(period_type: str, now: datetime = None) -> dict:
         if pdf_degraded:
             summary_text = f"{summary_text}\n\n{sched._DEGRADED_PDF_NOTE}"
 
-        token = os.environ.get("TELEGRAM_TOKEN", "")
-        chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+        token = token or os.environ.get("TELEGRAM_TOKEN", "")
+        chat_id = (str(chat_id) if chat_id
+                   else os.environ.get("TELEGRAM_CHAT_ID", ""))
         if not token or not chat_id:
             return {"ok": False, "error": "telegram_not_configured",
                     "period_label": period_label,

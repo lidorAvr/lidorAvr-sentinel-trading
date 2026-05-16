@@ -323,7 +323,12 @@ def handle_all_messages(message):
         def _run_on_demand_report_thread(_pt, _kind, _cid):
             try:
                 import report_on_demand
-                res = report_on_demand.run_on_demand(_pt)
+                # This thread runs in the telegram-bot process — pass ITS
+                # working bot creds (bot_core TOKEN + the requesting admin
+                # chat); the scheduler's TELEGRAM_TOKEN/TELEGRAM_CHAT_ID env
+                # convention is not set in this container.
+                res = report_on_demand.run_on_demand(
+                    _pt, token=TOKEN, chat_id=str(_cid))
                 if res.get("ok"):
                     deg = " (PDF דרדור — טקסט מלא נשלח)" if res.get("pdf_degraded") else ""
                     bot.send_message(

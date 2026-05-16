@@ -406,6 +406,52 @@ class TestScopeBNoSnapshotMutation:
         assert sched._DEGRADED_PDF_NOTE in sent_text
 
 
+class TestScopeBCrossProcessCreds:
+    """Regression: the dev button runs in the telegram-bot process, which
+    uses TELEGRAM_BOT_TOKEN/TELEGRAM_ADMIN_ID (bot_core), NOT the scheduler's
+    TELEGRAM_TOKEN/TELEGRAM_CHAT_ID env (set only in reporting-service).
+    Explicit creds passed by the caller must be used even with NO scheduler
+    env present (the original `telegram_not_configured` failure)."""
+
+    def _no_sched_env(self):
+        return patch.dict(os.environ,
+                          {"TELEGRAM_TOKEN": "", "TELEGRAM_CHAT_ID": ""},
+                          clear=False)
+
+    def test_explicit_creds_used_when_scheduler_env_absent(self):
+        with patch("report_snapshot_store.save"), \
+             patch("report_scheduler._fetch_trades_df",
+                   return_value=pd.DataFrame()), \
+             patch("account_state.load",
+                   return_value={"nav": 10000.0, "risk_pct_input": 0.5,
+                                 "nav_source": "t", "freshness": "x"}), \
+             patch("report_renderer.render_weekly", return_value="r.pdf"), \
+             patch("report_delivery.deliver_report",
+                   return_value={"summary_ok": True, "pdf_ok": True}) \
+                as deliver, \
+             self._no_sched_env():
+            res = report_on_demand.run_on_demand(
+                "weekly", now=datetime(2025, 5, 14, 10, 0),
+                token="BOTTOK", chat_id=12345)
+        assert res["ok"] is True                      # no telegram_not_configured
+        # The caller's bot creds reached deliver_report (chat_id stringified).
+        assert deliver.call_args[0][3] == "12345"
+        assert deliver.call_args[0][4] == "BOTTOK"
+
+    def test_still_reports_not_configured_when_nothing_supplied(self):
+        with patch("report_scheduler._fetch_trades_df",
+                   return_value=pd.DataFrame()), \
+             patch("account_state.load",
+                   return_value={"nav": 10000.0, "risk_pct_input": 0.5,
+                                 "nav_source": "t", "freshness": "x"}), \
+             patch("report_renderer.render_weekly", return_value="r.pdf"), \
+             self._no_sched_env():
+            res = report_on_demand.run_on_demand(
+                "weekly", now=datetime(2025, 5, 14, 10, 0))
+        assert res["ok"] is False
+        assert res["error"] == "telegram_not_configured"
+
+
 class TestScopeBDevMenuGated:
     @staticmethod
     def _labels(markup):
