@@ -1222,3 +1222,15 @@ Founder will MANUALLY reconcile the live April **10 / +$336** against the raw Su
 - The probe "message too long" fix is **HELD / not started** (no Sprint-23 yet) — pending the founder's manual finding (which may confirm 10/$336 as correct full-dataset, or surface a real over-count to investigate).
 - **No code change** from this turn beyond the already-shipped Sprint-22 fix (`638d845`) + this doc trail. Worktree stays clean; nothing touched on the probe or analytics.
 - Awaiting: founder's manual line-item reconciliation of 10/+$336 (+ the 10 ALGO / $+218 observe-only and weekly 0/3-ALGO). The Sprint 11–22 smoke-test remains **closed for the PRIMARY tz defect**; full sign-off pends the founder's manual number check.
+
+### DEC-20260516-019 RECONCILIATION COMPLETE — production EXACT vs raw Supabase ✅ (smoke-test fully CLOSED)
+Date: 2026-05-16 (founder ran the independent SQL Q1 against raw `trades`; parent reconciled line-by-line)
+
+Founder's raw-row SQL (all campaigns with an April SELL, bucketed) reconciles the production monthly report to the cent — independent of the engine code:
+- **COUNTABLE = 10** campaigns; Σ net_pnl = **+$336.14** (report `$+336`); Σ net_r = **+11.01R** (report `+11.01R`); Expectancy **+1.10R**; PF 447.13/110.99 = **4.03**; Win 5/10 = **50.0%**; Missing-Stop **0%** — every headline value EXACT.
+- **ALGO_OBSERVED = 10** (HOOD×3, JPM×3, PLTR, QQQ, TSLA×2); Σ net_pnl = **+$217.66** (report `$+218`), correctly excluded from edge — #8 segregation verified on real data.
+- **NO over-count, NO regression, NO masking.** The Sprint-22 tz fix is validated end-to-end against raw production data.
+
+**8→10 fully explained (honest):** the LOCKED fixture's 8 + (a) **AEHR_9283303702** — fixture `initial_stop`=68.4 (ABOVE entry 60.3 → invalid → DATA_INCOMPLETE); the LIVE DB now stores `initial_stop`=54.85 (valid) → legitimately countable. The AEHR data was REPAIRED in the DB since the Sprint-21 RCA snapshot — confirmed by the raw SQL value, NOT a fix artifact. (b) **MRVL_9118118916** — a real EP campaign (+$86.31) simply absent from the curated RCA subset. The locked `test_real_data_april_regression.py` stays a valid frozen byte-stability anchor (intentionally NOT live) — still byte-identical.
+
+**Status:** the live accumulated smoke-test (Sprint 11–22) is **fully CLOSED** — primary tz defect fixed AND production numbers independently reconciled exact against raw rows. Remaining OPEN (separate, founder-decided HELD): probe "message too long" (Telegram 400) — formatting-only Sprint-23 candidate; the reconciliation it would have served is now complete via raw SQL, so it is non-blocking.
