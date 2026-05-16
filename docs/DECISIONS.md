@@ -1040,3 +1040,35 @@ Sprint-18 shipped & verified live: the open book now renders in weekly/monthly, 
 - #1: never fabricate an average/comparison without enough history — explicit baseline-pending; never present sync-temporary as ✅ or as "report not created".
 - On-demand stays NO snap_save; comparison/average read-only from existing history. Hyperscaler: comparison uses existing per-host snapshot files; no migration.
 - No wholesale renderer rewrite; presentation-layer + additive ctx; reuse `compute_period_comparison` + `load_recent` + the Sprint-18 `open_marks`.
+
+---
+
+## DEC-20260516-017 — Period view = union(opened ∪ closed ∪ open); RCA-gated on the "0 realized" data-integrity question
+
+Date: 2026-05-16
+Status: **decided (founder direction); Sprint 20, Mark-led, RCA-GATED** — no analytics/campaign-math build until the read-only RCA confirms root cause.
+
+### Trigger (founder smoke-test of deployed Sprint-19 2075756)
+
+Sprint-19 verified live: period-honest headline (no dominant "ללא עסקאות" with a live book), realized cards truthfully demoted "0 בתקופה", vs-average baseline-pending honest, System-Health honest, `_period_label` "3–9 במאי"/"1–30 באפריל". Founder's sharpened core objection: **"רוב הנתונים 0 ולא תואם לאמת — גם נפתחו וגם נסגרו פוזיציות במהלך השבוע/החודש."** Proposed direction: the period basis must be the **union (OR)** — *opened-in-period* OR *closed-in-period* OR *open-spanning* — then compute on that union (incl. positions that BOTH open AND close within the same period).
+
+### RCA finding (code-level, this session — leading hypothesis, NOT yet data-confirmed)
+
+`analytics_engine._get_closed_campaigns:255-262` ALREADY counts any campaign with an in-window SELL, **including same-period open→close round-trips** — so this is NOT a formula bug that drops round-trips. BUT:
+- `:258` `closed_ids = in_period["campaign_id"].dropna().unique()` → an in-window SELL with **NULL campaign_id is silently dropped** (never counted, never `excluded`).
+- `engine_core.get_open_positions_campaign:479` `valid_df = work[work["campaign_id"].notnull()]` → null-campaign trades are invisible to the OPEN book too. ⇒ a trade without `campaign_id` vanishes from BOTH views.
+- `bot_health.py:146` already tracks `df_c["campaign_id"].isnull()` → null-campaign trades are a **known real condition** in this system (consistent with the open broker-recon $190.29 "requires manual verification" gap).
+- `excluded_pnl`/`excluded_count` are **not surfaced** in the weekly/monthly templates → linked-but-DATA_INCOMPLETE round-trips are silently 0 (a second #1 honesty gap).
+
+Leading hypothesis: the founder's missing closes are NOT in the data the report reads *with a campaign_id* (null-linkage and/or unsynced), OR are linked-but-excluded and not surfaced. Per #1 the report is honest about the data it has; the gap is data-integrity upstream — building the union view on the assumption "the closes are in the data" would not fix "0" and would itself violate #1.
+
+### Decision (Sprint 20, Mark-led, RCA-GATED)
+
+1. **RCA FIRST (no campaign-math change until done):** a read-only, admin-gated dev-menu probe ("תקינות נתוני תקופה") that, for the last weekly+monthly windows, reports the decisive numbers — total trades in window; BUY/SELL counts; **BUY/SELL with NULL campaign_id**; # campaigns with an in-window SELL; # opened-AND-closed-in-window round-trips; Σ `pnl_usd` in window; `excluded_count`/`excluded_pnl`. This classifies the root cause (null-linkage vs unsynced vs out-of-window vs linked-but-excluded) without guessing or mutating anything.
+2. **Gated on the RCA:** implement the founder's union-based period view — period basis = opened-in-period ∪ closed-in-period ∪ open-spanning; same-period round-trips explicitly counted in realized; **surface excluded/unlinked realized PnL honestly** so nothing real is silently 0 (#1). Realized stats for the existing linked-closed countable subset stay **byte-identical** (guard test). ALGO #8-segregated throughout; observation-only.
+
+### Hard constraints
+
+- No campaign/R/NAV/Expectancy math change until RCA confirms root cause; the existing linked-closed countable realized KPIs must remain byte-identical (guard). #8 ALGO segregation + #1 honesty (never present unlinked/incomplete data as exact truth; never fabricate closes that aren't in the data — say so explicitly).
+- RCA probe is strictly read-only (no Supabase mutation, no snap_save, admin-gated via existing dev-menu/PIN path).
+- Preserve 920be95 / bcf32f5 / Sprint-16 graceful / Sprint-18 period-scoping / Sprint-19 headline+comparison+System-Health. No migration / compose / secure_runner change.
