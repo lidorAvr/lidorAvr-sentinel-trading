@@ -36,10 +36,17 @@ def render_weekly(
     system_health: Optional[dict] = None,
     coaching_insights: Optional[list] = None,
     risk_adherence_rate: Optional[float] = None,
+    open_book: Optional[dict] = None,
+    mark_delta: Optional[dict] = None,
 ) -> str:
     """
     Render weekly PDF report. Returns path to PDF file.
     Raises on critical failures (e.g. Jinja2 not installed).
+
+    Sprint-18: `open_book`/`mark_delta` are ADDITIVE optional dicts (default
+    None ⇒ byte-identical for callers/tests not passing them). They surface the
+    unrealized open-book via SEPARATE `open_book_*` ctx keys only — the realized
+    KPI keys in `_base_ctx` are never touched (realized-byte-identical proof).
     """
     from analytics_engine import compute_verdict
     verdict, verdict_class = compute_verdict(analytics)
@@ -55,6 +62,8 @@ def render_weekly(
         "coaching_insights": coaching_insights or [],
         **charts,
     })
+    ctx.update(_open_book_ctx(analytics, open_book, mark_delta,
+                              _period_label(period_start, period_end)))
 
     filename = f"sentinel_weekly_{period_start.strftime('%Y-%m-%d')}.pdf"
     return _render("weekly_report.html.j2", ctx, output_dir, filename)
@@ -71,9 +80,14 @@ def render_monthly(
     coaching_insights: Optional[list] = None,
     risk_adherence_rate: Optional[float] = None,
     weekly_breakdown: Optional[list] = None,
+    open_book: Optional[dict] = None,
+    mark_delta: Optional[dict] = None,
 ) -> str:
     """
     Render monthly PDF report. Returns path to PDF file.
+
+    Sprint-18: `open_book`/`mark_delta` additive optional (default None ⇒
+    byte-identical). Same SEPARATE `open_book_*` ctx-key seam as weekly.
     """
     from analytics_engine import compute_verdict
     verdict, verdict_class = compute_verdict(analytics, period_word="חודש")
@@ -91,6 +105,8 @@ def render_monthly(
         "weekly_breakdown":  wb,
         **charts,
     })
+    ctx.update(_open_book_ctx(analytics, open_book, mark_delta,
+                              _period_label(period_start, period_end)))
 
     filename = f"sentinel_monthly_{period_start.strftime('%Y-%m')}.pdf"
     return _render("monthly_report.html.j2", ctx, output_dir, filename)
@@ -101,6 +117,8 @@ def build_summary_text(
     period_label: str,
     period_type: str = "weekly",
     risk_rec: Optional[dict] = None,
+    open_book: Optional[dict] = None,
+    mark_delta: Optional[dict] = None,
 ) -> str:
     """
     Build the short Telegram summary message sent before the PDF.
@@ -110,6 +128,15 @@ def build_summary_text(
     thermometer with threshold legend is appended after the KPI block so the
     trader sees the same heat visualization in the scheduled summary as in
     the interactive Telegram drilldowns.
+
+    Sprint-18 (Mark §2 honest empty-state — PRESENTATION switch only, no
+    realized-math/`compute_verdict`/920be95-signature change): when
+    `analytics.campaigns_closed == 0` the misleading "ללא עסקאות" verdict line
+    is REPLACED at the render layer by the honest open-book-aware lines
+    (Case A: 0 closed + live book; Case B: truly empty). When campaigns DID
+    close, the verdict line is byte-identical and the open-book summary is
+    APPENDED after the realized KPI block (never merged into it).
+    `open_book`/`mark_delta` default None ⇒ byte-identical for existing callers.
     """
     from analytics_engine import compute_verdict
     verdict, _ = compute_verdict(
@@ -117,6 +144,30 @@ def build_summary_text(
     pf     = analytics.get("profit_factor", 0)
     pf_str = f"{pf:.2f}" if pf < 90 else "∞"
     type_heb = "שבועי" if period_type == "weekly" else "חודשי"
+
+    campaigns_closed = analytics.get("campaigns_closed", 0)
+    # Mark §2 presentation switch — applied ONLY when there is no realized
+    # data AND a Sprint-18 caller wired an `open_book` (param is not None).
+    # `compute_verdict` realized logic, the 920be95 period-aware signature, and
+    # `verdict_class` semantics are NOT touched (the switch lives here, not in
+    # the verdict). Legacy callers that do NOT pass `open_book` keep the
+    # byte-identical pre-Sprint-18 "ללא עסקאות" verdict path (920be95 +
+    # Sprint-16 graceful regression intact). Never says "ללא עסקאות" with a
+    # live book.
+    if campaigns_closed == 0 and open_book is not None:
+        import report_open_book as rob
+        head = [
+            f"🛡️ *Sentinel — דוח {type_heb}*",
+            f"📅 תקופה: `{period_label}`",
+            f"",
+        ]
+        head += rob.empty_state_lines(open_book, period_label)
+        if risk_rec is not None:
+            from telegram_formatters import fmt_heat_thermometer
+            head.append("")
+            head.append(fmt_heat_thermometer(risk_rec, include_legend=True))
+        return "\n".join(head)
+
     lines = [
         f"🛡️ *Sentinel — דוח {type_heb}*",
         f"📅 תקופה: `{period_label}`",
@@ -132,6 +183,16 @@ def build_summary_text(
         f"⚙️ Missing Stop: `{analytics.get('missing_stop_rate', 0)*100:.1f}%`  |  "
         f"Oversized: `{analytics.get('oversized_rate', 0)*100:.1f}%`",
     ]
+    # Sprint-18 §1.4: open-book summary APPENDED after the realized KPI block,
+    # before the heat thermometer — realized lines above are NOT modified.
+    if open_book is not None:
+        import report_open_book as rob
+        ob_lines = rob.open_book_summary_lines(open_book)
+        if ob_lines:
+            lines.append("")
+            lines.extend(ob_lines)
+        if mark_delta is not None and mark_delta.get("text"):
+            lines.append(f"`{mark_delta['text']}`")
     if risk_rec is not None:
         from telegram_formatters import fmt_heat_thermometer
         lines.append("")
@@ -232,6 +293,61 @@ def _base_ctx(analytics, account_state, period_start, period_end,
         "report_service_status": health.get("report_service_status", "✅ פעיל"),
         # CSS (inlined for single-file PDF)
         "base_css":          _load_css(),
+    }
+
+
+def _open_book_ctx(analytics: dict, open_book: Optional[dict],
+                   mark_delta: Optional[dict], period_label: str) -> dict:
+    """Build the SEPARATE `open_book_*` template ctx keys (Sprint-18).
+
+    This is a strictly ADDITIVE seam: it returns ONLY `open_book_*` /
+    `ob_*`-namespaced keys plus the §2 empty-state flags. It does NOT read or
+    write any realized KPI key produced by `_base_ctx` — the realized ctx is
+    byte-identical with vs without this path (proof by construction; guard
+    test asserts `_base_ctx` unmutated key-for-key).
+
+    `campaigns_closed == 0` ⇒ presentation-layer empty-state switch (Mark §2):
+      • book present ⇒ honest "0 closed + live book" banner (Case A).
+      • book absent  ⇒ legacy truly-empty sentence (Case B). The legacy
+        920be95 verdict path / `verdict_class` is unchanged; the template
+        merely supplements it with the honest banner — it never regresses.
+    """
+    import report_open_book as rob
+
+    ob = open_book or {}
+    present = bool(ob.get("open_book_present"))
+    campaigns_closed = analytics.get("campaigns_closed", 0)
+
+    empty_state_lines = []
+    show_empty_state = False
+    if campaigns_closed == 0 and open_book is not None:
+        # Mark §2 — supplement (never replace) the verdict block with the
+        # honest banner, ONLY for Sprint-18 callers that wired an open_book.
+        # Legacy callers (open_book is None) keep the unchanged 920be95
+        # verdict-badge path — no regression. Case A (book) vs Case B (truly
+        # empty) both honest; never the word "ללא עסקאות" while a book exists.
+        empty_state_lines = rob.empty_state_lines(open_book, period_label)
+        show_empty_state = True
+
+    delta = mark_delta or {}
+    return {
+        "open_book_present":             present,
+        "open_book_heading":             rob.OPEN_BOOK_HEADING,
+        "open_book_unrealized_label":    rob.OPEN_BOOK_UNREALIZED_LABEL,
+        "open_book_disc":                ob.get("open_book_disc", []),
+        "open_book_algo":                ob.get("open_book_algo", []),
+        "open_book_totals":              ob.get("open_book_totals", {}),
+        "open_book_data_source":         ob.get("open_book_data_source", ""),
+        "open_book_price_fallback_syms": ob.get("open_book_price_fallback_syms", []),
+        "open_book_algo_observation_label": rob.ALGO_OBSERVATION_LABEL,
+        "open_book_algo_external_caveat":   rob.ALGO_EXTERNAL_CAVEAT,
+        # §2 empty-state (presentation only; verdict/verdict_class untouched)
+        "ob_show_empty_state":           show_empty_state,
+        "ob_empty_state_lines":          empty_state_lines,
+        # §4 mark-to-market delta (baseline-pending honest token by default)
+        "open_book_mark_delta_text":     delta.get("text", rob.DELTA_BASELINE_PENDING)
+        if (mark_delta is not None or present) else "",
+        "open_book_mark_delta_available": bool(delta.get("available")),
     }
 
 

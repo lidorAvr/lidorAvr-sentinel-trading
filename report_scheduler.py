@@ -215,6 +215,7 @@ def _run_weekly(now: datetime):
         from report_snapshot_store import save as snap_save, load_previous
         from report_renderer import render_weekly, build_summary_text
         from report_delivery import deliver_report
+        import report_open_book as rob
 
         period_start, period_end = _weekly_period(now)
         log(f"Weekly period: {period_start.date()} → {period_end.date()}")
@@ -227,6 +228,15 @@ def _run_weekly(now: datetime):
         prev_snap   = load_previous("weekly", period_start)
         comparison  = compute_period_comparison(analytics, prev_snap) if prev_snap else None
         health      = _build_system_health()
+
+        # Sprint-18: open-book is built from the SAME df already fetched, via
+        # the read-only command-room source. It is a SEPARATE dict — never fed
+        # into compute_period_analytics; realized KPIs stay byte-identical.
+        # mark-to-market delta = pure subtraction vs prev_snap["open_marks"]
+        # (baseline-pending honest token until a prior open-mark exists, #1).
+        open_book  = rob.build_open_book(
+            df, account, period_start=period_start, period_end=period_end)
+        mark_delta = rob.compute_mark_delta(open_book, prev_snap)
 
         coaching = _weekly_coaching_insights(analytics)
 
@@ -248,6 +258,8 @@ def _run_weekly(now: datetime):
                 system_health=health,
                 coaching_insights=coaching,
                 risk_adherence_rate=analytics.get("risk_adherence_rate"),
+                open_book=open_book,
+                mark_delta=mark_delta,
             )
             if not _is_pdf_path(pdf_path):
                 pdf_degraded = True
@@ -262,11 +274,14 @@ def _run_weekly(now: datetime):
         if pdf_degraded:
             pdf_path = ""   # safe falsy: avoids os.path.exists(None) TypeError in send_pdf
 
-        snap_save("weekly", period_start, period_end, analytics, account, pdf_path)
+        snap_save("weekly", period_start, period_end, analytics, account,
+                  pdf_path, open_book=open_book)
 
         period_label = f"{period_start.strftime('%d/%m')}–{period_end.strftime('%d/%m/%Y')}"
         risk_rec     = _compute_risk_rec(df, account)
-        summary_text = build_summary_text(analytics, period_label, "weekly", risk_rec=risk_rec)
+        summary_text = build_summary_text(analytics, period_label, "weekly",
+                                          risk_rec=risk_rec, open_book=open_book,
+                                          mark_delta=mark_delta)
         if pdf_degraded:
             summary_text = f"{summary_text}\n\n{_DEGRADED_PDF_NOTE}"
         caption      = f"📊 Sentinel Weekly Report | {period_label}"
@@ -296,6 +311,7 @@ def _run_monthly(now: datetime):
         from report_snapshot_store import save as snap_save, load_previous, load_recent
         from report_renderer import render_monthly, build_summary_text
         from report_delivery import deliver_report
+        import report_open_book as rob
 
         period_start, period_end = _monthly_period(now)
         log(f"Monthly period: {period_start.date()} → {period_end.date()}")
@@ -308,6 +324,12 @@ def _run_monthly(now: datetime):
         prev_snap   = load_previous("monthly", period_start)
         comparison  = compute_period_comparison(analytics, prev_snap) if prev_snap else None
         health      = _build_system_health()
+
+        # Sprint-18: same open-book seam as weekly — separate dict, never fed
+        # into realized analytics; delta is pure subtraction vs prev_snap.
+        open_book  = rob.build_open_book(
+            df, account, period_start=period_start, period_end=period_end)
+        mark_delta = rob.compute_mark_delta(open_book, prev_snap)
         coaching    = _monthly_coaching_insights(analytics)
         weekly_snaps = load_recent("weekly", n=5)
         weekly_breakdown = _build_weekly_breakdown(weekly_snaps, period_start, period_end)
@@ -328,6 +350,8 @@ def _run_monthly(now: datetime):
                 coaching_insights=coaching,
                 risk_adherence_rate=analytics.get("risk_adherence_rate"),
                 weekly_breakdown=weekly_breakdown,
+                open_book=open_book,
+                mark_delta=mark_delta,
             )
             if not _is_pdf_path(pdf_path):
                 pdf_degraded = True
@@ -342,13 +366,16 @@ def _run_monthly(now: datetime):
         if pdf_degraded:
             pdf_path = ""   # safe falsy: avoids os.path.exists(None) TypeError in send_pdf
 
-        snap_save("monthly", period_start, period_end, analytics, account, pdf_path)
+        snap_save("monthly", period_start, period_end, analytics, account,
+                  pdf_path, open_book=open_book)
 
         month_names = ["ינואר","פברואר","מרץ","אפריל","מאי","יוני",
                        "יולי","אוגוסט","ספטמבר","אוקטובר","נובמבר","דצמבר"]
         period_label = f"{month_names[period_start.month - 1]} {period_start.year}"
         risk_rec     = _compute_risk_rec(df, account)
-        summary_text = build_summary_text(analytics, period_label, "monthly", risk_rec=risk_rec)
+        summary_text = build_summary_text(analytics, period_label, "monthly",
+                                          risk_rec=risk_rec, open_book=open_book,
+                                          mark_delta=mark_delta)
         if pdf_degraded:
             summary_text = f"{summary_text}\n\n{_DEGRADED_PDF_NOTE}"
         caption      = f"📊 Sentinel Monthly Report | {period_label}"

@@ -18,8 +18,20 @@ _BASE_DIR = "/app/report_state/snapshots"
 
 
 def save(period_type: str, period_start: datetime, period_end: datetime,
-         analytics: dict, account_state: dict, report_file_path: str = "") -> None:
-    """Persist a signed period snapshot. Idempotent — overwrites same-period file."""
+         analytics: dict, account_state: dict, report_file_path: str = "",
+         open_book: Optional[dict] = None) -> None:
+    """Persist a signed period snapshot. Idempotent — overwrites same-period file.
+
+    Sprint-18: `open_book` is an ADDITIVE optional kwarg (default None ⇒ the
+    snapshot is byte-identical to today's — old readers, `load_recent`,
+    `load_previous` keep working unchanged; NO migration, single-user
+    byte-identical per Hyperscaler addendum). When supplied, an additive
+    `open_marks` key is written, `_safe_float`-guarded for inf/nan. Old
+    snapshots simply lack `open_marks` ⇒ `snap.get("open_marks")` is None ⇒
+    next-run delta = baseline-pending token (report_open_book.compute_mark_delta).
+    The open-book floating PnL is REUSED verbatim from
+    get_open_positions_campaign — no new math is introduced here.
+    """
     path = _snapshot_path(period_type, period_start)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     snapshot = {
@@ -48,6 +60,38 @@ def save(period_type: str, period_start: datetime, period_end: datetime,
         "dev_score":             analytics.get("dev_score"),
         "setup_breakdown":       analytics.get("setup_breakdown", {}),
     }
+    # Additive open-marks (Sprint-18 §4 / Mark §4) — written ONLY when an
+    # open_book is supplied. Pure capture of floats already produced by
+    # get_open_positions_campaign; no realized KPI key is affected (the block
+    # above is untouched). ALGO segregated and observation-only here too.
+    if open_book and open_book.get("open_book_present"):
+        t = open_book.get("open_book_totals", {})
+        per_symbol = []
+        for p in (open_book.get("open_book_disc", [])
+                  + open_book.get("open_book_algo", [])):
+            per_symbol.append({
+                "symbol":       p.get("symbol"),
+                "qty":          _safe_float(p.get("qty")),
+                "price":        _safe_float(p.get("current")),
+                "floating_pnl": _safe_float(p.get("floating_pnl")),
+                "structure_r":  _safe_float(p.get("structure_r")),
+                "account_r":    _safe_float(p.get("account_r")),
+                "is_algo":      bool(p.get("is_algo")),
+            })
+        snapshot["open_marks"] = {
+            "captured_at":         datetime.now().isoformat(),
+            "n_disc":              int(t.get("n_disc", 0)),
+            "n_algo":              int(t.get("n_algo", 0)),
+            "floating_pnl_disc":   _safe_float(t.get("floating_pnl_disc", 0.0)),
+            "floating_pnl_algo":   _safe_float(t.get("floating_pnl_algo", 0.0)),
+            "open_exposure_pct":   _safe_float(t.get("exposure_pct_total", 0.0)),
+            "open_total_floating": _safe_float(
+                (t.get("floating_pnl_disc", 0.0) or 0.0)
+                + (t.get("floating_pnl_algo", 0.0) or 0.0)
+            ),
+            "marks_source":        open_book.get("open_book_data_source", ""),
+            "per_symbol":          per_symbol,
+        }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(snapshot, f, ensure_ascii=False, indent=2)
 

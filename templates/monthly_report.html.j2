@@ -19,6 +19,14 @@
 <div class="freshness-banner freshness-{{ freshness }}">{{ freshness_label }}</div>
 <div class="verdict-badge verdict-{{ verdict_class }}">{{ verdict }}</div>
 
+{# Sprint-18 Mark §2 — honest empty-state banner (PRESENTATION supplement;
+   verdict-class unchanged; never "ללא עסקאות" with a live book). #}
+{% if ob_show_empty_state %}
+<div class="freshness-banner freshness-unknown">
+  {% for line in ob_empty_state_lines %}<div><span class="ltr">{{ line }}</span></div>{% endfor %}
+</div>
+{% endif %}
+
 <table class="kpi-grid">
   <tr>
     <td class="kpi-card{% if realized_pnl >= 0 %} kpi-green{% else %} kpi-red{% endif %}">
@@ -159,6 +167,71 @@
   </tr>
   {% endfor %}
 </table>
+{% endif %}
+
+{# ══ Sprint-18: OPEN BOOK (unrealized) — additive, separate from realized.
+   Same seam as weekly: reuse ec.get_open_positions_campaign; ALGO segregated
+   + observation-only; floating PnL/R explicitly "לא ממומש". #}
+{% if open_book_present %}
+<div class="page-break-before"></div>
+<h2>{{ open_book_heading }} — <span class="ltr">{{ period_label }}</span></h2>
+<p style="font-size:9pt; color:#374151;">
+  רווח/הפסד צף ו-R הם <strong>{{ open_book_unrealized_label }}</strong> — אינם נכנסים ל-Win-Rate / Expectancy / PF / Net-R הממומשים.
+  &nbsp;|&nbsp; מקור נתונים: <span class="ltr">{{ open_book_data_source }}</span>
+</p>
+
+{% if open_book_disc %}
+<h3>פוזיציות דיסקרציוניות</h3>
+<table class="metrics-table no-break">
+  <tr><th>סימול</th><th>כניסה</th><th>נוכחי</th><th>צף ($)</th><th>R מבנה</th><th>R חשבון</th><th>חשיפה</th></tr>
+  {% for p in open_book_disc %}
+  <tr>
+    <td><span class="ltr">{{ p.symbol }}</span>{% if p.price_is_fallback %} ⚠️{% endif %}{% if p.period_label_he %} <span style="font-size:7.5pt;color:#6b7280;">· {{ p.period_label_he }}</span>{% endif %}</td>
+    <td class="num"><span class="ltr">${{ "%.2f"|format(p.entry) }}</span></td>
+    <td class="num"><span class="ltr">${{ "%.2f"|format(p.current) }}</span></td>
+    <td class="num {{ 'good' if p.floating_pnl >= 0 else 'bad' }}"><span class="ltr">{{ "{:+,.0f}".format(p.floating_pnl) }}$</span></td>
+    <td class="num"><span class="ltr">{% if p.structure_valid %}{{ "%+.2f"|format(p.structure_r) }}R{% else %}—{% endif %}</span></td>
+    <td class="num"><span class="ltr">{% if p.account_valid %}{{ "%+.2f"|format(p.account_r) }}R{% else %}—{% endif %}</span></td>
+    <td class="num"><span class="ltr">{{ "%.1f"|format(p.exposure_pct) }}%</span></td>
+  </tr>
+  {% endfor %}
+  <tr>
+    <td><strong>סה"כ דיסק'</strong></td><td></td><td></td>
+    <td class="num {{ 'good' if open_book_totals.floating_pnl_disc >= 0 else 'bad' }}"><strong><span class="ltr">{{ "{:+,.0f}".format(open_book_totals.floating_pnl_disc) }}$</span></strong></td>
+    <td></td><td></td>
+    <td class="num"><strong><span class="ltr">{{ "%.1f"|format(open_book_totals.exposure_pct_disc) }}%</span></strong></td>
+  </tr>
+</table>
+{% endif %}
+
+{% if open_book_algo %}
+<h3>🟠 ALGO — {{ open_book_algo_observation_label }}</h3>
+<table class="metrics-table no-break">
+  <tr><th>סימול</th><th>כניסה</th><th>נוכחי</th><th>צף ($)</th><th>R מבנה</th><th>R חשבון</th><th>חשיפה</th></tr>
+  {% for p in open_book_algo %}
+  <tr>
+    <td><span class="ltr">{{ p.symbol }}</span>{% if p.price_is_fallback %} ⚠️{% endif %}{% if p.period_label_he %} <span style="font-size:7.5pt;color:#6b7280;">· {{ p.period_label_he }}</span>{% endif %}</td>
+    <td class="num"><span class="ltr">${{ "%.2f"|format(p.entry) }}</span></td>
+    <td class="num"><span class="ltr">${{ "%.2f"|format(p.current) }}</span></td>
+    <td class="num {{ 'good' if p.floating_pnl >= 0 else 'bad' }}"><span class="ltr">{{ "{:+,.0f}".format(p.floating_pnl) }}$</span></td>
+    <td class="num"><span class="ltr">{{ p.structure_r_token }}</span></td>
+    <td class="num"><span class="ltr">{% if p.account_valid %}{{ "%+.2f"|format(p.account_r) }}R{% else %}—{% endif %}</span></td>
+    <td class="num"><span class="ltr">{{ "%.1f"|format(p.exposure_pct) }}%</span></td>
+  </tr>
+  {% endfor %}
+</table>
+<p class="caveat" style="font-size:8.5pt; color:#9ca3af;">{{ open_book_algo_external_caveat }}</p>
+{% endif %}
+
+<p style="font-size:8.5pt; color:#374151;">
+  מקור מחיר: <span class="ltr">{{ open_book_data_source }}</span>
+  {% if open_book_price_fallback_syms %}
+  &nbsp;·&nbsp; מחיר לא חי (לפי מחיר כניסה, לא בזמן אמת): <span class="ltr">{{ open_book_price_fallback_syms|join(", ") }}</span>
+  {% endif %}
+</p>
+{% if open_book_mark_delta_text %}
+<p style="font-size:8.5pt; color:#374151;"><span class="ltr">{{ open_book_mark_delta_text }}</span></p>
+{% endif %}
 {% endif %}
 
 {# ══ PAGE 4: Behavioral Development ════════════════════════════════════════= #}

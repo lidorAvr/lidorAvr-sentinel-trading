@@ -87,6 +87,7 @@ def run_on_demand(period_type: str, now: datetime = None,
     from report_renderer import (render_weekly, render_monthly,
                                   build_summary_text)
     from report_delivery import deliver_report
+    import report_open_book as rob
 
     if now is None:
         now = datetime.now(sched.ISRAEL_TZ)
@@ -109,6 +110,15 @@ def run_on_demand(period_type: str, now: datetime = None,
         dev_data = compute_trader_development_score(analytics)
         health = sched._build_system_health()
 
+        # Sprint-18: build the open-book for RENDERING ONLY (read-only — same
+        # df, command-room source). On-demand is read-only w.r.t. the snapshot
+        # store (Scope-B invariant): NO snap_save. mark_delta is intentionally
+        # None here — an isolated test run must NOT read the real scheduled
+        # snapshot history; the delta surfaces the baseline-pending token.
+        open_book = rob.build_open_book(
+            df, account, period_start=period_start, period_end=period_end)
+        mark_delta = None
+
         # NOTE: comparison is intentionally None — an on-demand test run must
         # NOT read/write the real scheduled snapshot history (no snap_save, no
         # load_previous-driven mutation). The report content is otherwise the
@@ -129,6 +139,8 @@ def run_on_demand(period_type: str, now: datetime = None,
                     system_health=health,
                     coaching_insights=coaching,
                     risk_adherence_rate=analytics.get("risk_adherence_rate"),
+                    open_book=open_book,
+                    mark_delta=mark_delta,
                 )
                 if not sched._is_pdf_path(pdf_path):
                     pdf_degraded = True
@@ -161,6 +173,8 @@ def run_on_demand(period_type: str, now: datetime = None,
                     coaching_insights=coaching,
                     risk_adherence_rate=analytics.get("risk_adherence_rate"),
                     weekly_breakdown=weekly_breakdown,
+                    open_book=open_book,
+                    mark_delta=mark_delta,
                 )
                 if not sched._is_pdf_path(pdf_path):
                     pdf_degraded = True
@@ -183,7 +197,9 @@ def run_on_demand(period_type: str, now: datetime = None,
 
         risk_rec = sched._compute_risk_rec(df, account)
         summary_text = build_summary_text(analytics, period_label,
-                                          period_type, risk_rec=risk_rec)
+                                          period_type, risk_rec=risk_rec,
+                                          open_book=open_book,
+                                          mark_delta=mark_delta)
         if pdf_degraded:
             summary_text = f"{summary_text}\n\n{sched._DEGRADED_PDF_NOTE}"
 
