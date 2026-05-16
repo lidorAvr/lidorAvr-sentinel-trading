@@ -43,5 +43,14 @@
 ## Checkpoint
 Parent independently verifies: realized KPIs byte-identical (guard); open book never in realized stats + ALGO never in headline (by construction + test); #1 wording (no "no activity" when a book exists; "—" not a fake delta); on-demand still no snap_save; no realized-math/migration/compose/secure_runner change; 920be95 + Sprint-16 graceful intact; full suite green.
 
+### Founder clarification 2026-05-16 14:00 (binding — verify at consolidation)
+Founder smoke-tested the deployed 920be95/bcf32f5 (weekly pdf=True ✅, monthly "חודש" ✅) and sharpened the core requirement: **"the report still does not recognize trades OPENED during the week/month — says 0, which is plainly wrong."**
+Consolidation MUST verify the open-book/empty-state reflects **period-scoped activity**, not only a current snapshot:
+- Positions whose entry (`trade_date`/buy) falls within `[period_start, period_end]` are explicitly attributed as **"נפתחה בתקופה"** in the open-book section.
+- Positions **open/held during** the period (entry ≤ period_end and still open) are surfaced even if opened before the window.
+- The empty-state, when 0 campaigns closed but a book was open/held in the window, must state plainly that N positions were **open/held (and which opened) during the period** — it must NEVER render "ללא עסקאות"/"0 פעילות" when there was opening or holding activity in the window.
+- Still: realized vs unrealized strictly separated; ALGO #8-segregated & observation-only; #1-honest about window + Live/Cached source.
+If Wave-2 output does not fully satisfy this, the parent applies a focused refinement BEFORE the Sprint-18 deploy (do not ship a report that still says "0/no trades" while a live book spanned the period).
+
 ## Out of scope / carried
 The 2 just-shipped fixes (920be95) deploy independently NOW (weekly-PDF crash is urgent — Saturday). Live accumulated smoke-test (Sprint 11–18). Broker-recon material gap ($190.29) is correctly surfaced as "requires manual verification" (#1 working — informational, not a Sprint-18 task).
