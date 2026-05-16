@@ -227,24 +227,27 @@ def compute_period_comparison(current: dict, previous: dict) -> dict:
     return result
 
 
-def compute_verdict(analytics: dict) -> tuple:
+def compute_verdict(analytics: dict, period_word: str = "שבוע") -> tuple:
     """
     Returns (verdict_he: str, verdict_class: str).
     verdict_class: "strong" | "mixed" | "defensive"
+    period_word: the Hebrew period noun ("שבוע" weekly / "חודש" monthly) —
+    display only; does NOT affect any stat or the #8 partition. Default keeps
+    weekly callers byte-identical.
     """
     if not analytics.get("ok") or analytics.get("campaigns_closed", 0) == 0:
-        return "שבוע ללא עסקאות", "neutral"
+        return f"{period_word} ללא עסקאות", "neutral"
     tr   = analytics["total_r_net"]
     wr   = analytics["win_rate"]
     miss = analytics["missing_stop_rate"]
     over = analytics["oversized_rate"]
     process_ok = miss < 0.15 and over < 0.20
     if tr >= 1.0 and wr >= 0.55 and process_ok:
-        return "שבוע חזק 💪", "strong"
+        return f"{period_word} חזק 💪", "strong"
     elif tr <= -0.5 or wr < 0.35:
-        return "שבוע הגנתי 🛡️", "defensive"
+        return f"{period_word} הגנתי 🛡️", "defensive"
     else:
-        return "שבוע מעורב ➡️", "mixed"
+        return f"{period_word} מעורב ➡️", "mixed"
 
 
 # ── Internals ──────────────────────────────────────────────────────────────────

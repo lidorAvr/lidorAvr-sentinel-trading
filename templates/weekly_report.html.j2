@@ -113,7 +113,7 @@
   </tr>
   <tr>
     <td>רווח ממומש</td>
-    <td class="num {{ 'good' if realized_pnl > 0 else 'bad' }}"><span class="ltr">{{ "%+,.0f"|format(realized_pnl) }}$</span></td>
+    <td class="num {{ 'good' if realized_pnl > 0 else 'bad' }}"><span class="ltr">{{ "{:+,.0f}".format(realized_pnl) }}$</span></td>
     <td>—</td>
   </tr>
 </table>

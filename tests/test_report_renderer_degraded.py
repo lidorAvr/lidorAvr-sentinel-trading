@@ -329,3 +329,84 @@ class TestSendPdfFalsySafety:
         with patch.object(rd, "send_summary", return_value=True):
             res = rd.deliver_report("", "summary", "cap", "chat", "tok")
         assert res == {"summary_ok": True, "pdf_ok": False}
+
+
+# ── Weekly template real-Jinja regression (on-demand smoke-test catch) ───────
+#
+# templates/weekly_report.html.j2:116 used the %-style filter with a ','
+# thousands separator: {{ "%+,.0f"|format(realized_pnl) }}. '%,' is INVALID
+# in %-formatting (str % args) → ValueError("unsupported format character
+# ','") raised at template.render(), BEFORE WeasyPrint — so EVERY weekly PDF
+# failed (the scheduled Saturday report was PDF-less for weeks); monthly was
+# fine ("{:,.0f}".format()). Sprint-16 graceful path masked it (text-only);
+# the Sprint-17 on-demand button exposed it (weekly pdf=False vs monthly
+# pdf=True side by side). These render the REAL Jinja template (charts
+# stubbed, output → tmp) so the regression is caught without WeasyPrint.
+
+@pytest.mark.unit
+class TestWeeklyTemplateRealJinjaRegression:
+    def _acct(self):
+        return {"nav": 7921.0, "risk_pct_input": 0.6,
+                "nav_source": "broker", "freshness": "6.2h"}
+
+    def _setup(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(rr, "_REPORTS_DIR", str(tmp_path))
+        monkeypatch.setattr(rr, "_generate_weekly_charts",
+                            lambda *a, **k: {})
+        monkeypatch.setattr(rr, "_generate_monthly_charts",
+                            lambda *a, **k: {})
+
+    def test_render_weekly_zero_trades_smoke_case_does_not_raise(
+            self, monkeypatch, tmp_path):
+        # EXACT founder smoke-test scenario: 0 campaigns, on-demand weekly.
+        import pandas as pd
+        from datetime import datetime
+        from analytics_engine import compute_period_analytics
+        self._setup(monkeypatch, tmp_path)
+        ps, pe = datetime(2026, 5, 3), datetime(2026, 5, 9, 23, 59, 59)
+        a = compute_period_analytics(pd.DataFrame(), ps, pe, self._acct())
+        # Pre-fix: ValueError at template.render(); post-fix: returns a path.
+        path = rr.render_weekly(analytics=a, account_state=self._acct(),
+                                period_start=ps, period_end=pe)
+        assert isinstance(path, str) and path
+
+    def test_render_weekly_formats_pnl_with_sign_and_thousands(
+            self, monkeypatch, tmp_path):
+        import pandas as pd
+        from datetime import datetime
+        from analytics_engine import compute_period_analytics
+        self._setup(monkeypatch, tmp_path)
+        ps, pe = datetime(2026, 5, 3), datetime(2026, 5, 9, 23, 59, 59)
+        a = compute_period_analytics(pd.DataFrame(), ps, pe, self._acct())
+        a["realized_pnl"] = 12345.0
+        path = rr.render_weekly(analytics=a, account_state=self._acct(),
+                                period_start=ps, period_end=pe)
+        html = open(path.replace(".pdf", ".html"), encoding="utf-8").read()
+        assert "+12,345$" in html        # sign + thousands separator intact
+
+
+# ── Period-aware verdict (monthly wrongly showed "שבוע ללא עסקאות") ──────────
+
+@pytest.mark.unit
+class TestPeriodAwareVerdict:
+    def test_default_keeps_weekly_word_byte_identical(self):
+        import analytics_engine as ae
+        assert ae.compute_verdict(_analytics())[0].startswith("שבוע")
+        assert ae.compute_verdict(
+            {"ok": True, "campaigns_closed": 0})[0] == "שבוע ללא עסקאות"
+
+    def test_monthly_word_when_requested(self):
+        import analytics_engine as ae
+        assert ae.compute_verdict(
+            _analytics(), period_word="חודש")[0].startswith("חודש")
+        assert ae.compute_verdict(
+            {"ok": True, "campaigns_closed": 0},
+            period_word="חודש")[0] == "חודש ללא עסקאות"
+
+    def test_build_summary_text_period_aware(self):
+        txt_m = rr.build_summary_text(
+            {"ok": True, "campaigns_closed": 0}, "אפריל 2026", "monthly")
+        txt_w = rr.build_summary_text(
+            {"ok": True, "campaigns_closed": 0}, "03/05–09/05", "weekly")
+        assert "חודש ללא עסקאות" in txt_m
+        assert "שבוע ללא עסקאות" in txt_w

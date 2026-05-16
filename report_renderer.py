@@ -76,7 +76,7 @@ def render_monthly(
     Render monthly PDF report. Returns path to PDF file.
     """
     from analytics_engine import compute_verdict
-    verdict, verdict_class = compute_verdict(analytics)
+    verdict, verdict_class = compute_verdict(analytics, period_word="חודש")
 
     output_dir = os.path.join(_REPORTS_DIR, "monthly")
     wb         = weekly_breakdown or []
@@ -112,7 +112,8 @@ def build_summary_text(
     the interactive Telegram drilldowns.
     """
     from analytics_engine import compute_verdict
-    verdict, _ = compute_verdict(analytics)
+    verdict, _ = compute_verdict(
+        analytics, period_word="חודש" if period_type == "monthly" else "שבוע")
     pf     = analytics.get("profit_factor", 0)
     pf_str = f"{pf:.2f}" if pf < 90 else "∞"
     type_heb = "שבועי" if period_type == "weekly" else "חודשי"
