@@ -1072,3 +1072,31 @@ Leading hypothesis: the founder's missing closes are NOT in the data the report 
 - No campaign/R/NAV/Expectancy math change until RCA confirms root cause; the existing linked-closed countable realized KPIs must remain byte-identical (guard). #8 ALGO segregation + #1 honesty (never present unlinked/incomplete data as exact truth; never fabricate closes that aren't in the data — say so explicitly).
 - RCA probe is strictly read-only (no Supabase mutation, no snap_save, admin-gated via existing dev-menu/PIN path).
 - Preserve 920be95 / bcf32f5 / Sprint-16 graceful / Sprint-18 period-scoping / Sprint-19 headline+comparison+System-Health. No migration / compose / secure_runner change.
+
+---
+
+## DEC-20260516-017 — UPDATE: RCA GATE PASSED, root cause CONFIRMED (data-confirmed via 🏥 בריאות מערכת)
+
+Date: 2026-05-16
+Status: **RCA gate PASSED; Step-2 UNGATED with precise confirmed scope; Sprint-20 Step-2 Mark-led.**
+
+### Founder ran the existing `🏥 בריאות מערכת` (no build) — decisive result
+
+- `✅ Campaign IDs — כולם מלאים` → **null-campaign_id hypothesis RULED OUT** (all trades linked).
+- `✅ Supabase — טרייד אחרון: 2026-05-15` → **not a sync gap** (data current).
+- `🧹 רשומות סגורות/ארכיון ללא סטופ: 52 (HOOD, HP, JPM, MSGE, PLTR) — אינו נספר` → **the smoking gun.**
+
+### Confirmed root cause (RCA path f, data-confirmed + code-traced)
+
+The founder's period closes ARE real, ARE campaign-linked, ARE in the data — but lack `initial_stop`. Trace: `_get_closed_campaigns` picks them up (campaign_id present, in-window SELL) → `_aggregate_campaigns` → `classify_stat_bucket(setup, true_orig_risk=0)` → `STAT_BUCKET_DATA_INCOMPLETE` (engine_core.py:1257-1258) → `is_stat_countable` False (1263) → NOT in `countable` → `campaigns_closed = len(countable) = 0` (analytics_engine.py:89,129). They DO land in `excluded_count`/`excluded_pnl` (analytics_engine.py:57-58,144-145) — **which are computed but rendered NOWHERE** (confirmed absent from report_renderer.py + both templates). So the report shows "0 קמפיינים נסגרו / Realized $0" while N campaigns truly closed with $X realized PnL.
+
+**This is a #1 disclosure/honesty defect — NOT a campaign-math bug.** Excluding no-stop campaigns from edge stats (WR/Expectancy/PF/Net-R) is methodologically CORRECT (#8 — no R without a stop). The defect is the SILENT omission: the report must honestly disclose "N קמפיינים נסגרו בתקופה אך הוחרגו מסטטיסטיקת edge (חסר stop) — רווח/הפסד ממומש לא-מאומת: $X · השלם entry/stop כדי להיכלל." Partly also a founder-side data-completion task (52 closed records lack stop; the system already says "השלם entry/stop").
+
+### Step-2 scope (UNGATED, Mark-led, Wave-1/2 rigor)
+
+1. **Surface the excluded/closed-but-incomplete leg honestly** in weekly/monthly + the Telegram summary, using the ALREADY-COMPUTED `excluded_count`/`excluded_pnl` — ZERO campaign/R/NAV/Expectancy math change. Strictly separated from countable edge stats (which stay byte-identical & #8-clean). Labeled "לא-מאומת / חסר stop", never as exact edge truth (#1).
+2. **ALGO stays segregated** (DEC-20260515-014 / DEC-20260511-001): the excluded bucket mixes DATA_INCOMPLETE (manual, missing stop) AND ALGO — disclose them on SEPARATE lines, ALGO observation-only, never merged, never in headline edge stats.
+3. Satisfies the founder's union framing: closed-but-excluded now visible (closed leg) alongside Sprint-18/19 opened-in-period + open-book legs.
+
+### Hard constraints
+No campaign/R/NAV/Expectancy math change (excluded_pnl already computed); countable realized KPIs byte-identical (guard). #8 ALGO/DATA_INCOMPLETE never in countable; #1 honest ("לא-מאומת", explicit incomplete-data disclosure, never fabricated). Preserve 920be95/bcf32f5/Sprint-16/Sprint-18 period-scoping/Sprint-19. No migration/compose/secure_runner change. No wholesale renderer rewrite — additive presentation.
