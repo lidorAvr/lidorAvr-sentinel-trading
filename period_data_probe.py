@@ -22,7 +22,14 @@ AST-provable by tests/test_sprint21_wave2.py):
     `classify_stat_bucket` / `is_stat_countable`.
   • Computes ZERO new R/NAV/campaign/Expectancy math — only counts, already-
     stored `pnl_usd` sums, and the existing `get_campaign_risk_metrics`
-    result, recomputed read-only on a local copy.
+    result, recomputed read-only on a local copy. The Sprint-22 diagnostic
+    columns `entry`/`initial_risk_price`/`stop_loss` are DISPLAY-ONLY raw
+    stored values — they are NEVER fed into `get_campaign_risk_metrics`
+    (the `_risk_row` still carries ONLY `initial_stop`); the WS-C
+    `initial_risk_price` fallback stays DEFERRED/binding (MARK_SPRINT21
+    §WS-C). The probe merely SURFACES whether an excluded campaign carries
+    a non-zero recoverable-candidate value so a future Mark ruling has
+    real evidence — it applies no fallback.
   • NO `.save`/`.insert`/`.update`/`.upsert`/`.delete`, NO non-`select`
     `.execute()`, NO `report_snapshot_store.save`/`snap_save`, NO
     `report_scheduler._save_state`/`_mark_ran`, NO `os.environ[...] =`, NO
@@ -81,6 +88,17 @@ def _supabase_auth_role() -> str:
         return ""
     except Exception:
         return ""
+
+
+def _num(v) -> float:
+    """Safe scalar→float for DISPLAY ONLY (NaN/None/str → 0.0). Never used in
+    any risk/NAV/campaign computation — purely to render the raw stored
+    `entry`/`initial_risk_price`/`stop_loss` diagnostic columns."""
+    try:
+        f = float(v)
+        return 0.0 if f != f else f  # NaN guard
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _is_blank_cid(series):
@@ -144,7 +162,8 @@ def _window_block(period_type: str, now: datetime) -> str:
     # read-only, no mutation of the source df.
     work = df.copy()
     work["trade_date"] = pd.to_datetime(work["trade_date"], errors="coerce")
-    for col in ("price", "quantity", "stop_loss", "initial_stop", "pnl_usd"):
+    for col in ("price", "quantity", "stop_loss", "initial_stop",
+                "initial_risk_price", "pnl_usd"):
         if col in work.columns:
             work[col] = pd.to_numeric(work[col], errors="coerce").fillna(0)
 
@@ -200,6 +219,14 @@ def _window_block(period_type: str, now: datetime) -> str:
     # from get_campaign_risk_metrics (engine_core.py:943-977) — the SAME
     # _risk_row construction as _aggregate_campaigns:307-308. #8: ALGO appears
     # flagged observation-only, never merged into the countable count.
+    # Sprint-22 fork-decision counters (DISPLAY-ONLY): of the campaigns
+    # excluded for an invalid `initial_stop`, how many carry a NON-ZERO
+    # `initial_risk_price`/`stop_loss` — i.e. a *candidate* recoverable stop.
+    # This is honest read-only EVIDENCE for a future Mark WS-C ruling; the
+    # probe applies NO fallback (WS-C stays DEFERRED, binding).
+    n_excl_badstop = 0
+    n_recoverable = 0
+
     for _, crow in campaigns.iterrows():
         cid = crow["campaign_id"]
         grp = closed[closed["campaign_id"] == cid]
@@ -213,6 +240,10 @@ def _window_block(period_type: str, now: datetime) -> str:
         qty = float(fb["quantity"])
         setup = str(fb.get("setup_type", "Unknown"))
         sym = str(fb.get("symbol", "?"))
+        # DISPLAY-ONLY raw stored stops — NEVER passed into _risk_row /
+        # get_campaign_risk_metrics (WS-C fallback DEFERRED, binding).
+        irp = _num(fb.get("initial_risk_price", 0.0))
+        sl = _num(fb.get("stop_loss", 0.0))
         _risk_row = {"price": entry, "quantity": qty,
                      "initial_stop": istop,
                      "side": str(fb.get("side", "BUY"))}
@@ -225,7 +256,8 @@ def _window_block(period_type: str, now: datetime) -> str:
         rv = "✓" if valid else f"✗ {reason}"
         cnt = "כן" if countable else "לא"
         lines.append(
-            f"{cid} · {sym} · {setup} · initial_stop={istop:g} · "
+            f"{cid} · {sym} · {setup} · entry={entry:g} · "
+            f"initial_stop={istop:g} · irp={irp:g} · sl={sl:g} · "
             f"risk_valid={rv} · bucket={bucket} · נספר={cnt} · "
             f"net=${net:+,.2f}"
         )
@@ -233,10 +265,26 @@ def _window_block(period_type: str, now: datetime) -> str:
         # §WS-C, verbatim) — surfaced ONLY where a campaign is excluded for
         # an invalid stop. NO campaign-math change (DEFERRED, binding).
         if (not valid) and ("initial_stop invalid" in reason):
+            n_excl_badstop += 1
+            if irp != 0.0 or sl != 0.0:
+                n_recoverable += 1
             lines.append(
                 f"⚠️ stop לא תקין (initial_stop {istop:g} מול כניסה "
                 f"{entry:g}) — תקן entry/stop כדי להיכלל בסטטיסטיקה"
             )
+
+    # Sprint-22 fork signal (honest, read-only — answers "recoverable stop"
+    # vs "lost at source"). Candidate ≠ fix: applying initial_risk_price as a
+    # real stop is the DEFERRED WS-C question and needs a Mark ruling + a
+    # ratified data contract before any code uses it (#1, accuracy>confidence).
+    if n_excl_badstop:
+        lines.append(
+            f"— הכרעת WS-C (מועמדים בלבד) —\n"
+            f"הוחרגו על initial_stop לא תקין: {n_excl_badstop} · "
+            f"מתוכם עם ערך לא-אפס ב-initial_risk_price/stop_loss "
+            f"(מועמד לשחזור — דורש פסיקת Mark + חוזה-נתונים): "
+            f"{n_recoverable}"
+        )
 
     return "\n".join(lines)
 

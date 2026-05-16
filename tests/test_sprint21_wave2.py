@@ -445,3 +445,52 @@ class TestWSCNoOp:
             datetime(2026, 5, 9, 23, 59, 59), _ACCT)
         assert w["campaigns_closed"] == 0
         assert w["excluded_count"] == 3
+
+
+# ── Sprint-22: probe diagnostic columns + WS-C fork signal (read-only) ──────
+
+class TestProbeForkDiagnostics:
+    def test_per_campaign_line_shows_entry_irp_sl(self, monkeypatch):
+        """entry/initial_risk_price/stop_loss are SURFACED per campaign so the
+        recoverable-vs-lost-at-source fork is decidable from the probe."""
+        import report_scheduler as sched
+        monkeypatch.setattr(sched, "_fetch_trades_df",
+                            lambda s, e: _mixed_df())
+        out = probe.build_probe_report("monthly",
+                                       now=datetime(2026, 5, 16, 12))
+        assert "entry=" in out
+        assert "irp=" in out
+        assert "sl=" in out
+        # countable reconciliation token is UNCHANGED (Sprint-21 parity).
+        assert "נספר=כן" in out and "נספר=לא" in out
+
+    def test_wsc_fork_signal_line_present(self, monkeypatch):
+        """C2 (BBB) excluded for invalid initial_stop=-1; its fixture
+        stop_loss=-1 (non-zero) ⇒ counted as a recoverable CANDIDATE, labelled
+        as needing a Mark ruling (NO fallback applied)."""
+        import report_scheduler as sched
+        monkeypatch.setattr(sched, "_fetch_trades_df",
+                            lambda s, e: _mixed_df())
+        out = probe.build_probe_report("monthly",
+                                       now=datetime(2026, 5, 16, 12))
+        assert "— הכרעת WS-C (מועמדים בלבד) —" in out
+        assert "הוחרגו על initial_stop לא תקין:" in out
+        assert "דורש פסיקת Mark + חוזה-נתונים" in out
+
+    def test_irp_never_feeds_risk_metrics_wsc_still_deferred(self):
+        """The DISPLAY columns must NOT alter campaign-math: the probe's
+        _risk_row carries ONLY initial_stop (no initial_risk_price key), so an
+        AEHR-class invalid stop stays invalid (WS-C DEFERRED, binding)."""
+        import ast
+        src = open(_PROBE_SRC, encoding="utf-8").read()
+        tree = ast.parse(src, filename=_PROBE_SRC)
+        risk_row_keys = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Dict):
+                ks = [k.value for k in node.keys
+                      if isinstance(k, ast.Constant)]
+                if "initial_stop" in ks and "price" in ks:
+                    risk_row_keys = ks
+        assert risk_row_keys, "probe _risk_row dict not found"
+        assert "initial_risk_price" not in risk_row_keys
+        assert "stop_loss" not in risk_row_keys
