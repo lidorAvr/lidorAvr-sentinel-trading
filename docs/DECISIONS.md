@@ -985,3 +985,29 @@ Founder's risk-discipline intent is sound; Mark cleared the observer-mode compat
 ### Constraint / next
 
 NOT built this sprint or until: (a) the founder's full real-ALGO-data review arrives, (b) Mark + team fine-tune the numeric thresholds against it, (c) it is re-confirmed. The ALGO-segregated expectancy/PF cohort must never contaminate headline stats (#8). Build also stays gated on the still-pending founder ALGO rules (the same data feeds the BLOCKED #4/#5 framework above).
+
+---
+
+## DEC-20260516-015 — Weekly/Monthly report: open-book + honest empty-state
+
+Date: 2026-05-16
+Status: **decided (founder); Sprint 18, Mark-led** — not built until Mark rulings + checkpoint.
+
+### Problem (founder smoke-test, Sprint-17 on-demand button)
+
+The weekly/monthly report is **realized-only by design** (`compute_period_analytics`: "campaigns that closed within [period_start, period_end)"). With a live 6-position book (HOOD/MRVL/PLTR/PWR/TSLA/WCC, +$230 floating, 31.3% exposure) and **0 campaigns closed** in the on-demand window (03–09/05), the report rendered "🔴 שבוע ללא עסקאות" — technically true for *closed* campaigns but **misleading** (a #1 concern: presents an empty realized set as "no trading activity") and a real product gap: the open book's state + how it performed is entirely absent.
+
+### Decision (founder chose "מלא + snapshot קדימה")
+
+Sprint 18 adds to the weekly/monthly report:
+1. **Open-book section** — current state per open position (entry / current / floating PnL / Open-R / exposure), reusing the existing live source `ec.get_open_positions_campaign` (engine_core.py:473; same as the command room). **Realized vs unrealized strictly separated**; the open book NEVER enters realized Win-Rate/Expectancy/PF/Net-R. **ALGO open positions segregated** (#8 / DEC-20260515-014) — observation-only, never an instruction (DEC-20260511-001).
+2. **Honest empty-state** — replace the misleading "שבוע/חודש ללא עסקאות" when there IS a live book: state plainly "0 קמפיינים נסגרו בתקופה" + the open-book summary; #1-honest about the data window and source (Live/Cached/Sync-temporary).
+3. **Begin snapshotting open-position marks** with each scheduled run (new `report_snapshot_store` field) so a **true weekly mark-to-market delta** appears from the NEXT week onward. Honest constraint surfaced: the delta is "—" until a baseline week accumulates (no retroactive week-ago open-mark exists — accuracy over confidence, #1).
+
+### Hard constraints
+
+- No change to realized R/NAV/campaign/Expectancy math (CLAUDE.md fragile area; Safe-Change: tests required). Realized KPIs byte-identical.
+- Strict realized/unrealized separation + ALGO #8 segregation provable by construction + test (open book never contaminates realized stats; ALGO never in headline).
+- Advisory/observation only for ALGO (DEC-20260511-001). Backtest/Live/Cached honesty (#1).
+- New snapshot field is additive (Hyperscaler: no migration; per-host derived state).
+- No wholesale rewrite; reuse `get_open_positions_campaign` (battle-tested in the command room) — invent no new position math.
