@@ -58,6 +58,100 @@ from telegram_audit_review import handle_my_actions  # noqa: E402 — re-exporte
 from telegram_clean_gate import (handle_clean_entry,  # noqa: E402 — re-exported for telegram_callbacks lazy import
                                  finalize_pending_clean)
 
+def _send_probe_chunks(chat_id, text):
+    """Loss-free, plain-text (NO parse_mode) multi-send for the dev-menu Probe.
+
+    Sprint-23 / DEC-20260516-020 fix for Telegram `Bad Request: message is
+    too long` (the probe's ~20-campaign × 2-window output exceeds the 4096
+    hard cap). This is the ONLY production caller path that splits
+    `period_data_probe.build_probe_report()`'s string; the probe itself is
+    byte-identical and still NEVER sends/persists.
+
+    Per Mark's BINDING rulings (docs/teams/MARK_SPRINT23_RULINGS.md):
+
+    * Ruling 1 — chunk, NEVER truncate: every real campaign row is sent;
+      no "show first N", no per-window cap, no head/tail trimming.
+    * Ruling 3 — plain-text invariant: NO `parse_mode` on ANY part (a
+      `campaign_id` `_` under Markdown would italicise / Telegram-400).
+      `telegram_portfolio._send_long_message` is NOT reused verbatim
+      (it forces `parse_mode="Markdown"`); only its proven SHAPE is mirrored.
+    * Ruling 4 — split boundaries: (1) short input (<= LIMIT) → ONE send,
+      byte-identical to the pre-Sprint-23 behaviour; (2) else split first
+      at the weekly/monthly glue `"\n\n" + _RTL` (period_data_probe.py:328);
+      (3) within a window still over budget, split ONLY at `\n` (never
+      mid-line / mid-campaign); a single source line > LIMIT is emitted
+      whole in its own part (loss-free dominates the size target).
+      Every part is independently re-prefixed with the RTL marker
+      (U+200F, == bot_core.RTL == period_data_probe._RTL) so each bubble
+      renders RTL-correct on its own.
+    * Ruling 4 — `reply_markup=get_developer_menu()` on the LAST part ONLY.
+    * Mirrors `telegram_portfolio._send_long_message`'s per-part try/except
+      shape so one failed part cannot suppress the rest.
+    """
+    LIMIT = 3900  # ⟨MARK:3900⟩ — mirrors the proven telegram_portfolio.py:23
+                  # budget; comfortably under Telegram's 4096 hard cap.
+
+    # Step 1 — short-circuit: byte-for-byte the pre-Sprint-23 single send.
+    if len(text) <= LIMIT:
+        return bot.send_message(chat_id, text,
+                                reply_markup=get_developer_menu())
+
+    import period_data_probe
+    _RTL = period_data_probe._RTL  # U+200F — == bot_core.RTL (parity proven)
+
+    # Step 2 — split first at the weekly/monthly glue "\n\n" + _RTL
+    # (period_data_probe.py:328). Each resulting segment keeps its own
+    # leading _RTL (weekly's head _RTL; monthly's _RTL right after "\n\n").
+    glue = "\n\n" + _RTL
+    if glue in text:
+        head, tail = text.split(glue, 1)
+        segments = [head, _RTL + tail]
+    else:
+        segments = [text]
+
+    # Step 3 — within a segment still over budget, split ONLY at a "\n"
+    # line boundary (never mid-line / mid-campaign). The cut is taken
+    # AFTER the newline so the "\n" itself is retained at the END of the
+    # preceding part — the split is byte loss-free: concatenating the
+    # parts (minus the injected per-part _RTL prefixes) reproduces the
+    # segment exactly. Each continuation part is re-prefixed with _RTL so
+    # every bubble renders RTL on its own (the ONLY injected bytes).
+    parts = []
+    for seg in segments:
+        while len(seg) > LIMIT:
+            nl = seg.rfind('\n', 0, LIMIT)
+            if nl == -1:
+                # No line boundary within budget: a single source line
+                # exceeds LIMIT. Loss-free dominates the size target —
+                # emit up to the next "\n" (the whole oversized line)
+                # WHOLE in its own part; never drop / truncate it.
+                nl = seg.find('\n')
+                if nl == -1:
+                    parts.append(seg)
+                    seg = ""
+                    break
+            split_idx = nl + 1            # keep the "\n" with this part
+            parts.append(seg[:split_idx])
+            rest = seg[split_idx:]
+            seg = rest if rest.startswith(_RTL) else _RTL + rest
+        if seg:
+            parts.append(seg)
+
+    # Step 4 — send each part plain-text (NO parse_mode); reply_markup on
+    # the LAST part ONLY; per-part try/except (mirrors _send_long_message).
+    last = None
+    for i, part in enumerate(parts):
+        try:
+            if i == len(parts) - 1:
+                last = bot.send_message(chat_id, part,
+                                        reply_markup=get_developer_menu())
+            else:
+                last = bot.send_message(chat_id, part)
+        except Exception as e:
+            print(f"Error sending Probe part {i}: {e}")
+    return last
+
+
 @bot.message_handler(content_types=['document'])
 def handle_document_upload(message):
     chat_id = message.chat.id
@@ -316,8 +410,7 @@ def handle_all_messages(message):
         try:
             import period_data_probe
             txt = period_data_probe.build_probe_report()
-            return bot.send_message(chat_id, txt,
-                                    reply_markup=get_developer_menu())
+            return _send_probe_chunks(chat_id, txt)
         except Exception as e:
             return bot.send_message(
                 chat_id, f"{RTL}❌ שגיאת Probe: `{str(e)[:300]}`",
