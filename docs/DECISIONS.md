@@ -963,7 +963,7 @@ Mark (Sprint 15 Wave 1) defines the band thresholds (grounded, no invented numbe
 ## DEC-20260515-014 — ALGO Oversight Gate (Mark's refined structure, accepted)
 
 Date: 2026-05-16
-Status: **structure accepted (founder)** — numeric thresholds pending founder's real-ALGO-data fine-tuning; **NOT to be built** until that data + tuning are in.
+Status: **structure accepted (founder); real ALGO data RECEIVED 2026-05-16** (`docs/teams/ALGO_REFERENCE_2026_05_16.md` — authoritative) → Sprint 17 fine-tunes numbers + unblocks #4/#5. **NOT built** until Sprint-17 Mark-gated tuning + re-confirmation.
 
 ### Decision
 
