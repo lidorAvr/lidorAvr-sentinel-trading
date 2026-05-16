@@ -1193,3 +1193,26 @@ Single-point tz-normalization at the comparison boundary INSIDE `compute_period_
 
 ### Hard constraints
 tz-**naive** path (entire suite + the LOCKED `test_real_data_april_regression.py`) byte-identical — normalization is a no-op for naive inputs. NEW regression: tz-**aware** bounds MUST return EXACTLY the tz-naive numbers (April 8/+$180.49/WR .375/PF 2.626/excl 2; weekly 0/excl 3). #1 honesty (fix must not mask/fabricate). #8 ALGO segregation untouched. WS-C stays DEFERRED (not reopened). Preserve 920be95/bcf32f5/Sprint-16..21 + WS-B `unlinked_*` + admin gate + secure_runner; no migration/compose/telegram_bot.py wholesale change. Baseline full suite **1846**.
+
+---
+
+## DEC-20260516-019 UPDATE — PRODUCTION CONFIRMS the tz fix; honest number reconciliation; NEW probe length defect
+
+Date: 2026-05-16 (post-deploy, founder ran the real on-demand reports + probe)
+
+### PRIMARY DEFECT FIXED — confirmed end-to-end in production ✅
+Founder ran the REAL on-demand reports after `./deploy.sh`:
+- **Monthly April-2026:** was "0 קמפיינים" → now **10 campaigns / Win 50.0% / Realized $+336 / Net R +11.01R / Expectancy +1.10R / PF 4.03 / Missing-Stop 0.0%**, plus **10 ALGO closed (observe-only, $+218 unverified, NOT in edge)** — #8 ALGO segregation intact live.
+- **Weekly 03–09/05:** **0 discretionary closed** (HONEST zero — 5 open positions carried through, **3 ALGO closed/excluded −$37 unverified**) — exactly the LOCKED weekly shape (0 countable / 3 ALGO-excluded). This is the system correctly distinguishing an honest "0 discretionary this week" from the OLD silent tz-bug "0".
+
+The silent tz "0 קמפיינים" production blocker is **eliminated**. The live accumulated smoke-test (Sprint 11–22) **closes for the PRIMARY defect**.
+
+### Honest number reconciliation (#1 — NOT hand-waved)
+Production April = **10 / +$336**; the LOCKED `tests/test_real_data_april_regression.py::_april_df()` = **8 / +$180.49**. These intentionally differ — reconciled with evidence, not asserted:
+1. **The locked fixture is a CURATED RCA byte-stability anchor, demonstrably a SUBSET of live April** — concrete evidence: the fixture contains **exactly ONE** ALGO campaign (TSLA), production April closed **TEN** ALGO campaigns. The docstring's "full DB dump" means *sourced from* the dump, not *the entirety of* April.
+2. **The fixture uses a TEST account `{"nav": 7922.19, "risk_pct_input": 0.5}`**, not the production account config. R / Net-R / Expectancy / countability (`is_stat_countable` / `classify_stat_bucket`) are R-threshold-sensitive → a different NAV legitimately yields a different countable set & R-metrics **with zero math change**.
+3. The Sprint-22 fix is **independently proven math-neutral** (tz-aware == tz-naive == the locked 8/+$180.49, byte-identical, on the SAME fixture). So the production delta is **dataset scope + account NAV**, NOT a tz-fix regression or an over-count.
+Exact line-item reconciliation of the live 10/+$336 against raw Supabase rows still requires the read-only probe — see the new defect below.
+
+### NEW defect (separate, now blocking the reconciliation tool) — probe "message too long"
+At 20:22 the founder's `🔬 בדיקת נתוני תקופה (Probe)` failed **twice**: `Telegram API ... Error code: 400 ... message is too long`. The Sprint-21/22 probe builds one Telegram string exceeding the 4096-char limit. Note: it failed on LENGTH, not on `Invalid comparison` → the Sprint-22 tz-mirror in the probe plausibly held, but the probe is **unusable** and is exactly the tool needed for the line-item reconciliation above. Candidate fix (Sprint-23): chunk/trim the probe output to Telegram limits (≤~3900 chars/message, split per window) — pure formatting, READ-ONLY contract unchanged, no math. Scope/priority = founder decision.
