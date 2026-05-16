@@ -37,6 +37,7 @@ import pandas as pd
 import engine_core as ec
 import adaptive_risk_engine as are
 import open_tasks
+import algo_rules  # Sprint-17 #4/#5 — static §1 known-rule lookup (pure leaf)
 import supabase_repository as repo
 from bot_core import bot, supabase, user_state, RTL
 from telegram_menus import get_portfolio_menu
@@ -209,6 +210,17 @@ def _enrich_positions(records, *, target_risk_usd):
                 # positive stored stop). Else "Unknown" — NEVER $0.00, never
                 # a Sentinel suggestion (Mark §2.3 #4 / DECISIONS.md:444-445).
                 ext_stop = sl if (isinstance(sl, (int, float)) and sl > 0) else None
+                # Sprint-17 #4 — replace the bare "Unknown" with the ALGO's OWN
+                # §1 known rule (observed, NOT enforced by Sentinel). Unknown
+                # symbol → None, so the panel keeps "Unknown" (never fabricate).
+                # Pure static lookup — no I/O, no math, observation-only.
+                known_rule = algo_rules.describe_algo_risk_control(sym)
+                # Sprint-17 #5 — strategy-adaptive ALGO dead-money = the ALGO's
+                # OWN §1 time-exit (QQQ/HOOD/PLTR). TSLA/JPM → None (no ALGO
+                # time-exit; the generic 0.75R is NOT applied to ALGO). This is
+                # a descriptive note only, never an instruction, never a Task,
+                # never counted (#8-safe — open-position observer only).
+                time_exit_sig = algo_rules.algo_time_exit_signal(sym)
                 rec["_algo_observed"] = {
                     "symbol": sym,
                     # The engine's OWN state label, verbatim
@@ -219,6 +231,10 @@ def _enrich_positions(records, *, target_risk_usd):
                     ),
                     "risk_basis": risk_basis,
                     "external_stop": ext_stop,
+                    # #4 known-rule descriptor (observed, not enforced).
+                    "known_rule": known_rule,
+                    # #5 ALGO dead-money signal source (None for TSLA/JPM).
+                    "algo_time_exit": time_exit_sig,
                 }
             rec["_data_quality"] = "stale" if curr == entry and ec.get_live_price(sym) is None else "live"
             enriched.append(rec)
@@ -797,11 +813,31 @@ def handle_algo_panel(chat_id):
         state_label = a.get("state_label") or "🤖 ALGO — פיקוח בלבד"
         rb = _RISK_BASIS_HE.get(a.get("risk_basis"), "לא ידוע")
         ext = a.get("external_stop")
-        ext_he = f"${float(ext):.2f}" if isinstance(ext, (int, float)) and ext > 0 else "לא ידוע"
+        # Sprint-17 #4 — when the external stop is "Unknown", surface the
+        # ALGO's OWN §1 known rule instead of a bare "Unknown" (observed, NOT
+        # enforced by Sentinel). A real broker stop, if exposed, still wins.
+        if isinstance(ext, (int, float)) and ext > 0:
+            ext_he = f"${float(ext):.2f}"
+        elif a.get("known_rule"):
+            ext_he = f"חוק ALGO ידוע (נצפה, לא נאכף): {a['known_rule']}"
+        else:
+            ext_he = "לא ידוע"
         body += (
             f"{RTL}• {sym}: מצב נצפה — {state_label}.\n"
             f"{RTL}  בסיס סיכון: {rb}. סטופ חיצוני: {ext_he}.\n"
         )
+        # Sprint-17 #5 — ALGO dead-money = the ALGO's OWN §1 time-exit window
+        # (QQQ/HOOD/PLTR only; TSLA/JPM have none → no line). Descriptive
+        # observer note, never an instruction, never a Task, never counted.
+        te = a.get("algo_time_exit")
+        if te:
+            body += (
+                f"{RTL}  ⏳ ALGO {sym} קרוב לחלון יציאת-הזמן שלו "
+                f"({te}) — לוודא שהאלגו מחובר ופועל. תיאור, לא הוראה.\n"
+            )
+    # Backtest-caveat — MANDATORY on any surface that shows ALGO data derived
+    # from the founder backtest dataset (MARK §5; AGENTS.md #1). Non-suppressible.
+    body += f"\n{RTL}{algo_rules.ALGO_BACKTEST_CAVEAT_HE}\n"
     # Honest source label (same vocabulary the list uses).
     body += (
         f"\n{RTL}נתונים: {_data_label(cache.get('data_quality'))} · "

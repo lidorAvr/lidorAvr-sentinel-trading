@@ -23,6 +23,11 @@ def get_developer_menu():
     markup.add(telebot.types.KeyboardButton("📡 IBKR Sync ידני"), telebot.types.KeyboardButton("📤 העלה דוח XML"))
     markup.add(telebot.types.KeyboardButton("🔄 Git Pull + Deploy"), telebot.types.KeyboardButton("⚙️ הצג Config"))
     markup.add(telebot.types.KeyboardButton("📊 תוצאת Sync אחרון"), telebot.types.KeyboardButton("🏥 בריאות מערכת"))
+    # Sprint-17 Scope item B — on-demand report for the LAST COMPLETE period
+    # (developer/testing only; admin-gated via the existing dev-menu/PIN path).
+    # Reuses the scheduler period logic + render/deliver path; NEVER mutates
+    # the real snapshot store or the scheduler period-dedup.
+    markup.add(telebot.types.KeyboardButton("📈 דוח שבועי עכשיו"), telebot.types.KeyboardButton("📆 דוח חודשי עכשיו"))
     markup.add(telebot.types.KeyboardButton("📋 לוגים"), telebot.types.KeyboardButton("⬅️ חזרה לתפריט ראשי"))
     return markup
 

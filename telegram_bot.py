@@ -303,6 +303,55 @@ def handle_all_messages(message):
         return bot.send_message(chat_id, _build_health_report(),
                                 reply_markup=get_developer_menu())
 
+    # ── Sprint-17 Scope item B — on-demand report (dev/testing only) ─────────
+    # Generates the weekly/monthly report for the LAST COMPLETE period using
+    # the SAME scheduler period logic + render/deliver path (Sprint-16 graceful
+    # degradation intact). HARD: never snap_save into the real snapshot store,
+    # never touch the scheduler period-dedup (report_on_demand is read-only
+    # w.r.t. that state). Admin-gated by this dev-menu/PIN path already.
+    if text in ("📈 דוח שבועי עכשיו", "📆 דוח חודשי עכשיו"):
+        period_type = "weekly" if text == "📈 דוח שבועי עכשיו" else "monthly"
+        kind_he = "שבועי" if period_type == "weekly" else "חודשי"
+        bot.send_message(
+            chat_id,
+            f"{RTL}📊 *מפיק דוח {kind_he} (On-Demand) — לתקופה השלמה האחרונה...*\n"
+            f"{RTL}ריצת בדיקה בלבד — לא נשמר ל-snapshot ולא משפיע על הדוח המתוזמן.",
+            reply_markup=get_developer_menu(), parse_mode="Markdown",
+        )
+        _bot_log(f"On-demand {period_type} report triggered by {chat_id}")
+
+        def _run_on_demand_report_thread(_pt, _kind, _cid):
+            try:
+                import report_on_demand
+                res = report_on_demand.run_on_demand(_pt)
+                if res.get("ok"):
+                    deg = " (PDF דרדור — טקסט מלא נשלח)" if res.get("pdf_degraded") else ""
+                    bot.send_message(
+                        _cid,
+                        f"{RTL}✅ *דוח {_kind} (On-Demand) נשלח*{deg}\n"
+                        f"{RTL}תקופה: `{res.get('period_label', '—')}`\n"
+                        f"{RTL}summary={res.get('summary_ok')} · pdf={res.get('pdf_ok')}",
+                        reply_markup=get_developer_menu(), parse_mode="Markdown",
+                    )
+                else:
+                    bot.send_message(
+                        _cid,
+                        f"{RTL}❌ *דוח {_kind} (On-Demand) נכשל*\n"
+                        f"{RTL}שגיאה: `{str(res.get('error'))[:300]}`",
+                        reply_markup=get_developer_menu(), parse_mode="Markdown",
+                    )
+            except Exception as e:
+                bot.send_message(
+                    _cid, f"{RTL}❌ שגיאה בדוח On-Demand: `{str(e)[:300]}`",
+                    reply_markup=get_developer_menu(), parse_mode="Markdown",
+                )
+
+        threading.Thread(
+            target=_run_on_demand_report_thread,
+            args=(period_type, kind_he, chat_id), daemon=True,
+        ).start()
+        return
+
     if text in ["❓ עזרה", "❓ פקודות מערכת", "/help"]:
         help_txt = (
             f"{RTL}🛡️ *Sentinel — מדריך פקודות*\n"
