@@ -225,7 +225,7 @@ def _run_weekly(now: datetime):
         analytics   = compute_period_analytics(df, period_start, period_end, account)
         dev_data    = compute_trader_development_score(analytics)
         prev_snap   = load_previous("weekly", period_start)
-        comparison  = compute_period_comparison(analytics, prev_snap["analytics"]) if prev_snap else None
+        comparison  = compute_period_comparison(analytics, prev_snap) if prev_snap else None
         health      = _build_system_health()
 
         coaching = _weekly_coaching_insights(analytics)
@@ -306,7 +306,7 @@ def _run_monthly(now: datetime):
         analytics   = compute_period_analytics(df, period_start, period_end, account)
         dev_data    = compute_trader_development_score(analytics)
         prev_snap   = load_previous("monthly", period_start)
-        comparison  = compute_period_comparison(analytics, prev_snap["analytics"]) if prev_snap else None
+        comparison  = compute_period_comparison(analytics, prev_snap) if prev_snap else None
         health      = _build_system_health()
         coaching    = _monthly_coaching_insights(analytics)
         weekly_snaps = load_recent("weekly", n=5)

@@ -410,3 +410,77 @@ class TestPeriodAwareVerdict:
             {"ok": True, "campaigns_closed": 0}, "03/05–09/05", "weekly")
         assert "חודש ללא עסקאות" in txt_m
         assert "שבוע ללא עסקאות" in txt_w
+
+
+# ── Snapshot↔comparison contract (pre-existing HIGH, audit-caught) ───────────
+#
+# report_snapshot_store.save writes a FLAT analytics-keyed dict (win_rate,
+# expectancy_r, … at top level — no nested "analytics" key). report_scheduler
+# _run_weekly/_run_monthly read prev_snap["analytics"] → KeyError the moment a
+# previous snapshot exists; caught by the broad except → _notify_error, so the
+# scheduled weekly/monthly report fails ENTIRELY (not even the Sprint-16
+# graceful text — the KeyError precedes the best-effort PDF block). on-demand
+# escaped it (comparison=None). Fix: pass prev_snap directly (it already IS
+# the flat dict compute_period_comparison(current, previous) consumes).
+
+@pytest.mark.unit
+class TestSnapshotComparisonContract:
+    def test_saved_snapshot_is_directly_consumable_by_comparison(
+            self, tmp_path, monkeypatch):
+        import importlib
+        import analytics_engine as ae
+        rss = importlib.import_module("report_snapshot_store")
+        monkeypatch.setattr(rss, "_SNAP_DIR", str(tmp_path), raising=False)
+        from datetime import datetime
+        ps = datetime(2026, 4, 27)
+        pe = datetime(2026, 5, 3, 23, 59, 59)
+        analytics = {
+            "ok": True, "campaigns_closed": 5, "win_rate": 0.6,
+            "expectancy_r": 0.4, "profit_factor": 2.1, "total_r_net": 3.0,
+            "realized_pnl": 512.0, "missing_stop_rate": 0.0,
+            "oversized_rate": 0.1, "avg_r_per_day": 0.5,
+        }
+        acct = {"nav": 7921.0, "nav_source": "broker", "freshness": "x",
+                "risk_pct_input": 0.6}
+        try:
+            rss.save("weekly", ps, pe, analytics, acct, "")
+            prev = rss.load_previous(
+                "weekly", datetime(2026, 5, 4))
+        except Exception:
+            prev = dict(analytics)  # fall back to the on-disk contract shape
+        assert prev is not None
+        # The bug was prev["analytics"]; the snapshot is FLAT — assert the
+        # comparison consumes prev DIRECTLY without KeyError and yields deltas.
+        cmp = ae.compute_period_comparison(
+            {**analytics, "win_rate": 0.7}, prev)
+        assert "win_rate" in cmp and cmp["win_rate"]["previous"] == 0.6
+        assert "analytics" not in prev          # documents the flat contract
+
+    def test_scheduled_weekly_with_prior_snapshot_no_notify_error(
+            self, monkeypatch):
+        # Integration: a previous (flat) snapshot present must NOT route the
+        # scheduled weekly run to _notify_error (pre-fix: prev["analytics"]
+        # KeyError → except → notify; post-fix: prev passed through fine).
+        _patch_scheduler_deps(monkeypatch)
+        flat_prev = {
+            "period_type": "weekly", "campaigns_closed": 4, "win_rate": 0.5,
+            "expectancy_r": 0.3, "profit_factor": 1.8, "total_r_net": 2.0,
+            "realized_pnl": 300.0, "missing_stop_rate": 0.0,
+            "oversized_rate": 0.0, "avg_r_per_day": 0.4,
+        }
+        sys.modules["report_snapshot_store"].load_previous.return_value = \
+            flat_prev
+        notify = MagicMock()
+        rr_mock = MagicMock()
+        rr_mock.render_weekly.return_value = "/app/reports/weekly/x.pdf"
+        rr_mock.build_summary_text = rr.build_summary_text
+        monkeypatch.setitem(sys.modules, "report_renderer", rr_mock)
+        rd_mock = MagicMock()
+        rd_mock.deliver_report.return_value = {"summary_ok": True,
+                                               "pdf_ok": True}
+        monkeypatch.setitem(sys.modules, "report_delivery", rd_mock)
+        monkeypatch.setattr(rs, "_notify_error", notify)
+        from datetime import datetime
+        rs._run_weekly(datetime(2026, 5, 16, 8, 30))
+        notify.assert_not_called()                 # no KeyError → no error route
+        rd_mock.deliver_report.assert_called_once()
