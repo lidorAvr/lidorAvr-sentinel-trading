@@ -39,5 +39,16 @@
 ## Checkpoint
 Parent verifies: #8 isolation proven by construction (ALGO cohort physically separate; headline stats byte-identical); Governor is advisory/`Review Required` only (no ALGO instruction); thresholds trace to `ALGO_REFERENCE §6` / existing constants (none invented); backtest caveat surfaced honestly (#1); no new R/NAV/campaign math; reuses existing Day-3..16 signals not duplicates.
 
+## Scope item B (founder add-on) — On-demand report dev button
+
+Add a **developer-menu** button (+ command) that immediately generates the **weekly / monthly** report looking back at the **last COMPLETE week / last COMPLETE month** — for testing (esp. validating the Sprint-16 graceful-degradation fix without waiting for Sat 08:30 IL).
+
+**Hard constraints (verify at checkpoint):**
+- Reuse the EXISTING render+delivery path verbatim (`render_weekly`/`render_monthly` → `build_summary_text` → `report_delivery`) — **zero report content/number change**; honors the Sprint-16 graceful degradation (text + ⚠️ if PDF fails).
+- **MUST NOT mutate the scheduled report's state:** no `snap_save` into the real snapshot store, no touching the scheduler period-dedup — an on-demand test run must be read-only w.r.t. the Saturday/monthly run's "vs previous" comparison and its already-sent dedup. Either an explicit no-save/isolated path or a documented harmless mode; the real scheduled report must remain byte-identical in behaviour.
+- Period boundary = the SAME "last complete period" logic the scheduler uses (`_weekly_period` etc., report_scheduler.py:135) — do not invent a new period definition.
+- Developer-menu only (admin-gated via the existing dev-menu/PIN path); not in the normal user menu.
+- Additive: `telegram_menus.py` dev-menu entry + a handler reusing the report path; no ALGO-governance overlap (separate files/handlers from Scope A).
+
 ## Out of scope / carried
 Live Sprint 11–16 founder smoke-test (still outstanding). Deploy Sprint 15/16. SYS-BL-01 disk hygiene. Hyperscaler PR-A3+. The exposure %s in §5 are the founder's allocation guidance — informational; the Governor gates *increase decisions*, it does not auto-allocate.
