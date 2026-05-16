@@ -1261,3 +1261,19 @@ Date: 2026-05-16 (founder deployed + ran the dev-PIN Probe + on-demand reports)
 **#1 honest observation logged to the WS-C backlog (NOT reopened, NOT fixed now):** all 10 excluded ALGO campaigns show `irp=0 · sl=-1`; the probe's WS-C "recoverable-candidate" heuristic counts them (10/10, weekly 3/3) because `sl=-1 ≠ 0`. But `-1` is the ALGO "no manual stop / externally managed" SENTINEL, not a recoverable real stop. The probe is honest ("מועמד בלבד — דורש פסיקת Mark + חוזה-נתונים"), so this is not a current lie — but the eventual WS-C data contract + Mark ruling MUST explicitly exclude the `-1` sentinel from "recoverable", else a WS-C decision would be built on a false premise (a #1 risk). This is a Sprint-21-WS-A heuristic + the DEFERRED WS-C question — NOT a Sprint-23 regression; correctly NOT touched (WS-C stays DEFERRED; the probe is Sprint-23-locked byte-identical). Secondary: the 10 "⚠️ stop לא תקין — תקן entry/stop" lines on ALGO rows are expected/non-actionable (ALGO is intentionally edge-excluded per #8); the wording is mildly misleading for ALGO — pre-existing Sprint-21 behaviour, logged, not a regression.
 
 **Status:** Sprint-23 CLOSED & production-validated. Smoke-test (Sprint 11–23) fully CLOSED. WS-C carried item now annotated with the binding `-1`-sentinel constraint for whenever it is taken up.
+
+---
+
+## DEC-20260516-021 — Sprint 24: Quality Consolidation (behavior-preserving) — make the EXISTING system cleaner / more efficient / more maintainable
+
+Date: 2026-05-16
+Status: **decided (founder: "ישיבת צוות מלאה מפורטת — לא לשדרג ולהוסיף דברים אלא להפוך את הקיים לטוב/יעיל/נוח יותר"). Wave-1 = DOC-ONLY full-team audit; Wave-2 executes ONLY the founder-chosen, Mark-gated subset.**
+
+### Mandate (strict)
+NO new features. NO behavior change. NO math change. Improve EXISTING code only: remove duplication / dead code, improve reuse, efficiency, clarity, maintainability, and operational convenience — exactly the CLAUDE.md "Preferred refactor direction" (gradual extraction + tests per extraction; NEVER a giant rewrite).
+
+### Hard constraints (whole sprint)
+Byte-identical for ALL production-validated & locked paths: the Sprint-22 tz fix, the Sprint-23 probe split (loss-free, production-validated), the LOCKED `tests/test_real_data_april_regression.py`, 920be95/bcf32f5/Sprint-16..23, WS-B `unlinked_*`. No R/NAV/exposure/campaign/Expectancy math change. No Telegram admin/dev-PIN gate removal. No secure_runner bypass. No `telegram_bot.py` wholesale rewrite. No Supabase mutation from read-only flows. WS-C stays DEFERRED (incl. the logged `-1`-sentinel constraint — not addressed here). No migration/compose/schema. Every accepted change is test-backed and proven behavior-preserving. Baseline full suite **1879 passed**.
+
+### Process
+Wave-1 (parallel, DOC-ONLY) full-team audit → checkpoint → founder picks the tier to execute → Wave-2 implements ONLY that subset, Mark-gated, each with a byte-identical proof + tests → consolidation. The audit must produce concrete `file:line` evidence and a per-item risk classification (low / medium / high) — fragile-area items (engine_core, telegram_bot, NAV config) are HIGH and require explicit founder go-ahead before any edit.
