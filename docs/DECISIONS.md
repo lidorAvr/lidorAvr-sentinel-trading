@@ -893,3 +893,67 @@ The founder wants deploys under explicit control, not auto-fired by a Telegram t
 - **Install the `deploy-watcher` systemd service**: makes the Telegram button a live auto-deploy; rejected — founder wants explicit control.
 - **Both watcher + manual script**: deferred; revisit only if unattended auto-deploy is wanted later.
 - **Keep raw `docker compose up -d --build`**: rejected — it is exactly what caused the [Errno 101] stale-bridge outage this session.
+
+---
+
+## DEC-20260515-011 — Dual R: Structure R + Account R (never one conflated number)
+
+Date: 2026-05-15
+Status: decided (methodology) — Mark defines exact formulas/labels (Sprint 15 Wave 1)
+
+### Decision
+
+Every surface that shows an open-R (Telegram report, dashboard, AI-copy textbox) MUST show **two distinct, labelled metrics**, never a single number labelled with the wrong basis:
+- **Structure R** — net/open PnL ÷ the trade's **own original campaign risk** (existing `engine_core.compute_r_true`, :997).
+- **Account R** — net/open PnL ÷ the **frozen target risk** (existing `engine_core.compute_r_target`, :1004).
+
+### Rationale
+
+Founder-found defect: the report prints `RiskBasis: Target` but the OpenR is computed off original campaign risk. Live: MRVL shows 9.22R (Structure, ~$19 base) while Account R vs $47.53 target is ~3.73R; PWR 1.34R vs 0.89R; WCC 0.26R vs 0.11R. Both are true but they are different truths — collapsing them into one mislabelled number misrepresents real account impact (a "9R monster" is ~3.7R to the account).
+
+### Constraint
+
+This is a *surfacing + labelling* fix using the TWO formulas that already exist — it must introduce **no new R/NAV/campaign math** (AGENTS.md / CLAUDE.md red line). Mark (Sprint 15 Wave 1) rules the exact label strings, which existing function feeds which, and ALGO handling (ALGO has no real stop → Structure R may be N/A, Account R only). Test-gated.
+
+---
+
+## DEC-20260515-012 — Risk Capital Basis must be declared (NAV vs Base Capital)
+
+Date: 2026-05-15
+Status: decided (methodology)
+
+### Decision
+
+Wherever a target-risk $ figure is shown, the report MUST state the capital basis it was derived from: `Risk Capital Basis: NAV` or `Risk Capital Basis: Base Capital`. No silent basis.
+
+### Rationale
+
+Founder-found: $47.53 target risk is from NAV ($7,921); from Base Capital ($7,500) it would be $45.00. Not dramatic, but the reader must know which figure the system pulled from (data-source honesty — AGENTS.md #1).
+
+### Constraint
+
+Declaration/labelling only — does not change which basis the engine uses (that stays as implemented unless a separate decision changes it). Mark confirms the wording and that no number changes.
+
+---
+
+## DEC-20260515-013 — Broker Reconciliation Status (never silent on NAV vs DB gap)
+
+Date: 2026-05-15
+Status: decided (methodology)
+
+### Decision
+
+The report MUST surface a `Broker Reconciliation Status`: `Balanced` / `Minor Difference` / `Material Gap` / `Critical Data Gap`, computed from Broker NAV vs DB-derived net PnL (accounting for base capital). The system must never pass over a material discrepancy silently.
+
+### Rationale
+
+Founder-found: Broker NAV $7,921.08 (+$421.08 over $7,500 base, +5.61%) vs DB Net PnL all −$320.23 → ~$741.31 gap. Likely deposits/withdrawals/open positions/fees/revaluation or — founder's hypothesis — trades absent because the IBKR report pulls YTD only. Whatever the cause, silence is unacceptable.
+
+### Constraint
+
+Mark (Sprint 15 Wave 1) defines the band thresholds (grounded, no invented numbers) and the honest "cause unknown — verify" wording (#1, never present a guessed cause as truth). System/Infra verifies the YTD-window hypothesis. No change to NAV/PnL math — this is a derived status indicator + disclosure.
+
+### Open (NOT decided — for the Sprint 15 team meeting / pending founder input)
+
+- **ALGO Oversight Gate** (founder-proposed, "bring to team for everyone's review"): block ALGO size-up / new ALGO assets / exposure-up while ANY of {ALGO Net PnL < −5R, rolling expectancy negative over last 20–30 trades, Profit Factor < 1, Visibility < 70, stop/max-loss unknown}. → Mark evaluates methodologically in Wave 1; becomes a DEC only after founder confirmation.
+- **BLOCKED pending founder's ALGO rules** (founder will provide): ALGO open-position data quality (`State/InitStop/CurrStop unknown`, `Visibility 40/100` not good enough); strategy-adaptive "dead money" alert when no smart follow-through. Team designs the *framework to absorb* the rules; no ALGO logic invented.
