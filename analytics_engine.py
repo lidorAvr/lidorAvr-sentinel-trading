@@ -379,6 +379,15 @@ def _to_naive(ts):
 
 def _get_closed_campaigns(df: pd.DataFrame, start: datetime, end: datetime) -> pd.DataFrame:
     """Return all trades belonging to campaigns whose last SELL falls in [start, end)."""
+    # A1 (DEC-20260516-021 Tier-A, doc clarity — ADDITIVE comment ONLY;
+    # the existing one-line docstring above is byte-locked by Sprint-19
+    # `test_analytics_engine_git_diff_empty` and is NOT edited):
+    # CORRECTNESS NOTE — the docstring's "whose last SELL" wording is
+    # INACCURATE. The code below keys off ANY in-window SELL, NOT the
+    # last/max SELL: `in_period = sells[(trade_date >= start) &
+    # (trade_date < end)]`; `closed_ids = in_period["campaign_id"]
+    # .dropna().unique()`. Treat the real contract as "campaigns with
+    # ANY SELL in [start, end)". Behavior is UNCHANGED (comment-only).
     sells = df[df["side"].str.upper().eq("SELL")]
     in_period = sells[(sells["trade_date"] >= start) & (sells["trade_date"] < end)]
     if in_period.empty:
@@ -391,12 +400,22 @@ def _aggregate_campaigns(closed: pd.DataFrame, target_risk_usd: float) -> pd.Dat
     """Aggregate per-campaign metrics: net_pnl, net_r, days_held, setup_type, symbol."""
     records = []
     for cid, grp in closed.groupby("campaign_id"):
+        # A3 (DEC-20260516-021 Tier-A, comment-only): `buys` is
+        # explicitly `.sort_values("trade_date")` here, so EVERY
+        # `buys.iloc[0]` below (the `fb` first-BUY at :400 and the
+        # `entry_date` at :419) deterministically resolves to the
+        # EARLIEST BUY. This sort is a load-bearing precondition for
+        # the first-BUY entry/stop/qty basis — do not drop it.
         buys  = grp[grp["side"].str.upper().eq("BUY")].sort_values("trade_date")
         sells = grp[grp["side"].str.upper().eq("SELL")]
         if buys.empty:
             continue
 
         net_pnl = float(sells["pnl_usd"].sum())
+        # A3 (comment-only): `fb` is the FIRST BUY — `buys` is
+        # `.sort_values("trade_date")` above, so `buys.iloc[0]` here and
+        # the `entry_date = buys["trade_date"].iloc[0]` below both
+        # deterministically resolve to the earliest BUY.
         fb      = buys.iloc[0]
         entry   = float(fb["price"])
         init_sl = float(fb["initial_stop"])
@@ -412,6 +431,16 @@ def _aggregate_campaigns(closed: pd.DataFrame, target_risk_usd: float) -> pd.Dat
         # but stat_bucket is classified from the TRUE risk — otherwise the
         # fallback would mask a missing stop and misclassify a DATA_INCOMPLETE
         # campaign as countable.
+        #
+        # A3 (DEC-20260516-021 Tier-A, comment-only) INVARIANT: the
+        # `target_risk_usd` fallback can NEVER make a stop-missing
+        # campaign stat-countable. `stat_bucket` is derived ONLY from
+        # `true_orig_risk` (== 0 when the stop is missing/invalid →
+        # DATA_INCOMPLETE), so a fallback row is excluded downstream by
+        # `is_stat_countable` BEFORE it can reach WR/Exp/PF/Net-R. The
+        # fallback affects ONLY the cosmetic `net_r`/`orig_risk` display
+        # of an already-excluded row — pinned by
+        # test_missing_stop_campaign_is_data_incomplete_and_excluded.
         orig_risk = true_orig_risk if true_orig_risk > 0 else target_risk_usd
         net_r     = net_pnl / orig_risk if orig_risk > 0 else 0.0
         stat_bucket = ec.classify_stat_bucket(setup, true_orig_risk)

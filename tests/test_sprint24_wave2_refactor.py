@@ -1,0 +1,222 @@
+"""Sprint-24 Wave-2 byte-identical proofs (DEC-20260516-021).
+
+Scope SHIPPED (see docs/teams/SPRINT24_WAVE2_IMPL.md):
+  * A1/A3 — analytics_engine.py: ADDITIVE comment-only clarity. The
+    pre-existing Sprint-19/20/21/22 lock
+    `test_sprint19_headline_comparison.py::test_analytics_engine_git_diff_empty`
+    makes analytics_engine.py STRICTLY append-only with a fixed
+    allowlist — it forbids modifying ANY existing line (incl. a
+    docstring/inline-comment edit), so A1/A3 are delivered as purely
+    ADDITIVE `#` comment blocks and B1/B3 (which would remove/modify
+    executable lines) are BLOCKED by that lock and NOT shipped.
+  * B2 — report_scheduler.py: lazy module-singleton Supabase client;
+    `_fetch_trades_df` issues the SAME table/select/filter/order chain
+    and keeps the missing-creds → None and failure → None contracts.
+  * B3/B4 — SKIPPED (see impl doc). Probe keeps its own inlined copy.
+
+These tests are NAMED Ruling-3 identity proofs. No behavior/math change
+is asserted — only that the shipped path is provably equivalent.
+"""
+import os
+import subprocess
+import sys
+from datetime import datetime
+from unittest.mock import MagicMock, patch
+
+import pandas as pd
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+import report_scheduler as rs
+
+_REPO = os.path.dirname(os.path.dirname(__file__))
+
+
+# ── A1/A3 + B1/B3 — analytics_engine.py stayed STRICTLY append-only ──
+
+class TestAnalyticsEngineAppendOnly:
+    """The Sprint-19/20/21/22 lock forbids modifying any existing line.
+    Prove our analytics_engine.py diff adds ONLY `#` comment lines and
+    removes/modifies NOTHING (so A1/A3 are safe and B1/B3 stayed OUT)."""
+
+    def _diff(self):
+        return subprocess.run(
+            ["git", "diff", "--", "analytics_engine.py"],
+            cwd=_REPO, capture_output=True, text=True).stdout
+
+    def test_no_existing_line_removed_or_modified(self):
+        removed = [ln[1:] for ln in self._diff().splitlines()
+                   if ln.startswith("-") and not ln.startswith("---")
+                   and ln[1:].strip()]
+        assert removed == [], (
+            "analytics_engine.py modified/removed an existing line — "
+            f"would break the Sprint-19 additive lock: {removed}")
+
+    def test_every_added_line_is_a_comment(self):
+        added = [ln[1:] for ln in self._diff().splitlines()
+                 if ln.startswith("+") and not ln.startswith("+++")
+                 and ln[1:].strip()]
+        non_comment = [a for a in added if not a.strip().startswith("#")]
+        assert non_comment == [], (
+            "analytics_engine.py added a non-comment line — B1/B3 must "
+            f"stay OUT (blocked by the additive lock): {non_comment}")
+
+    def test_b1_b3_helpers_not_introduced(self):
+        src = open(os.path.join(_REPO, "analytics_engine.py")).read()
+        # B1 mask-once var and B3 helper were reverted (lock-blocked).
+        assert "def _coerce_numeric(" not in src
+        # original twice-applied mask + inlined coerce loop intact
+        assert "countable = campaigns[bucket.apply(ec.is_stat_countable)]" in src
+        assert "excluded  = campaigns[~bucket.apply(ec.is_stat_countable)]" in src
+        assert ('for col in ("price", "quantity", "stop_loss", '
+                '"initial_stop", "pnl_usd"):') in src
+
+    def test_period_data_probe_byte_locked_untouched(self):
+        out = subprocess.run(
+            ["git", "diff", "--", "period_data_probe.py"],
+            cwd=_REPO, capture_output=True, text=True).stdout
+        assert out == "", "period_data_probe.py must be byte-identical"
+        # probe keeps its OWN inlined coerce (B3 SKIPPED, not rewired)
+        psrc = open(os.path.join(_REPO, "period_data_probe.py")).read()
+        assert "_coerce_numeric" not in psrc
+
+    def test_engine_core_untouched(self):
+        out = subprocess.run(
+            ["git", "diff", "--", "engine_core.py"],
+            cwd=_REPO, capture_output=True, text=True).stdout
+        assert out == "", "engine_core.py must be untouched"
+
+
+# ── B2 — lazy Supabase client singleton + unchanged-fetch contract ──
+
+class _FakeResp:
+    def __init__(self, data):
+        self.data = data
+
+
+class _FakeTable:
+    """Records the exact query chain so we can assert it is unchanged."""
+
+    def __init__(self, log):
+        self._log = log
+
+    def select(self, *a):
+        self._log.append(("select", a))
+        return self
+
+    def gte(self, *a):
+        self._log.append(("gte", a))
+        return self
+
+    def lte(self, *a):
+        self._log.append(("lte", a))
+        return self
+
+    def order(self, *a, **kw):
+        self._log.append(("order", a, kw))
+        return self
+
+    def execute(self):
+        self._log.append(("execute",))
+        return _FakeResp([{"trade_id": "t1", "trade_date": "2026-04-10",
+                           "side": "SELL", "pnl_usd": 1.0}])
+
+
+class _FakeClient:
+    instances = 0
+
+    def __init__(self):
+        _FakeClient.instances += 1
+        self.query_log = []
+
+    def table(self, name):
+        self.query_log.append(("table", name))
+        return _FakeTable(self.query_log)
+
+
+@pytest.fixture(autouse=True)
+def _reset_singleton():
+    rs._SB_CLIENT = None
+    rs._SB_CLIENT_KEY = None
+    yield
+    rs._SB_CLIENT = None
+    rs._SB_CLIENT_KEY = None
+
+
+class TestB2ClientSingleton:
+    def test_get_supabase_client_caches_per_key(self):
+        with patch("supabase.create_client") as cc:
+            cc.side_effect = lambda u, k: MagicMock(name=f"client::{u}::{k}")
+            c1 = rs._get_supabase_client("u", "k")
+            c2 = rs._get_supabase_client("u", "k")
+            assert c1 is c2
+            assert cc.call_count == 1  # built ONCE, reused
+
+    def test_get_supabase_client_rebuilds_on_key_change(self):
+        with patch("supabase.create_client") as cc:
+            cc.side_effect = lambda u, k: MagicMock(name=f"{u}:{k}")
+            c1 = rs._get_supabase_client("u1", "k1")
+            c2 = rs._get_supabase_client("u2", "k2")
+            assert c1 is not c2
+            assert cc.call_count == 2
+
+    def test_fetch_trades_df_query_chain_unchanged(self, monkeypatch):
+        monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
+        monkeypatch.setenv("SUPABASE_KEY", "anon-key")
+        _FakeClient.instances = 0
+        fake = _FakeClient()
+        with patch("dotenv.load_dotenv", lambda *a, **k: None), \
+             patch("supabase.create_client", return_value=fake):
+            ps = datetime(2026, 4, 1)
+            pe = datetime(2026, 4, 30)
+            df1 = rs._fetch_trades_df(ps, pe)
+            df2 = rs._fetch_trades_df(ps, pe)
+        # client built ONCE despite two fetches (singleton reuse)
+        assert _FakeClient.instances == 1
+        assert rs._SB_CLIENT is fake
+        assert isinstance(df1, pd.DataFrame) and isinstance(df2, pd.DataFrame)
+        # exact query chain preserved: 8-week lookback, select *, gte/lte, asc
+        lookback = (ps - pd.Timedelta(weeks=8)).strftime("%Y-%m-%d")
+        end_str = pe.strftime("%Y-%m-%d")
+        log = fake.query_log
+        assert ("table", "trades") in log
+        assert ("select", ("*",)) in log
+        assert ("gte", ("trade_date", lookback)) in log
+        assert ("lte", ("trade_date", end_str)) in log
+        assert ("order", ("trade_date",), {"desc": False}) in log
+
+    def test_fetch_trades_df_missing_creds_returns_none(self, monkeypatch):
+        monkeypatch.delenv("SUPABASE_URL", raising=False)
+        monkeypatch.delenv("SUPABASE_KEY", raising=False)
+        with patch("dotenv.load_dotenv", lambda *a, **k: None):
+            out = rs._fetch_trades_df(datetime(2026, 4, 1),
+                                      datetime(2026, 4, 30))
+        assert out is None  # unchanged missing-creds contract
+
+    def test_fetch_trades_df_failure_returns_none(self, monkeypatch):
+        monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
+        monkeypatch.setenv("SUPABASE_KEY", "anon-key")
+        with patch("dotenv.load_dotenv", lambda *a, **k: None), \
+             patch("supabase.create_client", side_effect=RuntimeError("boom")):
+            out = rs._fetch_trades_df(datetime(2026, 4, 1),
+                                      datetime(2026, 4, 30))
+        assert out is None  # unchanged failure → None contract
+
+    def test_fetch_trades_df_empty_data_returns_empty_df(self, monkeypatch):
+        monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
+        monkeypatch.setenv("SUPABASE_KEY", "anon-key")
+
+        class _EmptyTable(_FakeTable):
+            def execute(self):
+                return _FakeResp([])
+
+        class _EmptyClient(_FakeClient):
+            def table(self, name):
+                self.query_log.append(("table", name))
+                return _EmptyTable(self.query_log)
+
+        with patch("dotenv.load_dotenv", lambda *a, **k: None), \
+             patch("supabase.create_client", return_value=_EmptyClient()):
+            out = rs._fetch_trades_df(datetime(2026, 4, 1),
+                                      datetime(2026, 4, 30))
+        assert isinstance(out, pd.DataFrame) and out.empty

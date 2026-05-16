@@ -110,16 +110,53 @@ def _mark_ran(state: dict, key: str, today_str: str):
 
 # ── Supabase data pull ─────────────────────────────────────────────────────────
 
+# B2 (DEC-20260516-021 Tier-B): lazy module-singleton Supabase client.
+# `_fetch_trades_df` previously rebuilt `load_dotenv()` + `create_client()`
+# on EVERY call. The client is now built ONCE (per (url,key)) and reused.
+# Behavior-preserving: `load_dotenv()` + the `os.environ` reads + the
+# missing-creds → log+None contract stay PER-CALL (a late-set env still
+# works, the None-on-missing-creds branch is unchanged); only the
+# successfully-built `create_client(url,key)` object is cached. Same
+# url/key/credentials → identical client → identical query/lookback/
+# ordering/data. The whole path stays inside the caller's try/except so
+# the None/empty-on-failure contract is untouched.
+_SB_CLIENT = None
+_SB_CLIENT_KEY = None
+
+
+def _get_supabase_client(url: str, key: str):
+    """Return a cached Supabase client for (url, key), building it once.
+
+    Pure structural memoization of `create_client(url, key)`: the first
+    call with a given (url, key) builds and caches the client; subsequent
+    calls with the SAME (url, key) return the SAME object. WHAT is fetched
+    (table/select/filters/order) is decided entirely by the caller and is
+    unchanged. Raises exactly as `create_client` would (the caller's
+    try/except preserves the failure → None contract).
+    """
+    global _SB_CLIENT, _SB_CLIENT_KEY
+    if _SB_CLIENT is not None and _SB_CLIENT_KEY == (url, key):
+        return _SB_CLIENT
+    from supabase import create_client
+    _SB_CLIENT = create_client(url, key)
+    _SB_CLIENT_KEY = (url, key)
+    return _SB_CLIENT
+
+
 def _fetch_trades_df(period_start: datetime, period_end: datetime):
     """
-    Pull trades from Supabase for the given period (with a 4-week lookback for
+    Pull trades from Supabase for the given period (with an 8-week lookback for
     open positions that closed within the period).
     Returns a pandas DataFrame or None on failure.
+
+    A2 (DEC-20260516-021 Tier-A, doc-only): the prior wording said
+    "4-week" but the code is `period_start - timedelta(weeks=8)` (the
+    production-validated DEC-20260516-020 April-reconcile value — do
+    NOT change the weeks=8 behavior). Doc corrected to match code.
     """
     try:
         import pandas as pd
         from dotenv import load_dotenv
-        from supabase import create_client
 
         load_dotenv()
         url = os.environ.get("SUPABASE_URL", "")
@@ -128,7 +165,7 @@ def _fetch_trades_df(period_start: datetime, period_end: datetime):
             log("ERROR: SUPABASE_URL or SUPABASE_KEY not set")
             return None
 
-        sb = create_client(url, key)
+        sb = _get_supabase_client(url, key)
         lookback = period_start - timedelta(weeks=8)
         lookback_str = lookback.strftime("%Y-%m-%d")
         period_end_str = period_end.strftime("%Y-%m-%d")
