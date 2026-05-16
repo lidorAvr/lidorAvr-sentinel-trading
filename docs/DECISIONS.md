@@ -1126,3 +1126,29 @@ Build a strictly **read-only, admin-gated** diagnostic surfacing the FULL trades
 - **Admin protection preserved (AGENTS.md / CLAUDE.md):** wire ONLY via the EXISTING dev-menu admin/PIN gate; do NOT remove admin protection, do NOT bypass `telegram_bot_secure_runner.py`, do NOT rewrite `telegram_bot.py` wholesale — minimal additive handler + one menu entry.
 - No secrets in output (no account numbers / tokens / NAV-source internals beyond what existing reports already show).
 - Preserve 920be95 / bcf32f5 / Sprint-16 / Sprint-18 period-scoping / Sprint-19 / Sprint-20 disclosure. No migration / compose / secure_runner change.
+
+---
+
+## DEC-20260516-018 — UPDATE: engine PROVEN CORRECT on real data → production "0" is a DATA-DELIVERY gap
+
+Date: 2026-05-16
+Status: **RCA decisive. Report logic exonerated by real-data reproduction. Sprint-21 probe re-targeted to the LIVE fetch path.**
+
+### Decisive reproduction (founder dumped full `trades` table; ran the REAL code)
+
+`tests/test_real_data_april_regression.py` runs the REAL `compute_period_analytics` on the founder's verbatim rows:
+
+- **April 2026 → `campaigns_closed=8`, `realized_pnl=+$180.49`, win_rate 37.5%, expectancy +1.07R, PF 2.63, net_r +8.59** (CVX/DAR/RVMD×2/MTZ/NEE/INTC/AXGN — manual EP/VCP, valid stops, correctly countable). Excluded split correct: AEHR +69.34 (stop 68.4 ABOVE entry 60.3 → DATA_INCOMPLETE, founder data-entry error — real stop is in `initial_risk_price` 54.85), TSLA -48.905 (ALGO).
+- **Weekly 03–09/05 → `campaigns_closed=0` (correct, all 3 closes are ALGO #8), `excluded_count_algo=3`, `excluded_pnl_algo=-$37.23`.**
+
+### Conclusion (evidence-based, ends the speculation)
+
+The analytics/classification/Sprint-20-split logic is **CORRECT**. Given the founder's data it returns 8 closed / +$180 for April. Therefore the production report's "0 קמפיינים" is **NOT** a logic/display defect — the live report run is **not receiving these rows** (`report_scheduler._fetch_trades_df` → Supabase returns empty/partial/None at report time, OR the on-demand path's data input differs from the DB state). Sprint 17–20 display fixes were all correct and necessary; they could never resolve "0" because the *input* is empty in production, not the math.
+
+Corroborating real data issues (independent of the delivery gap):
+- Trades from 2026-05-11+ (`9476246095`…, incl. CAT SELL 05-15 +13.71) have **`campaign_id=null`** → silently dropped both views (still a real fix: surface/repair null-linkage).
+- AEHR-class campaigns: `initial_stop` holds a value ABOVE entry (real stop sits in `initial_risk_price`) → correctly DATA_INCOMPLETE; founder-side data correction OR a future ruling on `initial_risk_price` fallback (campaign-math → Mark-gated, separate).
+
+### Sprint-21 re-target (no logic change)
+
+The read-only admin-gated probe must run **inside the live environment** and report, for the on-demand weekly/monthly windows: `_fetch_trades_df` row count, `trade_date` min/max, #SELL in-window, #closed campaigns the real pipeline computes, per-campaign classification (campaign_id/setup/initial_stop/original_risk+valid+reason/bucket/countable/net_pnl), and in-window NULL-`campaign_id` count. This catches the production data-delivery gap definitively. Still strictly read-only, existing admin/PIN gate, no campaign-math, no Supabase write.
