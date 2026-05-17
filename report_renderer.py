@@ -121,6 +121,72 @@ _UNLINKED_LINE = (
 # ALGO observation-only caveat — reuse the canonical Sprint-18 constant
 # (report_open_book.ALGO_EXTERNAL_CAVEAT) so the wording is identical.
 
+# ── Sprint-25 B1 (CLOSURE-FIX, founder-authorized — Telegram P0-1 / Data
+# F1+F2 / MARK_SPRINT25 Tier-B) — NAV source/freshness/fallback honesty line
+# for the Telegram summary itself. Until now ONLY the PDF carried the
+# `nav_source`/`freshness_label`/`is_stale` signal (report_renderer.py:586-590
+# → templates); the Telegram text — and crucially the PDF-DEGRADED text-only
+# path (report_scheduler Sprint-16 WeasyPrint OSError branch) + the on-demand
+# path — disclosed NOTHING, so a fallback $7,500 NAV silently drove every
+# R/Net-R/Expectancy KPI while a trailer called the text "הקובע והמלא"
+# (the exact CLAUDE.md "do not silently present fallback data as exact truth"
+# red line; DATA_CONTRACTS §NAV rule 2). This line reads ONLY the existing
+# `account_state.load()` fields (no invented field, no math): it reuses the
+# already-honest `freshness_label` string verbatim and states plainly that the
+# KPIs above are derived from this NAV. It is shown ONLY when NAV is NOT
+# broker+fresh (fallback / stale / critical / unknown / non-broker / not-ok);
+# on the broker+fresh happy path the disclosure is ABSENT ⇒ the summary is
+# byte-identical to pre-B1 (LOCKED April + every existing renderer test
+# unchanged). Additive disclosure — ZERO analytics_engine.py / KPI-math change.
+_NAV_FALLBACK_DISCLOSURE = (
+    "⚠️ *שים לב — NAV לא חי*: {label}\n"
+    "מקור NAV: `{source}` · ה-KPI לעיל (R/Net-R/Expectancy/Sizing) מחושבים "
+    "מ-NAV זה — מוערך/לא-עדכני, לא נתון מדויק."
+)
+
+
+def _nav_disclosure_lines(account_state: Optional[dict]) -> list:
+    """Sprint-25 B1 — the NAV source/freshness/fallback disclosure line(s).
+
+    PURE presentation; reads ONLY the fields `account_state.load()` already
+    exposes (`nav_source` ∈ {"broker","deposited","fallback"}, `freshness` ∈
+    {"fresh","stale","critical","unknown"}, `freshness_label`, `is_stale`,
+    `ok`) — invents NO field and performs NO R/NAV/Expectancy math.
+
+    Disclosure GATE (#1 / accuracy > confidence): shown ONLY when the NAV that
+    drove the KPIs is NOT a fresh broker NAV — i.e. `nav_source != "broker"`
+    (deposited/fallback/default) OR `is_stale` OR `freshness != "fresh"` OR
+    `ok` is False. On the broker+fresh happy path it returns `[]` so
+    `build_summary_text` stays BYTE-IDENTICAL to pre-B1 (the LOCKED April
+    regression + every existing renderer test use a broker+fresh test account
+    or omit `account_state` entirely ⇒ unchanged). `account_state=None`
+    (every legacy caller / test) ⇒ `[]` ⇒ byte-identical.
+
+    Reuses the already-honest `freshness_label` (e.g. "🟠 Fallback NAV — …",
+    "🟡 NAV ישן (…)", "🔴 NAV קריטי (…)") verbatim — no new wording invented.
+    """
+    acc = account_state if isinstance(account_state, dict) else None
+    if not acc:
+        return []
+    nav_source = str(acc.get("nav_source", "") or "")
+    freshness  = str(acc.get("freshness", "") or "")
+    is_stale   = bool(acc.get("is_stale", False))
+    ok         = bool(acc.get("ok", True))
+    # Happy path = a FRESH BROKER NAV that loaded ok. Anything else (deposited
+    # / fallback / stale / critical / unknown / not-ok) is disclosed.
+    broker_fresh = (
+        nav_source == "broker" and freshness == "fresh"
+        and not is_stale and ok
+    )
+    if broker_fresh:
+        return []
+    label = (acc.get("freshness_label")
+             or "").strip() or "NAV מקור/עדכניות לא ודאיים"
+    return [
+        "",
+        _NAV_FALLBACK_DISCLOSURE.format(label=label, source=nav_source or "—"),
+    ]
+
 
 def compute_period_average(snapshots: Optional[list],
                            n: int = _PERIOD_AVG_MIN_N) -> dict:
@@ -315,9 +381,27 @@ def build_summary_text(
     mark_delta: Optional[dict] = None,
     period_average: Optional[dict] = None,
     open_book_history: Optional[dict] = None,
+    account_state: Optional[dict] = None,
 ) -> str:
     """
     Build the short Telegram summary message sent before the PDF.
+
+    Sprint-25 B1 (CLOSURE-FIX, founder-authorized — Telegram P0-1 / Data
+    F1+F2): `account_state` is an ADDITIVE optional dict (the same dict
+    `account_state.load()` returns; default None ⇒ byte-identical for every
+    legacy caller/test that does not pass it). When supplied AND the NAV is
+    NOT a fresh broker NAV, a single honest NAV source/freshness/fallback
+    disclosure line is appended so the Telegram text itself — including the
+    PDF-degraded text-only path and the on-demand path — never presents a
+    fallback/stale/estimated $7,500-class NAV (which silently drives every
+    R/Net-R/Expectancy KPI) as exact truth (CLAUDE.md hard constraint;
+    DATA_CONTRACTS §NAV rule 2). On the broker+fresh happy path the line is
+    ABSENT ⇒ byte-identical to pre-B1. Additionally, in the 0-closed /
+    empty-state branch the ALREADY-computed per-symbol price-fallback warning
+    (`⚠️ מחיר לא חי (לפי כניסה)`) is now surfaced too — that branch showed
+    `מקור: Cached` but never the symbol list, so a price-fallback position's
+    fabricated $0 floating read as a real cached quote (P0-1). ZERO
+    analytics_engine.py / KPI-math change — disclosure/presentation only.
 
     risk_rec: optional adaptive-risk recommendation dict (from
     adaptive_risk_engine.compute_adaptive_risk). When provided, a heat-score
@@ -358,6 +442,15 @@ def build_summary_text(
             f"",
         ]
         head += rob.empty_state_lines(open_book, period_label)
+        # Sprint-25 B1 (Telegram P0-1) — the empty-state lines above carry the
+        # bare "מקור: Cached" token but NEVER the per-symbol list, so a
+        # price-fallback position's fabricated $0 floating ((entry-entry)*qty)
+        # reads as a real cached quote on the founder's exact 0-closed
+        # decision surface. Surface the ALREADY-computed per-symbol warning
+        # here too (verbatim Sprint-18 wording via the single-source helper;
+        # NO open-book figure changed — disclosure only). [] when no symbol
+        # fell back ⇒ byte-identical when every price is live.
+        head.extend(rob.price_fallback_warning_lines(open_book))
         # Sprint-19 §2 — additive open-book cross-period context (ALGO
         # segregated, baseline-pending honest). Realized vs-average is
         # absent here because campaigns_closed == 0 (no realized to compare).
@@ -387,6 +480,12 @@ def build_summary_text(
         # additive to the open-book + excluded lines above. The open-book
         # (BUY-side) unlinked line is appended in the open-book section below.
         head.extend(_summary_unlinked_lines(analytics))
+        # Sprint-25 B1 — NAV source/freshness/fallback honesty. [] (⇒
+        # byte-identical) on the broker+fresh happy path and for every legacy
+        # caller (account_state=None). The 0-closed empty-state banner above
+        # shows the open-book "מקור" token but NOTHING about the NAV that the
+        # excluded/unlinked realized figures are still risk-scaled against.
+        head.extend(_nav_disclosure_lines(account_state))
         if risk_rec is not None:
             from telegram_formatters import fmt_heat_thermometer
             head.append("")
@@ -461,6 +560,14 @@ def build_summary_text(
         ob_unl = _summary_unlinked_open_lines(analytics)
         if ob_unl:
             lines.extend(ob_unl)
+    # Sprint-25 B1 — NAV source/freshness/fallback honesty, ADDITIVE after the
+    # realized KPI + disclosure blocks and before the heat thermometer. The
+    # KPI lines above (Realized PnL / Net R / Expectancy / Sizing) are all
+    # risk-scaled off `account_state["nav"]`; when that NAV is fallback/stale/
+    # estimated this line says so explicitly. [] ⇒ byte-identical on the
+    # broker+fresh happy path and for every legacy caller (account_state=None)
+    # — keeps the LOCKED April regression + all existing renderer tests intact.
+    lines.extend(_nav_disclosure_lines(account_state))
     if risk_rec is not None:
         from telegram_formatters import fmt_heat_thermometer
         lines.append("")

@@ -354,11 +354,19 @@ def _run_weekly(now: datetime):
 
         period_label = f"{period_start.strftime('%d/%m')}–{period_end.strftime('%d/%m/%Y')}"
         risk_rec     = _compute_risk_rec(df, account)
+        # Sprint-25 B1 — pass the SAME `account` dict acc_mod.load() returned
+        # (already used for the PDF freshness banner) so the Telegram summary
+        # itself discloses a fallback/stale/non-broker NAV. Critically this
+        # makes the disclosure part of `summary_text` BEFORE the degraded
+        # trailer is appended, so the PDF-DEGRADED text-only path (the
+        # WeasyPrint OSError branch) is covered too — a fallback NAV is never
+        # delivered as "הקובע והמלא" without the honesty line (Data F1/F2).
         summary_text = build_summary_text(analytics, period_label, "weekly",
                                           risk_rec=risk_rec, open_book=open_book,
                                           mark_delta=mark_delta,
                                           period_average=period_avg,
-                                          open_book_history=ob_history)
+                                          open_book_history=ob_history,
+                                          account_state=account)
         if pdf_degraded:
             summary_text = f"{summary_text}\n\n{_DEGRADED_PDF_NOTE}"
         caption      = f"📊 Sentinel Weekly Report | {period_label}"
@@ -464,11 +472,14 @@ def _run_monthly(now: datetime):
                        "יולי","אוגוסט","ספטמבר","אוקטובר","נובמבר","דצמבר"]
         period_label = f"{month_names[period_start.month - 1]} {period_start.year}"
         risk_rec     = _compute_risk_rec(df, account)
+        # Sprint-25 B1 — same NAV-honesty wiring as weekly (covers the
+        # PDF-degraded text-only path; Data F1/F2).
         summary_text = build_summary_text(analytics, period_label, "monthly",
                                           risk_rec=risk_rec, open_book=open_book,
                                           mark_delta=mark_delta,
                                           period_average=period_avg,
-                                          open_book_history=ob_history)
+                                          open_book_history=ob_history,
+                                          account_state=account)
         if pdf_degraded:
             summary_text = f"{summary_text}\n\n{_DEGRADED_PDF_NOTE}"
         caption      = f"📊 Sentinel Monthly Report | {period_label}"

@@ -377,12 +377,30 @@ def open_book_summary_lines(open_book: dict) -> list:
         lines.append(
             f"🆕 מתוכן `{t['n_opened_total']}` נפתחו בתקופה זו"
         )
-    fb = open_book.get("open_book_price_fallback_syms") or []
-    if fb:
-        lines.append(
-            f"⚠️ מחיר לא חי (לפי כניסה): `{', '.join(fb)}`"
-        )
+    lines.extend(price_fallback_warning_lines(open_book))
     return lines
+
+
+def price_fallback_warning_lines(open_book: Optional[dict]) -> list:
+    """Sprint-25 B1 — the ALREADY-computed per-symbol price-fallback warning
+    line, as a single-source helper.
+
+    PURE presentation. Returns the EXACT `⚠️ מחיר לא חי (לפי כניסה)` line that
+    `open_book_summary_lines` has emitted since Sprint-18 (verbatim same text /
+    format — nothing invented) whenever ≥1 open position's live quote was
+    `None` and its price fell back to entry (`open_book_price_fallback_syms`,
+    computed in `build_open_book:236-245,313-321`). It NEVER touches any
+    open-book figure (disclosure only). Returns [] when no symbol fell back ⇒
+    callers stay byte-identical when every price is live.
+
+    Extracted so the 0-closed / empty-state branch of
+    `report_renderer.build_summary_text` can surface the SAME warning (Telegram
+    P0-1: that branch shows `מקור: Cached` but never the per-symbol list, so a
+    fabricated $0 floating reads as a real cached quote)."""
+    fb = (open_book or {}).get("open_book_price_fallback_syms") or []
+    if not fb:
+        return []
+    return [f"⚠️ מחיר לא חי (לפי כניסה): `{', '.join(fb)}`"]
 
 
 _UNLINKED_OPEN_LINE = (

@@ -217,12 +217,19 @@ def run_on_demand(period_type: str, now: datetime = None,
         #    scheduler period-dedup. The real scheduled run is byte-identical.
 
         risk_rec = sched._compute_risk_rec(df, account)
+        # Sprint-25 B1 — pass the SAME `account` dict so the on-demand path
+        # (dev-menu, esp. the Sprint-16 degraded-path validation button)
+        # discloses a fallback/stale/non-broker NAV exactly like the
+        # scheduled path. The disclosure is part of `summary_text` BEFORE the
+        # degraded trailer ⇒ the on-demand PDF-degraded text-only path is
+        # covered too (Data F1/F2).
         summary_text = build_summary_text(analytics, period_label,
                                           period_type, risk_rec=risk_rec,
                                           open_book=open_book,
                                           mark_delta=mark_delta,
                                           period_average=period_avg,
-                                          open_book_history=ob_history)
+                                          open_book_history=ob_history,
+                                          account_state=account)
         if pdf_degraded:
             summary_text = f"{summary_text}\n\n{sched._DEGRADED_PDF_NOTE}"
 
