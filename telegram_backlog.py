@@ -7,6 +7,7 @@ Dependencies are passed via module-level singletons from bot_core.
 from telebot import types
 import engine_core as ec
 import supabase_repository as repo
+import telegram_formatters as tf
 from bot_core import bot, supabase, user_state
 from telegram_menus import get_main_menu, get_setup_keyboard, get_rating_keyboard
 
@@ -89,8 +90,17 @@ def get_next_missing(chat_id):
                 markup = types.InlineKeyboardMarkup()
                 markup.add(types.InlineKeyboardButton(text="⏭️ דילוג / ללא סטופ",
                                                        callback_data=f"v|{t_id}|initial_stop|-1"))
+                # Sprint-13 / Mark §2 (:54-58, :74-80): the open-position
+                # missing-stop surfaces ONLY via this EXISTING journal-backlog
+                # prompt, which writes ONLY the founder-typed price or the
+                # existing -1 skip sentinel (callback above) — NEVER a
+                # fabricated/defaulted value. Mark's VERBATIM Hebrew
+                # (tf.MISSING_STOP_BACKLOG_HE) makes the no-fabrication /
+                # not-counted-until-complete contract explicit to the founder.
+                mark_he = tf.MISSING_STOP_BACKLOG_HE.format(SYMBOL=symbol)
                 bot.send_message(chat_id,
-                                 f"{card}\n🎯 *מהו הסטופ ההתחלתי? (Initial Stop)*\n"
+                                 f"{card}\n{mark_he}\n"
+                                 f"🎯 *מהו הסטופ ההתחלתי? (Initial Stop)*\n"
                                  f"יש להקליד כעת את מחיר הסטופ המקורי (למשל 150.50).",
                                  reply_markup=markup, parse_mode="Markdown")
                 user_state[chat_id] = {'action': 'initial_stop', 't_id': t_id}

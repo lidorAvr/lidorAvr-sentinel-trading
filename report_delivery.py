@@ -25,7 +25,10 @@ def send_pdf(pdf_path: str, caption: str, chat_id: str, token: str) -> bool:
     Send a PDF document via sendDocument.
     Returns True on success, False after all retries fail.
     """
-    if not os.path.exists(pdf_path):
+    # Sprint 16: the degraded (text-only) path passes a falsy value ("") for
+    # pdf_path. Guard against a falsy/None path BEFORE os.path.exists, which
+    # would raise TypeError on os.path.exists(None). Falsy path → no PDF to send.
+    if not pdf_path or not os.path.exists(pdf_path):
         return False
     url = _TELEGRAM_API.format(token=token, method="sendDocument")
     for attempt, wait in enumerate([0] + _RETRY_WAIT, start=1):

@@ -72,7 +72,8 @@ def handle_drilldown(chat_id, symbol):
         mgt_state  = open_pos.get('management_state', 'full_position')
         entry_date = open_pos['entry_date']
         curr = ec.get_live_price(symbol)
-        if curr is None:
+        price_is_fallback = curr is None
+        if price_is_fallback:
             curr = entry
 
         account_settings = get_account_settings()
@@ -144,6 +145,12 @@ def handle_drilldown(chat_id, symbol):
         if data['issues']:
             rep += f"\n{RTL}⚠️ *אזהרות:* {', '.join(data['issues'])}\n"
 
+        if price_is_fallback:
+            # Sprint-12 / Mark §3 — this card's current price / weight / P&L
+            # all derive from entry-as-price because ec.get_live_price()
+            # returned None. Honest label only (no number recomputed).
+            rep += f"\n{RTL}_{tf.PRICE_FALLBACK_LABEL}_\n"
+
         bot.edit_message_text(rep, chat_id, msg_id, parse_mode="Markdown")
 
     except Exception as e:
@@ -167,10 +174,17 @@ def handle_market_regime(chat_id):
 
         exp = {"ALGO": 0, "VCP": 0, "EP": 0, "OTHER": 0}
         open_r_regime = []
+        # Sprint-12 / Mark §3 — symbols whose price fell back because
+        # ec.get_live_price() returned None (binary on the ACTUAL None — the
+        # legacy `or` also caught a falsy 0, so detect None explicitly).
+        regime_fallback_syms = []
         if not open_pos.empty:
             for _, row in open_pos.iterrows():
                 sym, setup = row["symbol"], str(row["setup_type"]).upper()
-                curr = ec.get_live_price(sym) or float(row["price"])
+                _live = ec.get_live_price(sym)
+                if _live is None:
+                    regime_fallback_syms.append(sym)
+                curr = _live or float(row["price"])
                 val = curr * float(row["quantity"])
                 if setup in exp:
                     exp[setup] += val
@@ -190,6 +204,11 @@ def handle_market_regime(chat_id):
 
         if nav_stale_label:
             rep += f"\n\n⚠️ _{nav_stale_label}_"
+        if regime_fallback_syms:
+            # Sprint-12 / Mark §3 — honest aggregate notice (label only; the
+            # exposure/R numbers above used entry-as-price for these symbols).
+            _rfb = ", ".join(sorted(set(regime_fallback_syms)))
+            rep += f"\n\n{RTL}{tf.PRICE_FALLBACK_LABEL}\n{RTL}_חל על: {_rfb}_"
 
         try:
             current_risk_pct = float(account_settings.get("risk_pct_input", 0.5))
@@ -236,6 +255,10 @@ def handle_portfolio_room(chat_id):
         algo_count = 0
         active_symbols = []
         open_r_vals = []  # running R for each open position → fed into adaptive risk
+        # Sprint-12 / Mark §3 — symbols whose current price fell back to entry
+        # because ec.get_live_price() returned None (per-figure, binary on the
+        # actual None — never a guess). Drives the honest fallback label.
+        price_fallback_syms = []
 
         msg = f"{RTL}🔭 *חדר מצב - דו\"ח ריכוז פוזיציות:*\n\n"
 
@@ -254,8 +277,10 @@ def handle_portfolio_room(chat_id):
             base_qty   = row.get('base_qty', init_qty)
 
             curr = ec.get_live_price(sym)
-            if curr is None:
+            price_is_fallback = curr is None
+            if price_is_fallback:
                 curr = entry
+                price_fallback_syms.append(sym)
 
             open_pnl_usd = (curr - entry) * qty
             pos_value = curr * qty
@@ -277,6 +302,26 @@ def handle_portfolio_room(chat_id):
             total_campaign_r = (total_pos_profit / target_risk_usd) if str(setup).upper() == 'ALGO' and target_risk_usd > 0 else ((total_pos_profit / original_campaign_risk) if original_campaign_risk > 0 else 0)
             open_r_val = (open_pnl_usd / target_risk_usd) if str(setup).upper() == 'ALGO' and target_risk_usd > 0 else ((open_pnl_usd / original_campaign_risk) if original_campaign_risk > 0 else 0)
             open_r_vals.append(open_r_val)
+
+            # Sprint-15 / DEC-20260515-011 — dual-R via the EXISTING engine
+            # functions called with the SAME inputs as the inline expression
+            # above (no new R math). Structure R (manual primary, byte-identical
+            # to today's open_r_val) and Account R, formatted via the single
+            # canonical helper (produce-once, consume-thrice).
+            _is_algo_pos = str(setup).upper() == 'ALGO'
+            _structure_r = ec.compute_r_true(open_pnl_usd, original_campaign_risk)
+            _account_r   = ec.compute_r_target(open_pnl_usd, target_risk_usd)
+            _r_basis = tf.dual_r_basis(
+                original_campaign_risk=original_campaign_risk,
+                frozen_target_risk_usd=target_risk_usd,
+                is_algo=_is_algo_pos,
+            )
+            _dual_r_frag = tf.fmt_dual_r(
+                _structure_r, _account_r,
+                structure_valid=_r_basis["structure_valid"],
+                account_valid=_r_basis["account_valid"],
+                is_algo=_is_algo_pos,
+            )
 
             engine_res = ec.evaluate_position_engine(
                 symbol=sym, entry_price=entry, entry_date_str=entry_date,
@@ -314,15 +359,20 @@ def handle_portfolio_room(chat_id):
                 algo_count += 1
                 total_algo_pnl += open_pnl_usd
                 total_algo_exposure += pos_value
-                open_r_str = f"`{open_r_val:.1f}R` *(Target Risk Base)*"
+                # Sprint-15 / Mark §1: the conflated single Open-R + standalone
+                # `בסיס R` display token is replaced by the canonical dual-R
+                # fragment (ALGO ⇒ Structure R = `—` "no real stop", Account R
+                # only — never 0.00R). `risk_basis` stays an internal field.
+                open_r_str = _dual_r_frag
                 e_data = engine_res.get("data") or {}
                 risk_basis = e_data.get("risk_basis", "Target")
                 risk_vis   = e_data.get("risk_visibility_score", 40)
 
                 msg += f"{RTL}*{i}. {sym}* | 🏷️ ALGO | 🟠 מנוהל חיצונית\n"
                 msg += f"{RTL}   ▸ ותק: `{days_held}` ימים | כמות: {qty_text}\n"
-                msg += f"{RTL}   ▸ כניסה: {entry_text} | נוכחי: `${curr:.2f}`\n"
-                msg += f"{RTL}   ▸ סטופ: מנוהל חיצונית | בסיס R: `{risk_basis}` | שקיפות סיכון: `{risk_vis}/100`\n"
+                _algo_fb = f" {tf.PRICE_FALLBACK_LABEL}" if price_is_fallback else ""
+                msg += f"{RTL}   ▸ כניסה: {entry_text} | נוכחי: `${curr:.2f}`{_algo_fb}\n"
+                msg += f"{RTL}   ▸ סטופ: מנוהל חיצונית | שקיפות סיכון: `{risk_vis}/100`\n"
                 msg += f"{RTL}   ▸ רווח צף: {pnl_icon} `${open_pnl_usd:.2f}` | כולל: `${total_pos_profit:.2f}`\n"
                 msg += f"{RTL}   ▸ חשיפה: `{weight_pct:.1f}%` מקרן הבסיס\n"
                 msg += f"{RTL}   ▸ Open R (צף): {open_r_str}\n"
@@ -345,6 +395,8 @@ def handle_portfolio_room(chat_id):
                     locked_profit=locked_profit_usd,
                     giveback_risk=giveback_risk_usd,
                     capital_risk=current_open_loss_risk,
+                    price_is_fallback=price_is_fallback,
+                    dual_r_fragment=_dual_r_frag,
                 ) + "\n"
                 if original_campaign_risk > 0 and sizing_str != "✅ תקין":
                     clean_sizing = sizing_str.replace('⚠️ ', '').replace('📉 ', '')
@@ -379,6 +431,35 @@ def handle_portfolio_room(chat_id):
         msg += f"{RTL}▸ חשיפה כללית: `{total_weight:.1f}%` מקרן הבסיס\n"
         if algo_count > 0:
             msg += f"\n{RTL}🤖 *בקרת אשכול אלגו:*\n{RTL}▸ חשיפה אלגו: `{algo_cluster_pct:.1f}%` מהקרן\n"
+
+        # Sprint-15 / DEC-20260515-012 — Risk Capital Basis declaration
+        # (labelling only; engine still uses nav*risk_pct/100). NAV source
+        # disclosed honestly (AGENTS.md #1) when not a live broker NAV.
+        _nav_src = str(account_settings.get("nav_source")
+                       or ("broker" if "nav" in account_settings else "deposited"))
+        msg += f"\n{tf.fmt_risk_capital_basis(acc_size, target_risk_usd, nav_source=_nav_src)}\n"
+
+        # Sprint-15 / DEC-20260515-013 — Broker Reconciliation Status.
+        # Reuses the SAME gap expression as dashboard.py:404-405
+        # (NAV − (total_deposited + DB net PnL + open PnL)); read-only, no
+        # Supabase write, no recompute of any financial number. The 4 bands
+        # are multiples of EXISTING constants (Mark §3) — none invented.
+        try:
+            _total_deposited = float(account_settings.get("total_deposited", 7500.0))
+            _risk_pct_in = float(account_settings.get("risk_pct_input", 0.5))
+            _closed_for_rec = are.compute_closed_campaigns(df) if not df.empty else []
+            _db_net_pnl = sum(float(c.get("net_pnl", 0) or 0) for c in _closed_for_rec)
+            _db_equity_expected = _total_deposited + _db_net_pnl + total_open_pnl
+            _recon_gap = acc_size - _db_equity_expected
+            _recon = tf.classify_broker_reconciliation(
+                acc_size, _total_deposited, _db_net_pnl,
+                reconciliation_gap=_recon_gap,
+                risk_pct_input=_risk_pct_in,
+                nav_source=_nav_src,
+            )
+            msg += f"{tf.fmt_broker_reconciliation(_recon)}\n"
+        except Exception:
+            pass
 
         spy_hist_caching = ec.get_cached_history("SPY", "1y", "1d")
         regime_for_coaching = ec.compute_market_regime(spy_hist_caching)
@@ -416,6 +497,15 @@ def handle_portfolio_room(chat_id):
 
         if nav_stale_label:
             msg += f"\n\n{RTL}⚠️ _{nav_stale_label}_"
+        if price_fallback_syms:
+            # Sprint-12 / Mark §3 — honest aggregate notice: at least one
+            # position's price fell back to entry (label only; no number
+            # recomputed). Same footer region as nav_stale_label.
+            _fb_list = ", ".join(sorted(set(price_fallback_syms)))
+            msg += (
+                f"\n\n{RTL}{tf.PRICE_FALLBACK_LABEL}"
+                f"\n{RTL}_חל על: {_fb_list}_"
+            )
 
         try: bot.delete_message(chat_id, loading_msg.message_id)
         except Exception: pass

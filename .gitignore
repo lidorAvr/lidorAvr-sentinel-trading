@@ -3,10 +3,20 @@ last_sync_date.txt
 sentinel_config.json
 risk_recommendations.json
 risk_journal.json
+# Sprint 14 (RC-2): anti-spam dedup memory is runtime state, not code.
+# Git-tracking it made every `git pull` deploy revert `prev` to a week-old
+# snapshot → should_alert re-pushed every position. It now lives on the
+# persistent /app/state named volume; ignore any stray root copy AND the
+# volume path so it can never be re-committed / re-reverted again.
+risk_monitor_state.json
+state/risk_monitor_state.json
 __pycache__/
 *.pyc
 deploy_trigger
 deploy_watcher.log
+
+# Claude Code agent scratch (worktrees, task transcripts) — never commit
+.claude/
 
 # pytest-cov artifacts (Sprint 6 #4 added coverage gate)
 .coverage

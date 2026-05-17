@@ -51,13 +51,158 @@ def handle_queries(call):
         _tb.get_next_missing(chat_id)
         return
 
+    # ── Lightweight tap-only stop promotion (UX_TELEGRAM_AUDIT_DAY3 Pain 1) ──
+    if data == "promote_open":
+        bot.answer_callback_query(call.id)
+        _tb.handle_stop_promote_entry(chat_id)
+        return
+
+    if data.startswith("promote_pick|"):
+        bot.answer_callback_query(call.id)
+        try:
+            idx = int(data.split("|", 1)[1])
+        except (ValueError, IndexError):
+            bot.send_message(chat_id, "❌ בחירה לא תקינה.")
+            return
+        _tb.handle_stop_promote_pick(chat_id, idx)
+        return
+
+    if data == "promote_algo_noop":
+        bot.answer_callback_query(
+            call.id,
+            text="🟠 ALGO מנוהל חיצונית — Sentinel אינה מקדמת סטופ אלגו.",
+            show_alert=True,
+        )
+        return
+
+    # Sprint-12 / Mark §3 — non-tappable honest price-fallback note row.
+    if data == "promote_price_fallback_note":
+        import telegram_formatters as _tf
+        bot.answer_callback_query(
+            call.id,
+            text=_tf.PRICE_FALLBACK_LABEL,
+            show_alert=True,
+        )
+        return
+
+    # ── Open Tasks (Action-Items) — pull-only view + lifecycle ──────────────
+    if data == "task_algo_noop":
+        bot.answer_callback_query(
+            call.id,
+            text="🟠 ALGO מנוהל חיצונית — אין פעולה ב-Sentinel.",
+            show_alert=True,
+        )
+        return
+
+    if data == "task_refresh":
+        # #3 / SPRINT11_DESIGN §1.3 — explicit refresh ALWAYS re-derives
+        # (discards the cache; the engine is re-consulted as source of truth).
+        bot.answer_callback_query(call.id)
+        _tb.handle_task_refresh(chat_id)
+        return
+
+    if data == "task_algo_panel":
+        # #5 / DEC-006 — observation-only consolidated ALGO read-out card.
+        # NOT a Task: no done/skip/note, never counted (Mark §2.3).
+        bot.answer_callback_query(call.id)
+        _tb.handle_algo_panel(chat_id)
+        return
+
+    if data == "myactions_refresh":
+        # #9 / DEC-008 — re-read the SELECT-only audit surface.
+        bot.answer_callback_query(call.id)
+        _tb.handle_my_actions(chat_id)
+        return
+
+    if data.startswith("task_open|"):
+        bot.answer_callback_query(call.id)
+        _tb.handle_task_open(chat_id, data.split("|", 1)[1])
+        return
+
+    if data.startswith("task_done_confirm|"):
+        bot.answer_callback_query(call.id)
+        parts = data.split("|")
+        try:
+            idx = int(parts[1])
+        except (ValueError, IndexError):
+            bot.send_message(chat_id, "❌ בחירה לא תקינה.")
+            return
+        _tb.handle_task_done_confirm(chat_id, idx, parts[2] == "yes")
+        return
+
+    if data.startswith("task_skip_confirm|"):
+        bot.answer_callback_query(call.id)
+        parts = data.split("|")
+        try:
+            idx = int(parts[1])
+        except (ValueError, IndexError):
+            bot.send_message(chat_id, "❌ בחירה לא תקינה.")
+            return
+        _tb.handle_task_skip_confirm(chat_id, idx, parts[2] == "yes")
+        return
+
+    if data.startswith("task_done|"):
+        bot.answer_callback_query(call.id)
+        try:
+            idx = int(data.split("|", 1)[1])
+        except (ValueError, IndexError):
+            bot.send_message(chat_id, "❌ בחירה לא תקינה.")
+            return
+        _tb.handle_task_done(chat_id, idx)
+        return
+
+    if data.startswith("task_skip|"):
+        bot.answer_callback_query(call.id)
+        try:
+            idx = int(data.split("|", 1)[1])
+        except (ValueError, IndexError):
+            bot.send_message(chat_id, "❌ בחירה לא תקינה.")
+            return
+        _tb.handle_task_skip(chat_id, idx)
+        return
+
+    if data.startswith("task_note|"):
+        bot.answer_callback_query(call.id)
+        try:
+            idx = int(data.split("|", 1)[1])
+        except (ValueError, IndexError):
+            bot.send_message(chat_id, "❌ בחירה לא תקינה.")
+            return
+        _tb.handle_task_note(chat_id, idx)
+        return
+
+    # ── Ratchet-up loosen confirmation (MARK_DAY3_GUARDRAILS U3/C3) ──────────
+    if data.startswith("loosen_confirm|"):
+        bot.answer_callback_query(call.id)
+        approved = data.split("|", 1)[1] == "yes"
+        _tb.finalize_pending_loosen(chat_id, approved)
+        return
+
+    # ── /clean defaulted-NO confirmation (Sprint-12 / Mark §2) ──────────────
+    if data.startswith("clean_confirm|"):
+        bot.answer_callback_query(call.id)
+        approved = data.split("|", 1)[1] == "yes"
+        _tb.finalize_pending_clean(chat_id, approved)
+        return
+
     if data == "start_trail_flow":
-        if chat_id in user_state and 'temp_positions' in user_state[chat_id]:
-            count = len(user_state[chat_id]['temp_positions'])
-            bot.send_message(chat_id, f"🎯 *קידום סטופ:*\nהקלד את מספר הטרייד מהרשימה (1-{count}):\n(או שלח 'ביטול')", parse_mode="Markdown")
-            user_state[chat_id]['action'] = 'select_trade_index'
+        # Tap-only path: show inline symbol buttons instead of asking the
+        # user to TYPE a trade number while scrolling a long message.
+        # The typed-index path (action='select_trade_index') is kept as a
+        # fallback for anyone still on the old flow, but is no longer the
+        # primary interaction.
+        if chat_id in user_state and user_state[chat_id].get('temp_positions'):
+            positions = user_state[chat_id]['temp_positions']
+            kb = _tb.build_stop_promote_keyboard(positions)
+            bot.send_message(
+                chat_id,
+                f"{RTL}🎯 *קידום סטופ — בחר פוזיציה (לחיצה אחת):*",
+                reply_markup=kb, parse_mode="Markdown",
+            )
         else:
-            bot.send_message(chat_id, "⚠️ המידע פג תוקף. לחץ שוב על 'חדר מצב'.")
+            # No cached positions — open the lightweight list directly
+            # instead of forcing a heavy 'חדר מצב' re-run.
+            _tb.handle_stop_promote_entry(chat_id)
         bot.answer_callback_query(call.id)
 
     elif data == "cancel_action":
@@ -158,7 +303,39 @@ def handle_queries(call):
             ts_str  = datetime.now().strftime("%Y-%m-%d %H:%M")
             note    = f"Add-On אושר: כניסה ${entry} | סטופ ${stop} | כמות {qty} ({ts_str})"
             try:
-                cid = repo.get_open_campaign_for_symbol(supabase, sym)
+                # Phase B3 — guard the Add-On Supabase write against a
+                # plan→confirm campaign re-resolution race. The /addon plan
+                # persisted the campaign_id of the exact open-position row the
+                # user reviewed (telegram_bot.py addon_pending state). Three
+                # cases:
+                #   (2a) stored cid present: re-resolve to detect the race.
+                #        resolved == planned  -> proceed exactly as pre-B3.
+                #        resolved != planned  -> HARDENED: refuse, zero write.
+                #   (2c) stored cid absent/None (legacy/older in-flight
+                #        pending): fall back to re-resolution and proceed
+                #        exactly as pre-B3 (byte-identical legacy path).
+                planned_cid = pending.get("campaign_id")
+                resolved_cid = repo.get_open_campaign_for_symbol(supabase, sym)
+                if planned_cid is not None:
+                    if resolved_cid != planned_cid:
+                        # HARDENED race refusal: the open position for this
+                        # symbol changed since the user planned the add-on.
+                        # No Supabase write of any kind; clear pending exactly
+                        # as the existing cancel/decline path does.
+                        if chat_id in user_state:
+                            del user_state[chat_id]
+                        bot.send_message(
+                            chat_id,
+                            f"{RTL}❌ *ביטול: הפוזיציה השתנתה — {sym}*\n"
+                            f"{RTL}הפוזיציה הפתוחה עבור הסמל השתנתה מאז שתכננת את החיזוק.\n"
+                            f"{RTL}הרץ ‎/addon‎ מחדש.",
+                            reply_markup=get_main_menu(),
+                            parse_mode="Markdown",
+                        )
+                        return
+                    cid = planned_cid
+                else:
+                    cid = resolved_cid
                 if cid:
                     repo.update_management_notes(supabase, cid, note)
                     # Mark addon fields (requires migration 001_addon_phase2.sql)

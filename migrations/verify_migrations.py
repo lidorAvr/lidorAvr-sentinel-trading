@@ -19,7 +19,9 @@ runtime; this script gives operators a clean pre-deploy check.
 Each migration in this directory describes a table or columns it adds.
 For now we hard-code the post-conditions in MIGRATIONS below. If we add
 many more migrations, switch to a per-migration manifest file — but with
-only two migrations today, that's over-engineering.
+the five migrations today (001…005), that's still over-engineering.
+(Sprint-25 A2/Data-F3: corrected the stale "only two migrations"
+docstring — the runtime check already verifies all five, 001…005.)
 """
 from __future__ import annotations
 import os
@@ -36,6 +38,21 @@ MIGRATIONS: list[tuple[str, str, list[str] | None]] = [
     (
         "002_audit_log.sql",
         "audit_log",
+        None,  # whole table is new — existence is the test
+    ),
+    (
+        "003_add_user_id_to_trades.sql",
+        "trades",
+        ["user_id"],  # Phase A — additive user_id column
+    ),
+    (
+        "004_add_user_id_to_audit_log.sql",
+        "audit_log",
+        ["user_id"],  # Phase A — additive user_id column
+    ),
+    (
+        "005_create_open_tasks.sql",
+        "open_tasks",
         None,  # whole table is new — existence is the test
     ),
 ]

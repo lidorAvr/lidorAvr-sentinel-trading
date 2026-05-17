@@ -8,6 +8,7 @@ services:
       - .env
     environment:
       - TZ=Asia/Jerusalem
+      - PYTHONUNBUFFERED=1
     dns:
       - 8.8.8.8
       - 1.1.1.1
@@ -38,6 +39,7 @@ services:
       - .env
     environment:
       - TZ=Asia/Jerusalem
+      - PYTHONUNBUFFERED=1
     dns:
       - 8.8.8.8
       - 1.1.1.1
@@ -82,7 +84,7 @@ services:
         max-size: "10m"
         max-file: "5"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8501/healthz"]
+      test: ["CMD", "python3", "-c", "import http.client,sys; c=http.client.HTTPConnection('127.0.0.1',8501,timeout=5); c.request('GET','/_stcore/health'); sys.exit(0 if c.getresponse().status==200 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -97,6 +99,7 @@ services:
       - .env
     environment:
       - TZ=Asia/Jerusalem
+      - PYTHONUNBUFFERED=1
     dns:
       - 8.8.8.8
       - 1.1.1.1
@@ -129,6 +132,7 @@ services:
       - .env
     environment:
       - TZ=Asia/Jerusalem
+      - PYTHONUNBUFFERED=1
     dns:
       - 8.8.8.8
       - 1.1.1.1

@@ -11,6 +11,8 @@ import glob
 from datetime import datetime
 import pandas as pd
 import engine_core as ec
+import state_io
+import telegram_formatters as tf
 from bot_core import supabase, RTL
 from bot_helpers import get_account_settings
 
@@ -71,7 +73,9 @@ def build_health_report() -> str:
 
     # 6. Missing stops (open buy rows)
     try:
-        res2 = supabase.table("trades").select("symbol,stop_loss,quantity,side").execute()
+        res2 = supabase.table("trades").select(
+            "symbol,stop_loss,quantity,side,campaign_id"
+        ).execute()
         df_h = pd.DataFrame(res2.data if res2.data else [])
         if not df_h.empty:
             buys = df_h[df_h["side"].str.upper() == "BUY"].copy()
@@ -79,7 +83,57 @@ def build_health_report() -> str:
             buys["quantity"] = pd.to_numeric(buys["quantity"], errors="coerce").fillna(0)
             ms = buys[(buys["quantity"] > 0) & (buys["stop_loss"] <= 0)]
             syms = ", ".join(ms["symbol"].unique()[:5])
-            ok("Missing Stops — אין") if ms.empty else warn(f"Missing Stops — {len(ms)} שורות ({syms})")
+            if ms.empty:
+                ok("Missing Stops — אין")
+            else:
+                warn(f"Missing Stops — {len(ms)} שורות ({syms})")
+                # Sprint-12 / Mark §4 — explicit non-numeric data-hygiene
+                # NOTICE (VERBATIM from MARK_SPRINT12_RULINGS.md §4). It is
+                # NOT a task, NEVER counted, NO fabricated stop — read-only
+                # over the SAME existing check (no new query/math). The
+                # count+symbols are a factual hygiene readout Mark explicitly
+                # permits (honest, not a fabricated metric). Mark §2 :71-72
+                # requires THIS verbatim text stays for the closed/legacy
+                # subset — kept unchanged below.
+                checks.append(
+                    f"‏⚠️ נתוני סיכון חסרים: {len(ms)} רשומות ({syms})."
+                )
+                checks.append(
+                    "‏השלם entry/stop כדי שייכללו. "
+                    "(אינו משימה, אינו נספר בסטטיסטיקה.)"
+                )
+                # Sprint-13 / Mark §2 — READ-ONLY split-label. Derive the
+                # OPEN-campaign set with the engine's EXISTING net-qty>0.001
+                # rule (no new math: signed-quantity sum per campaign, the
+                # same rule engine_core.get_open_positions_campaign:473-514
+                # already uses). Then label open (→ existing journal-backlog,
+                # founder-typed real stop only, never fabricated) vs closed/
+                # archived (→ already-gated /clean hygiene). No stat, no $/R,
+                # no fabricated stop; no new ruleset key (drift test green).
+                try:
+                    qty_all = pd.to_numeric(
+                        df_h.get("quantity"), errors="coerce"
+                    ).fillna(0)
+                    cid_all = df_h.get("campaign_id")
+                    net_by_cid: dict = {}
+                    for cid, q in zip(cid_all, qty_all):
+                        if cid is None or (isinstance(cid, float) and pd.isna(cid)):
+                            continue
+                        net_by_cid[cid] = net_by_cid.get(cid, 0.0) + float(q)
+                    open_cids = {
+                        c for c, n in net_by_cid.items() if n > 0.001
+                    }
+                    split = tf.classify_missing_stops(
+                        ms.to_dict("records"), open_cids
+                    )
+                    label = tf.fmt_missing_stops_split_label(split)
+                    if label:
+                        for ln in label.split("\n"):
+                            checks.append(ln)
+                except Exception:
+                    # Split-label is best-effort; the verbatim S12 notice
+                    # above is the guaranteed honest surface.
+                    pass
         else:
             warn("Missing Stops — לא נבדק (אין נתונים)")
     except Exception:
@@ -118,7 +172,10 @@ def build_health_report() -> str:
 
     # 12. Risk Monitor State
     try:
-        rm = json.load(open("risk_monitor_state.json"))
+        # Sprint 14: state file relocated to the /app/state named volume
+        # (state_io.RM_STATE_FILE) — read-only health probe follows the
+        # single shared constant.
+        rm = json.load(open(state_io.RM_STATE_FILE))
         pos_count = len(rm.get("positions", {}))
         ok(f"Risk Monitor State — {pos_count} פוזיציות במעקב")
     except Exception:

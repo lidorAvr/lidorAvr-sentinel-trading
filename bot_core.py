@@ -31,3 +31,12 @@ bot      = telebot.TeleBot(TOKEN)
 supabase = create_client(_supabase_url, _supabase_key)
 user_state: dict = {}
 RTL = "‏"
+
+# Phase A (Hyperscaler): DEFAULT_USER_ID resolution. Unset is allowed — it
+# logs a single warning and falls back to the sentinel UUID. Crashing on a
+# missing DEFAULT_USER_ID would block existing production deploys whose .env
+# does not yet have it; Phase A must run byte-identically when it is unset.
+# Additive only: existing imports of bot_core are unaffected.
+from user_context import get_current_user_id  # noqa: E402
+
+DEFAULT_USER_ID = get_current_user_id()

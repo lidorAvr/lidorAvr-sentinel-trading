@@ -31,6 +31,24 @@ def _touch_heartbeat(name: str) -> None:
     except Exception:
         pass
 
+# Sprint 16 — honest degraded-mode trailer appended to the text summary when the
+# PDF could not be rendered (WeasyPrint missing / native-lib OSError / render
+# exception). Exact Hebrew is Mark's binding ruling
+# (docs/teams/MARK_SPRINT16_RULINGS.md §1, "Honest degraded-mode note") — do NOT
+# reword: no "temporarily"/future-PDF/optimistic claim. The text IS the
+# authoritative full report; only the PDF *rendering* is unavailable.
+_DEGRADED_PDF_NOTE = "⚠️ ה-PDF לא נוצר בריצה זו. סיכום הטקסט למעלה הוא הנתון הקובע והמלא."
+
+
+def _is_pdf_path(path) -> bool:
+    """True only if `path` is a truthy string ending in `.pdf` (a real rendered
+    PDF). `render_*` returns an `.html` path when WeasyPrint is unavailable; the
+    degraded path may also use a safe falsy value. Used to decide whether to
+    append the honest degraded trailer and to keep a non-PDF path from reaching
+    `send_pdf`/`os.path.exists` as a bad value."""
+    return bool(path) and isinstance(path, str) and path.endswith(".pdf")
+
+
 # Schedule: (weekday, hour, minute) — weekday 5 = Saturday (Python: Mon=0, Sun=6)
 _WEEKLY_WEEKDAY = 5
 _WEEKLY_HOUR    = 8
@@ -92,16 +110,53 @@ def _mark_ran(state: dict, key: str, today_str: str):
 
 # ── Supabase data pull ─────────────────────────────────────────────────────────
 
+# B2 (DEC-20260516-021 Tier-B): lazy module-singleton Supabase client.
+# `_fetch_trades_df` previously rebuilt `load_dotenv()` + `create_client()`
+# on EVERY call. The client is now built ONCE (per (url,key)) and reused.
+# Behavior-preserving: `load_dotenv()` + the `os.environ` reads + the
+# missing-creds → log+None contract stay PER-CALL (a late-set env still
+# works, the None-on-missing-creds branch is unchanged); only the
+# successfully-built `create_client(url,key)` object is cached. Same
+# url/key/credentials → identical client → identical query/lookback/
+# ordering/data. The whole path stays inside the caller's try/except so
+# the None/empty-on-failure contract is untouched.
+_SB_CLIENT = None
+_SB_CLIENT_KEY = None
+
+
+def _get_supabase_client(url: str, key: str):
+    """Return a cached Supabase client for (url, key), building it once.
+
+    Pure structural memoization of `create_client(url, key)`: the first
+    call with a given (url, key) builds and caches the client; subsequent
+    calls with the SAME (url, key) return the SAME object. WHAT is fetched
+    (table/select/filters/order) is decided entirely by the caller and is
+    unchanged. Raises exactly as `create_client` would (the caller's
+    try/except preserves the failure → None contract).
+    """
+    global _SB_CLIENT, _SB_CLIENT_KEY
+    if _SB_CLIENT is not None and _SB_CLIENT_KEY == (url, key):
+        return _SB_CLIENT
+    from supabase import create_client
+    _SB_CLIENT = create_client(url, key)
+    _SB_CLIENT_KEY = (url, key)
+    return _SB_CLIENT
+
+
 def _fetch_trades_df(period_start: datetime, period_end: datetime):
     """
-    Pull trades from Supabase for the given period (with a 4-week lookback for
+    Pull trades from Supabase for the given period (with an 8-week lookback for
     open positions that closed within the period).
     Returns a pandas DataFrame or None on failure.
+
+    A2 (DEC-20260516-021 Tier-A, doc-only): the prior wording said
+    "4-week" but the code is `period_start - timedelta(weeks=8)` (the
+    production-validated DEC-20260516-020 April-reconcile value — do
+    NOT change the weeks=8 behavior). Doc corrected to match code.
     """
     try:
         import pandas as pd
         from dotenv import load_dotenv
-        from supabase import create_client
 
         load_dotenv()
         url = os.environ.get("SUPABASE_URL", "")
@@ -110,7 +165,7 @@ def _fetch_trades_df(period_start: datetime, period_end: datetime):
             log("ERROR: SUPABASE_URL or SUPABASE_KEY not set")
             return None
 
-        sb = create_client(url, key)
+        sb = _get_supabase_client(url, key)
         lookback = period_start - timedelta(weeks=8)
         lookback_str = lookback.strftime("%Y-%m-%d")
         period_end_str = period_end.strftime("%Y-%m-%d")
@@ -150,14 +205,37 @@ def _monthly_period(ref: datetime):
 
 
 def _build_system_health() -> dict:
-    """Quick best-effort health snapshot for report context."""
-    sync_ok = os.path.exists("/app/ibkr_last_sync_result.json")
+    """Quick best-effort health snapshot for report context.
+
+    Sprint-19 §3a (MARK_SPRINT19_RULINGS.md:166-193, RCA confirmed): the old
+    `f"✅ Sync {status} — {message[:60]}"` blindly prefixed `✅` on every state
+    AND echoed the raw IBKR-flex `message` (e.g. IBKR_ERROR_CLASSES[1001] =
+    "הדוח לא נוצר כרגע …" — ibkr_sync_runner.py:16) into a delivered Sentinel
+    report, where "הדוח" reads as *the Sentinel report* (actively false, #1).
+    Fix: switch on `status` and emit a Sentinel-authored Hebrew label by the
+    IBKR class taxonomy (success / temporary|rate_limit / fatal / unknown).
+    NEVER `✅` on a non-success state; the raw flex `message` is NEVER
+    interpolated (the `temporary` line explicitly says it does not affect this
+    report so it can never be misread as the Sentinel report failing).
+    """
     try:
         with open("/app/ibkr_last_sync_result.json") as f:
             last = json.load(f)
-        sync_label = f"✅ Sync {last.get('status','?')} — {last.get('message','')[:60]}"
+        status = (last.get("status") or "").lower()
+        if status in ("ok", "success"):
+            sync_label = "✅ סנכרון IBKR תקין"
+        elif status in ("temporary", "rate_limit"):
+            sync_label = ("⏳ סנכרון IBKR — עיכוב זמני בצד IBKR "
+                          "(לא משפיע על דוח זה)")
+        elif status == "fatal":
+            sync_label = ("🔴 סנכרון IBKR — תקלה, נדרשת בדיקה "
+                          "(NAV עלול להיות לא עדכני)")
+        else:
+            # status absent / unrecognised → unknown (never ✅)
+            sync_label = "⚠️ סנכרון IBKR — מצב לא ידוע"
     except Exception:
-        sync_label = "⚠️ Sync — אין מידע זמין"
+        # file missing / parse-fail → unknown (never ✅; never raw flex string)
+        sync_label = "⚠️ סנכרון IBKR — מצב לא ידוע"
 
     return {
         "sync_status": sync_label,
@@ -194,9 +272,12 @@ def _run_weekly(now: datetime):
                                        compute_trader_development_score,
                                        compute_period_comparison,
                                        compute_verdict)
-        from report_snapshot_store import save as snap_save, load_previous
-        from report_renderer import render_weekly, build_summary_text
+        from report_snapshot_store import (save as snap_save, load_previous,
+                                            load_recent)
+        from report_renderer import (render_weekly, build_summary_text,
+                                      compute_period_average)
         from report_delivery import deliver_report
+        import report_open_book as rob
 
         period_start, period_end = _weekly_period(now)
         log(f"Weekly period: {period_start.date()} → {period_end.date()}")
@@ -207,28 +288,87 @@ def _run_weekly(now: datetime):
         analytics   = compute_period_analytics(df, period_start, period_end, account)
         dev_data    = compute_trader_development_score(analytics)
         prev_snap   = load_previous("weekly", period_start)
-        comparison  = compute_period_comparison(analytics, prev_snap["analytics"]) if prev_snap else None
+        comparison  = compute_period_comparison(analytics, prev_snap) if prev_snap else None
         health      = _build_system_health()
+
+        # Sprint-18: open-book is built from the SAME df already fetched, via
+        # the read-only command-room source. It is a SEPARATE dict — never fed
+        # into compute_period_analytics; realized KPIs stay byte-identical.
+        # mark-to-market delta = pure subtraction vs prev_snap["open_marks"]
+        # (baseline-pending honest token until a prior open-mark exists, #1).
+        open_book  = rob.build_open_book(
+            df, account, period_start=period_start, period_end=period_end)
+        mark_delta = rob.compute_mark_delta(open_book, prev_snap)
+
+        # Sprint-19 §2: vs-average context — READ-ONLY load_recent (pure file
+        # reads; the current period is NOT yet snap_save'd → every snapshot is
+        # a true prior). Honest baseline-pending until N≥3 (#1). The open-book
+        # cross-period view reuses the Sprint-18 open_marks history + the
+        # unchanged compute_mark_delta for the prev leg (ALGO segregated).
+        recent_snaps  = load_recent("weekly",
+                                    n=rob.OPEN_BOOK_HISTORY_MIN_N + 2)
+        period_avg    = compute_period_average(recent_snaps)
+        ob_history    = rob.compute_open_book_history(
+            open_book, recent_snaps, prev_snap)
 
         coaching = _weekly_coaching_insights(analytics)
 
-        pdf_path = render_weekly(
-            analytics=analytics,
-            account_state=account,
-            period_start=period_start,
-            period_end=period_end,
-            comparison=comparison,
-            dev_score_data=dev_data,
-            system_health=health,
-            coaching_insights=coaching,
-            risk_adherence_rate=analytics.get("risk_adherence_rate"),
-        )
+        # Sprint 16: PDF rendering is best-effort. A render failure (WeasyPrint
+        # missing / native-lib OSError / render exception) MUST NOT abort the
+        # founder's text summary. Guard ONLY the render step; on failure degrade
+        # to text-only with the honest trailer (Mark §1). `render_weekly` itself
+        # no longer raises on PDF failure (it returns an .html path), but we
+        # still catch defensively so any future exception cannot drop the report.
+        pdf_degraded = False
+        try:
+            pdf_path = render_weekly(
+                analytics=analytics,
+                account_state=account,
+                period_start=period_start,
+                period_end=period_end,
+                comparison=comparison,
+                dev_score_data=dev_data,
+                system_health=health,
+                coaching_insights=coaching,
+                risk_adherence_rate=analytics.get("risk_adherence_rate"),
+                open_book=open_book,
+                mark_delta=mark_delta,
+                period_average=period_avg,
+                open_book_history=ob_history,
+            )
+            if not _is_pdf_path(pdf_path):
+                pdf_degraded = True
+                log("WARNING weekly: PDF render failed (no .pdf produced) "
+                    "— text summary delivered")
+        except Exception as e:
+            pdf_degraded = True
+            pdf_path = ""
+            log(f"WARNING weekly: PDF render failed ({type(e).__name__}: "
+                f"{str(e)[:200]}) — text summary delivered")
 
-        snap_save("weekly", period_start, period_end, analytics, account, pdf_path)
+        if pdf_degraded:
+            pdf_path = ""   # safe falsy: avoids os.path.exists(None) TypeError in send_pdf
+
+        snap_save("weekly", period_start, period_end, analytics, account,
+                  pdf_path, open_book=open_book)
 
         period_label = f"{period_start.strftime('%d/%m')}–{period_end.strftime('%d/%m/%Y')}"
         risk_rec     = _compute_risk_rec(df, account)
-        summary_text = build_summary_text(analytics, period_label, "weekly", risk_rec=risk_rec)
+        # Sprint-25 B1 — pass the SAME `account` dict acc_mod.load() returned
+        # (already used for the PDF freshness banner) so the Telegram summary
+        # itself discloses a fallback/stale/non-broker NAV. Critically this
+        # makes the disclosure part of `summary_text` BEFORE the degraded
+        # trailer is appended, so the PDF-DEGRADED text-only path (the
+        # WeasyPrint OSError branch) is covered too — a fallback NAV is never
+        # delivered as "הקובע והמלא" without the honesty line (Data F1/F2).
+        summary_text = build_summary_text(analytics, period_label, "weekly",
+                                          risk_rec=risk_rec, open_book=open_book,
+                                          mark_delta=mark_delta,
+                                          period_average=period_avg,
+                                          open_book_history=ob_history,
+                                          account_state=account)
+        if pdf_degraded:
+            summary_text = f"{summary_text}\n\n{_DEGRADED_PDF_NOTE}"
         caption      = f"📊 Sentinel Weekly Report | {period_label}"
 
         token   = os.environ.get("TELEGRAM_TOKEN", "")
@@ -254,8 +394,10 @@ def _run_monthly(now: datetime):
                                        compute_trader_development_score,
                                        compute_period_comparison)
         from report_snapshot_store import save as snap_save, load_previous, load_recent
-        from report_renderer import render_monthly, build_summary_text
+        from report_renderer import (render_monthly, build_summary_text,
+                                      compute_period_average)
         from report_delivery import deliver_report
+        import report_open_book as rob
 
         period_start, period_end = _monthly_period(now)
         log(f"Monthly period: {period_start.date()} → {period_end.date()}")
@@ -266,32 +408,80 @@ def _run_monthly(now: datetime):
         analytics   = compute_period_analytics(df, period_start, period_end, account)
         dev_data    = compute_trader_development_score(analytics)
         prev_snap   = load_previous("monthly", period_start)
-        comparison  = compute_period_comparison(analytics, prev_snap["analytics"]) if prev_snap else None
+        comparison  = compute_period_comparison(analytics, prev_snap) if prev_snap else None
         health      = _build_system_health()
+
+        # Sprint-18: same open-book seam as weekly — separate dict, never fed
+        # into realized analytics; delta is pure subtraction vs prev_snap.
+        open_book  = rob.build_open_book(
+            df, account, period_start=period_start, period_end=period_end)
+        mark_delta = rob.compute_mark_delta(open_book, prev_snap)
+
+        # Sprint-19 §2: monthly vs-average — READ-ONLY load_recent("monthly")
+        # (the current month is NOT yet snap_save'd → all are true priors).
+        # Honest baseline-pending until N≥3 (#1). Open-book cross-period view
+        # reuses Sprint-18 open_marks + unchanged compute_mark_delta.
+        recent_monthly = load_recent("monthly",
+                                     n=rob.OPEN_BOOK_HISTORY_MIN_N + 2)
+        period_avg     = compute_period_average(recent_monthly)
+        ob_history     = rob.compute_open_book_history(
+            open_book, recent_monthly, prev_snap)
+
         coaching    = _monthly_coaching_insights(analytics)
         weekly_snaps = load_recent("weekly", n=5)
         weekly_breakdown = _build_weekly_breakdown(weekly_snaps, period_start, period_end)
 
-        pdf_path = render_monthly(
-            analytics=analytics,
-            account_state=account,
-            period_start=period_start,
-            period_end=period_end,
-            comparison=comparison,
-            dev_score_data=dev_data,
-            system_health=health,
-            coaching_insights=coaching,
-            risk_adherence_rate=analytics.get("risk_adherence_rate"),
-            weekly_breakdown=weekly_breakdown,
-        )
+        # Sprint 16: identical best-effort PDF contract as _run_weekly. Guard
+        # ONLY the render step; degrade to text-only with the honest trailer
+        # (Mark §1) on any PDF failure — never abort the founder's text summary.
+        pdf_degraded = False
+        try:
+            pdf_path = render_monthly(
+                analytics=analytics,
+                account_state=account,
+                period_start=period_start,
+                period_end=period_end,
+                comparison=comparison,
+                dev_score_data=dev_data,
+                system_health=health,
+                coaching_insights=coaching,
+                risk_adherence_rate=analytics.get("risk_adherence_rate"),
+                weekly_breakdown=weekly_breakdown,
+                open_book=open_book,
+                mark_delta=mark_delta,
+                period_average=period_avg,
+                open_book_history=ob_history,
+            )
+            if not _is_pdf_path(pdf_path):
+                pdf_degraded = True
+                log("WARNING monthly: PDF render failed (no .pdf produced) "
+                    "— text summary delivered")
+        except Exception as e:
+            pdf_degraded = True
+            pdf_path = ""
+            log(f"WARNING monthly: PDF render failed ({type(e).__name__}: "
+                f"{str(e)[:200]}) — text summary delivered")
 
-        snap_save("monthly", period_start, period_end, analytics, account, pdf_path)
+        if pdf_degraded:
+            pdf_path = ""   # safe falsy: avoids os.path.exists(None) TypeError in send_pdf
+
+        snap_save("monthly", period_start, period_end, analytics, account,
+                  pdf_path, open_book=open_book)
 
         month_names = ["ינואר","פברואר","מרץ","אפריל","מאי","יוני",
                        "יולי","אוגוסט","ספטמבר","אוקטובר","נובמבר","דצמבר"]
         period_label = f"{month_names[period_start.month - 1]} {period_start.year}"
         risk_rec     = _compute_risk_rec(df, account)
-        summary_text = build_summary_text(analytics, period_label, "monthly", risk_rec=risk_rec)
+        # Sprint-25 B1 — same NAV-honesty wiring as weekly (covers the
+        # PDF-degraded text-only path; Data F1/F2).
+        summary_text = build_summary_text(analytics, period_label, "monthly",
+                                          risk_rec=risk_rec, open_book=open_book,
+                                          mark_delta=mark_delta,
+                                          period_average=period_avg,
+                                          open_book_history=ob_history,
+                                          account_state=account)
+        if pdf_degraded:
+            summary_text = f"{summary_text}\n\n{_DEGRADED_PDF_NOTE}"
         caption      = f"📊 Sentinel Monthly Report | {period_label}"
 
         token   = os.environ.get("TELEGRAM_TOKEN", "")

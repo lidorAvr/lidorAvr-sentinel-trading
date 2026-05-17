@@ -17,12 +17,42 @@
 </div>
 
 <div class="freshness-banner freshness-{{ freshness }}">{{ freshness_label }}</div>
+
+{# Sprint-19 §1a/§1b — period-honest headline (monthly: "חודש"). Same
+   presentation-only switch as weekly: under headline_open_book_mode the
+   dominant verdict-badge is SUPPRESSED (compute_verdict / verdict_class /
+   _base_ctx realized keys byte-identical) and replaced by Mark's period-honest
+   badge + promoted open-book banner; ALGO segregated on its own line, never
+   in the headline #. Truly-empty / non-zero / legacy callers keep the legacy
+   verdict path. #}
+{% if headline_open_book_mode %}
+<div class="verdict-badge verdict-{{ headline_badge_class }}">{{ headline_badge_text }}</div>
+<div class="freshness-banner freshness-unknown">
+  {% for line in headline_banner_lines %}<div><span class="ltr">{{ line }}</span></div>{% endfor %}
+</div>
+{% else %}
 <div class="verdict-badge verdict-{{ verdict_class }}">{{ verdict }}</div>
 
+{# Sprint-18 Mark §2 — honest empty-state banner (PRESENTATION supplement;
+   verdict-class unchanged; never "ללא עסקאות" with a live book). Shown only
+   when the §1 headline did NOT take over (truly-empty §1d) — defensive,
+   identical Sprint-18 output. #}
+{% if ob_show_empty_state %}
+<div class="freshness-banner freshness-unknown">
+  {% for line in ob_empty_state_lines %}<div><span class="ltr">{{ line }}</span></div>{% endfor %}
+</div>
+{% endif %}
+{% endif %}
+
+{# Sprint-19 §1c — realized cards BYTE-IDENTICAL values; demoted under an
+   honest sub-heading + reframed PnL label under the §1 trigger. #}
+{% if headline_open_book_mode %}
+<div class="kpi-frame-note"><span class="ltr">{{ headline_realized_subheading }}</span></div>
+{% endif %}
 <table class="kpi-grid">
   <tr>
     <td class="kpi-card{% if realized_pnl >= 0 %} kpi-green{% else %} kpi-red{% endif %}">
-      <div class="kpi-label">רווח חודשי ממומש</div>
+      <div class="kpi-label">{% if headline_open_book_mode %}{{ headline_realized_pnl_label }}{% else %}רווח חודשי ממומש{% endif %}</div>
       <div class="kpi-value ltr">{% if realized_pnl >= 0 %}+{% endif %}${{ "{:,.0f}".format(realized_pnl) }}</div>
       <div class="kpi-sub ltr">{{ "%+.2f"|format(total_r_net) }}R נטו</div>
     </td>
@@ -78,8 +108,16 @@
 </table>
 {% endif %}
 
+{# Sprint-19 §2a — "(ממומש בלבד)" so the comparison is never read as
+   including the open book. §2b — additive "מול ממוצע" column only when
+   N≥3; §2c baseline-pending token above the table otherwise (#1). #}
+{% if cmp_vs_avg_available %}
+<p style="font-size:8.5pt; color:#374151;"><span class="ltr">{{ cmp_vs_avg_label }} (ממומש בלבד)</span></p>
+{% elif cmp_vs_avg_baseline_pending %}
+<p style="font-size:8.5pt; color:#374151;"><span class="ltr">{{ cmp_vs_avg_baseline_pending }}</span></p>
+{% endif %}
 <table class="metrics-table no-break">
-  <tr><th>מדד</th><th>החודש</th>{% if comparison %}<th>חודש קודם</th><th>שינוי MoM</th>{% endif %}</tr>
+  <tr><th>מדד</th><th>החודש</th>{% if comparison %}<th>חודש קודם</th><th>{{ cmp_vs_prev_label }}</th>{% endif %}{% if cmp_vs_avg_available %}<th>{{ cmp_vs_avg_label }}</th>{% endif %}</tr>
   {% set rows = [
     ("קמפיינים", campaigns_closed, "campaigns_closed", False),
     ("Win Rate",  win_rate,  "win_rate",  False),
@@ -113,6 +151,17 @@
       <span class="ltr">{{ "%+.3f"|format(comparison[key].delta) }}</span>
     </td>
     {% elif comparison %}<td>—</td><td>—</td>{% endif %}
+    {% if cmp_vs_avg_available %}
+    {% if key in cmp_vs_avg %}
+    <td class="num"><span class="ltr">
+      {% set av = cmp_vs_avg[key] %}
+      {% if key in ('win_rate','oversized_rate','missing_stop_rate') %}{{ "%.1f"|format(av*100) }}%
+      {% elif key in ('expectancy_r','total_r_net','avg_r_per_day') %}{{ "%+.2f"|format(av) }}R
+      {% elif key == 'profit_factor' %}{{ "%.2f"|format(av) }}
+      {% else %}{{ av }}{% endif %}
+    </span></td>
+    {% else %}<td>—</td>{% endif %}
+    {% endif %}
   </tr>
   {% endfor %}
 </table>
@@ -159,6 +208,132 @@
   </tr>
   {% endfor %}
 </table>
+{% endif %}
+
+{# ══ Sprint-20 Step-2: CLOSED-but-excluded realized leg (DATA_INCOMPLETE /
+   ALGO) — realized cash, but UNVERIFIED (no initial stop). NEVER in
+   WR/Exp/PF/Net-R (#8 — no R without a stop; methodologically correct). A
+   DISTINCT disclosure block, NOT a KPI card, NEVER adjacent-summed (Mark §1
+   hard-rule 4). On the REALIZED side: AFTER the realized breakdown, BEFORE
+   the Sprint-18 unrealized open book. Reconciles with the Sprint-19
+   "0 בתקופה" framing — countable 0 AND excluded N are both true, no
+   contradiction (Mark §1 hard-rule 3). Shown iff excluded_count > 0. ALGO on
+   its OWN observation-only row (Mark §2 / DEC-20260511-001). #}
+{% if excl_present %}
+<h3>{{ excl_heading }}</h3>
+<p style="font-size:9pt; color:#374151;">{{ excl_caveat }}</p>
+<table class="metrics-table no-break">
+  <tr><th>שכבה</th><th>קמפיינים</th><th>רווח/הפסד ממומש (לא-מאומת)</th></tr>
+  {% if excl_count_manual > 0 %}
+  <tr>
+    <td>{{ excl_row_manual }}</td>
+    <td class="num">{{ excl_count_manual }}</td>
+    <td class="num {{ 'good' if excl_pnl_manual >= 0 else 'bad' }}"><span class="ltr">{{ "{:+,.0f}".format(excl_pnl_manual) }}$</span></td>
+  </tr>
+  {% endif %}
+  {% if excl_count_algo > 0 %}
+  <tr>
+    <td>{{ excl_row_algo }}</td>
+    <td class="num">{{ excl_count_algo }}</td>
+    <td class="num {{ 'good' if excl_pnl_algo >= 0 else 'bad' }}"><span class="ltr">{{ "{:+,.0f}".format(excl_pnl_algo) }}$</span></td>
+  </tr>
+  {% endif %}
+  <tr>
+    <td><strong>{{ excl_row_total }}</strong></td>
+    <td class="num"><strong>{{ excl_count }}</strong></td>
+    <td class="num {{ 'good' if excl_pnl >= 0 else 'bad' }}"><strong><span class="ltr">{{ "{:+,.0f}".format(excl_pnl) }}$</span></strong></td>
+  </tr>
+</table>
+{% if excl_manual_line %}<p style="font-size:8.5pt; color:#374151;">{{ excl_manual_line }}</p>{% endif %}
+{% if excl_count_algo > 0 %}<p class="caveat" style="font-size:8.5pt; color:#9ca3af;">🟠 ALGO — {{ excl_algo_caveat }}.</p>{% endif %}
+{% if excl_founder_note %}<p style="font-size:8.5pt; color:#9ca3af;">{{ excl_founder_note }}</p>{% endif %}
+{% endif %}
+
+{# ══ Sprint-21 WS-B: NULL-`campaign_id` honest disclosure — ADDITIVE,
+   disjoint `unlinked_*` namespace (mirrors the Sprint-20 excl_* block above).
+   Shown iff unlinked_present (in-window NULL/blank-campaign_id SELL count>0);
+   verbatim MARK_SPRINT21_RULINGS §B2. NEVER summed into any KPI; the read
+   flow NEVER auto-mutates Supabase — re-linking is the founder-run manual
+   runbook docs/runbooks/SPRINT21_NULL_CAMPAIGN_REPAIR.md ONLY. #}
+{% if unlinked_present %}
+<p style="font-size:9pt; color:#b45309;">{{ unlinked_line }}</p>
+{% endif %}
+{% if unlinked_present_buy %}
+<p style="font-size:9pt; color:#b45309;">{{ unlinked_line_buy }}</p>
+{% endif %}
+
+{# ══ Sprint-18: OPEN BOOK (unrealized) — additive, separate from realized.
+   Same seam as weekly: reuse ec.get_open_positions_campaign; ALGO segregated
+   + observation-only; floating PnL/R explicitly "לא ממומש". #}
+{% if open_book_present %}
+<div class="page-break-before"></div>
+<h2>{{ open_book_heading }} — <span class="ltr">{{ period_label }}</span></h2>
+<p style="font-size:9pt; color:#374151;">
+  רווח/הפסד צף ו-R הם <strong>{{ open_book_unrealized_label }}</strong> — אינם נכנסים ל-Win-Rate / Expectancy / PF / Net-R הממומשים.
+  &nbsp;|&nbsp; מקור נתונים: <span class="ltr">{{ open_book_data_source }}</span>
+</p>
+
+{% if open_book_disc %}
+<h3>פוזיציות דיסקרציוניות</h3>
+<table class="metrics-table no-break">
+  <tr><th>סימול</th><th>כניסה</th><th>נוכחי</th><th>צף ($)</th><th>R מבנה</th><th>R חשבון</th><th>חשיפה</th></tr>
+  {% for p in open_book_disc %}
+  <tr>
+    <td><span class="ltr">{{ p.symbol }}</span>{% if p.price_is_fallback %} ⚠️{% endif %}{% if p.period_label_he %} <span style="font-size:7.5pt;color:#6b7280;">· {{ p.period_label_he }}</span>{% endif %}</td>
+    <td class="num"><span class="ltr">${{ "%.2f"|format(p.entry) }}</span></td>
+    <td class="num"><span class="ltr">${{ "%.2f"|format(p.current) }}</span></td>
+    <td class="num {{ 'good' if p.floating_pnl >= 0 else 'bad' }}"><span class="ltr">{{ "{:+,.0f}".format(p.floating_pnl) }}$</span></td>
+    <td class="num"><span class="ltr">{% if p.structure_valid %}{{ "%+.2f"|format(p.structure_r) }}R{% else %}—{% endif %}</span></td>
+    <td class="num"><span class="ltr">{% if p.account_valid %}{{ "%+.2f"|format(p.account_r) }}R{% else %}—{% endif %}</span></td>
+    <td class="num"><span class="ltr">{{ "%.1f"|format(p.exposure_pct) }}%</span></td>
+  </tr>
+  {% endfor %}
+  <tr>
+    <td><strong>סה"כ דיסק'</strong></td><td></td><td></td>
+    <td class="num {{ 'good' if open_book_totals.floating_pnl_disc >= 0 else 'bad' }}"><strong><span class="ltr">{{ "{:+,.0f}".format(open_book_totals.floating_pnl_disc) }}$</span></strong></td>
+    <td></td><td></td>
+    <td class="num"><strong><span class="ltr">{{ "%.1f"|format(open_book_totals.exposure_pct_disc) }}%</span></strong></td>
+  </tr>
+</table>
+{% endif %}
+
+{% if open_book_algo %}
+<h3>🟠 ALGO — {{ open_book_algo_observation_label }}</h3>
+<table class="metrics-table no-break">
+  <tr><th>סימול</th><th>כניסה</th><th>נוכחי</th><th>צף ($)</th><th>R מבנה</th><th>R חשבון</th><th>חשיפה</th></tr>
+  {% for p in open_book_algo %}
+  <tr>
+    <td><span class="ltr">{{ p.symbol }}</span>{% if p.price_is_fallback %} ⚠️{% endif %}{% if p.period_label_he %} <span style="font-size:7.5pt;color:#6b7280;">· {{ p.period_label_he }}</span>{% endif %}</td>
+    <td class="num"><span class="ltr">${{ "%.2f"|format(p.entry) }}</span></td>
+    <td class="num"><span class="ltr">${{ "%.2f"|format(p.current) }}</span></td>
+    <td class="num {{ 'good' if p.floating_pnl >= 0 else 'bad' }}"><span class="ltr">{{ "{:+,.0f}".format(p.floating_pnl) }}$</span></td>
+    <td class="num"><span class="ltr">{{ p.structure_r_token }}</span></td>
+    <td class="num"><span class="ltr">{% if p.account_valid %}{{ "%+.2f"|format(p.account_r) }}R{% else %}—{% endif %}</span></td>
+    <td class="num"><span class="ltr">{{ "%.1f"|format(p.exposure_pct) }}%</span></td>
+  </tr>
+  {% endfor %}
+</table>
+<p class="caveat" style="font-size:8.5pt; color:#9ca3af;">{{ open_book_algo_external_caveat }}</p>
+{% endif %}
+
+<p style="font-size:8.5pt; color:#374151;">
+  מקור מחיר: <span class="ltr">{{ open_book_data_source }}</span>
+  {% if open_book_price_fallback_syms %}
+  &nbsp;·&nbsp; מחיר לא חי (לפי מחיר כניסה, לא בזמן אמת): <span class="ltr">{{ open_book_price_fallback_syms|join(", ") }}</span>
+  {% endif %}
+</p>
+{% if open_book_mark_delta_text %}
+<p style="font-size:8.5pt; color:#374151;"><span class="ltr">{{ open_book_mark_delta_text }}</span></p>
+{% endif %}
+{# Sprint-19 §2d — open-book period-over-period + vs-average. ALWAYS in the
+   open-book section, "(לא ממומש)" via source strings, NEVER realized table.
+   ALGO own observation-only line. Baseline-pending until N≥3 (#1). #}
+{% if obcmp_available %}
+{% if obcmp_avg_text %}<p style="font-size:8.5pt; color:#374151;"><span class="ltr">{{ obcmp_avg_text }}</span></p>{% endif %}
+{% if obcmp_avg_algo_text %}<p style="font-size:8.5pt; color:#9ca3af;"><span class="ltr">{{ obcmp_avg_algo_text }}</span></p>{% endif %}
+{% elif obcmp_baseline_pending %}
+<p style="font-size:8.5pt; color:#374151;"><span class="ltr">{{ obcmp_baseline_pending }}</span></p>
+{% endif %}
 {% endif %}
 
 {# ══ PAGE 4: Behavioral Development ════════════════════════════════════════= #}

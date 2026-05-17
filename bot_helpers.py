@@ -6,10 +6,15 @@ No bot/user_state/Telegram dependencies — safe to import and test anywhere.
 import os, json, random
 from datetime import datetime
 import engine_core as ec
+import state_io
 
 _BOT_LOG_FILE      = "/app/logs/sentinel_bot.log"
 _BOT_LOG_MAX_LINES = 2000
-_RM_STATE_FILE     = "risk_monitor_state.json"
+# Sprint 14 (RC-2/RC-3): same shared constant risk_monitor.save_state uses,
+# so the bot's runner-decision RMW writes the SAME inode on the persistent
+# `sentinel_state:/app/state` volume — the cross-container fcntl lock and the
+# anti-spam dedup memory can never split-brain across two paths.
+_RM_STATE_FILE     = state_io.RM_STATE_FILE
 
 _DEV_LOG_FILES = {
     "sentinel-main": "/app/logs/sentinel_main.log",
@@ -49,19 +54,25 @@ def _read_last_log_lines(path: str, n: int = 50) -> str:
 def _write_runner_decision(campaign_id: str, decision: str) -> None:
     """Write runner_decision + runner_decision_ts into risk_monitor_state.json."""
     try:
+        # Whole read-modify-write under one lock so it cannot interleave
+        # with risk_monitor.save_state (shared state file, different
+        # container). Atomic write so a concurrent reader never sees a
+        # partial file. See state_io / SYSTEM_AUDIT §5.7 (Issue N3).
         try:
-            with open(_RM_STATE_FILE, "r", encoding="utf-8") as f:
-                rm_state = json.load(f)
+            os.makedirs(os.path.dirname(_RM_STATE_FILE) or ".",
+                        exist_ok=True)
         except Exception:
-            rm_state = {"positions": {}, "cluster": {}}
-        pos_entry = rm_state.setdefault("positions", {}).get(campaign_id)
-        if pos_entry is None:
-            rm_state["positions"][campaign_id] = {}
-            pos_entry = rm_state["positions"][campaign_id]
-        pos_entry["runner_decision"] = decision
-        pos_entry["runner_decision_ts"] = datetime.now().timestamp()
-        with open(_RM_STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(rm_state, f, ensure_ascii=False, indent=2)
+            pass
+        with state_io.file_lock(_RM_STATE_FILE):
+            rm_state = state_io.read_json(_RM_STATE_FILE,
+                                          {"positions": {}, "cluster": {}})
+            pos_entry = rm_state.setdefault("positions", {}).get(campaign_id)
+            if pos_entry is None:
+                rm_state["positions"][campaign_id] = {}
+                pos_entry = rm_state["positions"][campaign_id]
+            pos_entry["runner_decision"] = decision
+            pos_entry["runner_decision_ts"] = datetime.now().timestamp()
+            state_io.atomic_write_json(_RM_STATE_FILE, rm_state)
     except Exception:
         pass
 

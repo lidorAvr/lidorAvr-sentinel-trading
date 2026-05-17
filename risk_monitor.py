@@ -6,6 +6,14 @@ from dotenv import load_dotenv
 import xml.etree.ElementTree as ET
 import engine_core as ec
 import adaptive_risk_engine as are
+import state_io
+# Phase Arch-F1 (Sprint-25 F1): single shared sentinel_config.json reader.
+# risk_monitor previously kept a byte-identical local get_account_settings
+# copy with a bare `except:`. De-duplicated onto bot_helpers' reader
+# (`except Exception:`); corrupt-config behavior is byte-identical (a
+# JSONDecodeError is an Exception, caught by both) — pure parity-preserving
+# polish per Decision A = Honest. See docs/teams/PHASE_ARCHF1_IMPL.md.
+from bot_helpers import get_account_settings
 
 _HEARTBEAT_DIR = "/app/state"
 
@@ -27,12 +35,28 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 bot = telebot.TeleBot(TOKEN)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 RTL = "\u200F"
-STATE_FILE = "risk_monitor_state.json"
+# Sprint 14 RC-2/RC-3: anti-spam dedup memory MUST survive `git pull` deploys
+# AND container `--force-recreate`. The bare relative name resolved under the
+# `.:/app` git bind mount (git-tracked \u2192 reverted by every deploy \u2192 `prev`
+# was perpetually None \u2192 should_alert :151 re-pushed every position).
+# `/app/state` is the EXISTING `sentinel_state` named volume (already mounted
+# on risk-monitor at docker-compose.yml:108, same dir the heartbeat uses) \u2014
+# it survives both. No compose change. Single shared constant via state_io so
+# the risk-monitor writer and the bot_helpers RMW writer can never drift apart
+# onto two different inodes (which would split-brain the fcntl lock + state).
+STATE_FILE = state_io.RM_STATE_FILE
 
 STATUS_RANK = {
     "⚪ אין דאטה": 0, "🟢 Healthy": 1, "🔥 Power": 2, "⚠️ Climactic": 2,
     "🟡 Yellow Flag": 3, "🟡 תקין אך במעקב": 3, "🟠 Weak": 4, "🔴 Broken": 5, "🚨 קריטי": 6, "🚨 חריגת סיכון אלגו": 6
 }
+
+# Sprint 14 (Mark §4): the P0 / critical-exit status set that MUST fire
+# immediately and is NEVER suppressed by any anti-spam change — incl. on a
+# genuine first sighting (prev is None). Lifted verbatim from the existing
+# critical/broken repeat list (was inline at should_alert) so the first-sight
+# gate and the repeat gate can never drift. No status string changed.
+CRITICAL_STATUSES = ["🚨 קריטי", "🔴 Broken", "🚨 חריגת סיכון אלגו"]
 
 DEVIATION_RANK = {"unknown": 0, "normal": 1, "minor": 2, "moderate": 3, "severe": 4, "system_event": 5}
 GIVEBACK_RANK  = {"na": 0, "natural": 1, "watch": 2, "tighten": 3, "protection_failure": 4}
@@ -99,12 +123,23 @@ def _should_fire_state_alert(new_state: str, prev_alerted_type: str,
 
 
 def load_state():
-    try:
-        with open(STATE_FILE, "r", encoding="utf-8") as f: return json.load(f)
-    except: return {"positions": {}, "cluster": {}}
+    return state_io.read_json(STATE_FILE, {"positions": {}, "cluster": {}})
 
 def save_state(state):
-    with open(STATE_FILE, "w", encoding="utf-8") as f: json.dump(state, f, ensure_ascii=False, indent=2)
+    # Locked + atomic: serializes against the telegram-bot RMW in
+    # bot_helpers._write_runner_decision so the shared state file is never
+    # torn or reset. See state_io / SYSTEM_AUDIT §5.7 (Issue N3).
+    # Sprint 14: STATE_FILE now lives under the /app/state named volume.
+    # That mountpoint already exists (compose mount + heartbeat), but
+    # save_state runs BEFORE _touch_heartbeat in a cycle (:1019 then :1020),
+    # so create-if-missing here keeps atomic_write_json's mkstemp(dir=...)
+    # safe on a brand-new volume's first post-deploy cycle. No math touched.
+    try:
+        os.makedirs(os.path.dirname(STATE_FILE) or ".", exist_ok=True)
+    except Exception:
+        pass
+    with state_io.file_lock(STATE_FILE):
+        state_io.atomic_write_json(STATE_FILE, state)
 
 def get_ibkr_nav():
     try:
@@ -118,11 +153,6 @@ def get_ibkr_nav():
                 if ending_val: return float(ending_val)
         return None
     except: return None
-
-def get_account_settings():
-    try:
-        with open("sentinel_config.json", "r") as f: return json.load(f)
-    except: return {"total_deposited": 7500.0, "risk_pct_input": 0.5}
 
 def build_position_alert_key(pos, engine_data):
     # Exclude 'trigger' — it oscillates intra-day (e.g. MA10 vs trend-follow text) and
@@ -145,7 +175,19 @@ def is_during_us_market_hours():
 
 def should_alert(prev, current_status, current_key):
     now_ts = datetime.utcnow().timestamp()
-    if prev is None: return True, now_ts
+    if prev is None:
+        # Sprint 14 (Mark §1 row 1 + §4.4): drop the BLANKET `prev is None`
+        # push for NON-P0 status. With persistence fixed (RC-2/RC-3) a None
+        # `prev` is now a *genuine* first sighting (no longer the spurious
+        # state-loss case). A genuinely-new healthy/held position
+        # (🔥 Power / 🟢 Healthy / 🟡 …) is the position working → it belongs
+        # on the PULL surface (Open Tasks), NOT a push. A genuine first
+        # sighting that is ALREADY a P0/critical status
+        # (🚨 קריטי / 🔴 Broken / 🚨 חריגת סיכון אלגו) MUST still push
+        # immediately (Mark §4.1/4.3/4.5 — first-ever P0 always fires).
+        # State is still recorded by the caller either way, so any later
+        # status-worsening escalation fires normally on the next cycle.
+        return (current_status in CRITICAL_STATUSES), now_ts
 
     prev_status = prev.get("status")
     prev_key = prev.get("alert_key")
@@ -155,7 +197,7 @@ def should_alert(prev, current_status, current_key):
     if STATUS_RANK.get(current_status, 0) > STATUS_RANK.get(prev_status, 0): return True, now_ts
 
     # Critical/Broken repeat: re-alert after 6h during market hours only
-    if current_status in ["🚨 קריטי", "🔴 Broken", "🚨 חריגת סיכון אלגו"]:
+    if current_status in CRITICAL_STATUSES:
         if (now_ts - last_alert_ts) > (6 * 3600) and is_during_us_market_hours():
             return True, now_ts
         return False, last_alert_ts
@@ -642,10 +684,22 @@ def main():
         
         alert_key = build_position_alert_key(row, engine)
         prev = state["positions"].get(campaign_id)
-        
+
         do_alert, new_alert_ts = should_alert(prev, engine["status"], alert_key)
-        
-        if do_alert:
+
+        # Sprint 14 RC-6 (Mark §2 / DEC-20260511-001 / invariant #8): ALGO is
+        # observer-only and MUST NEVER push a management action. This generic
+        # recurring Live-Alert status push is exactly the path that spammed
+        # HOOD Weak→Broken→Broken once `prev` was lost. Classify management
+        # mode HERE (pure read, no math) and gate the generic push for
+        # algo_observed positions. ALGO's allowed observer-framed visibility
+        # (deep-loss one-time :849, loss-streak one-shot, deviation,
+        # 24h portfolio note) keeps firing via its OWN dedicated paths below
+        # — those are NOT this generic msg, so no ALGO P0 is suppressed.
+        _mgt_mode = ec.classify_management_mode(setup, sym)
+        _algo_observed = (_mgt_mode == "algo_observed")
+
+        if do_alert and not _algo_observed:
             issues = f" | {' | '.join(engine['issues'])}" if engine["issues"] else ""
             sizing_str = engine.get("sizing_status", "✅ תקין")
             
@@ -731,7 +785,9 @@ def main():
         except Exception:
             pass
 
-        _mgt_mode = ec.classify_management_mode(setup, sym)
+        # _mgt_mode already classified above (pure read, hoisted for the
+        # RC-6 ALGO live-alert gate); reuse it — value is identical, the
+        # downstream :771/:789/:837/:846 guards are unchanged.
 
         # Follow-through score — None for ALGO (different management) or when
         # the position is too young / history unavailable.

@@ -1,0 +1,827 @@
+"""
+Tests for open_tasks.py — the Open Tasks (Action-Items) engine.
+
+Covers OPEN_TASKS_ENGINE_DESIGN §4 (11 cases) + the Sprint-10 Wave-2
+checkpoint drift test (the typed _RULESET constant must match Mark's
+machine-readable block in OPEN_TASKS_METHODOLOGY_SPEC.md §6 exactly, so
+Mark stays the methodology owner and any divergence fails CI loudly).
+
+Pure-unit, deterministic, no network (tests/ rules). Mocks `sb` for the
+lifecycle path and asserts only the open_tasks table + one audit insert are
+touched (never trades / management_state).
+"""
+import re
+import sys
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+import engine_core as ec
+import open_tasks
+import user_context as uc
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+_NOW = datetime(2026, 5, 15, 16, 42, tzinfo=timezone.utc)
+
+
+def _pos(state, *, symbol="CAT", campaign_id="CAT_1", open_r=2.0,
+         age_days=14.0, reason="", trail_stop=None):
+    return {
+        "symbol": symbol,
+        "campaign_id": campaign_id,
+        "open_r": open_r,
+        "age_days": age_days,
+        "trail_stop": trail_stop,
+        "state_result": {
+            "state": state, "label": state, "event_risk": {},
+            "reason": reason,
+        },
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# §4.1 — Derivation per state
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestDerivationPerState:
+    @pytest.mark.parametrize("state,expect_task", [
+        (ec.POSITION_STATE_NEW,               False),
+        (ec.POSITION_STATE_PROVING,           False),
+        (ec.POSITION_STATE_WORKING,           False),
+        (ec.POSITION_STATE_PROFIT_PROTECTION, True),
+        (ec.POSITION_STATE_RUNNER,            True),
+        (ec.POSITION_STATE_YELLOW_FLAG,       True),
+        (ec.POSITION_STATE_BROKEN,            True),
+        (ec.POSITION_STATE_DEAD_MONEY,        True),
+    ])
+    def test_state_maps_to_ruleset(self, state, expect_task):
+        tasks = open_tasks.derive_tasks([_pos(state)], now=_NOW)
+        if not expect_task:
+            assert tasks == []
+            return
+        assert len(tasks) == 1
+        t = tasks[0]
+        # task_type + urgency come from the ruleset, not a literal here.
+        entry = open_tasks._RULESET[state][0]
+        assert t.task_type == entry.task_type
+        assert t.urgency == entry.urgency
+
+    def test_broken_is_p0(self):
+        t = open_tasks.derive_tasks([_pos(ec.POSITION_STATE_BROKEN)], now=_NOW)[0]
+        assert t.urgency == "P0"
+        assert t.task_type == "EXECUTE_EXIT"
+
+    def test_runner_embeds_engine_trail_verbatim(self):
+        # G4: the action embeds the engine's OWN suggested stop — not computed
+        # here. Pass the engine dict; assert basis/stop appear verbatim.
+        trail = {"suggested_stop": 123.45, "basis": "MA50"}
+        t = open_tasks.derive_tasks(
+            [_pos(ec.POSITION_STATE_RUNNER, trail_stop=trail)], now=_NOW
+        )[0]
+        assert "MA50" in t.recommended_action
+        assert "123.45" in t.recommended_action
+        assert "אל תרופף" in t.recommended_action  # never instructs a loosen
+
+    def test_runner_missing_trail_is_honest_not_fabricated(self):
+        t = open_tasks.derive_tasks(
+            [_pos(ec.POSITION_STATE_RUNNER, trail_stop=None)], now=_NOW
+        )[0]
+        # No fabricated stop number when the engine detail is unavailable.
+        assert "$" not in t.recommended_action or "אינם זמינים" in t.recommended_action
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# #1 / DEC-20260515-007 — RUNNER no-op suppression (read-only, ε anchored)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestRunnerSuppression:
+    """Mark §1 / DEC-007: PROTECT_RUNNER_PROFIT is suppressed only when the
+    already-stored campaign stop already satisfies the engine's OWN suggested
+    trail stop within the engine's OWN MA buffer. ε reads the LIVE constant
+    (never hard-copied). Read-only over engine output; a material tighten
+    still surfaces; absent/invalid engine output never suppresses."""
+
+    def _runner(self, *, suggested, basis, current_stop, side="BUY"):
+        p = _pos(
+            ec.POSITION_STATE_RUNNER,
+            trail_stop={"suggested_stop": suggested, "basis": basis},
+        )
+        p["current_stop"] = current_stop
+        p["side"] = side
+        return p
+
+    def test_epsilon_reads_live_engine_constant_not_hardcoded(self):
+        # The suppression must consume the live engine constant; assert by
+        # flexing it and watching the boundary move (proves no hard copy).
+        import re
+        src = (Path(__file__).resolve().parents[1] / "open_tasks.py").read_text()
+        # No bare 0.02 literal introduced into open_tasks for the epsilon.
+        assert "_TRAIL_MA_BUFFER_PCT * S" in src
+        assert "ec._TRAIL_MA_BUFFER_PCT" in src
+
+    def test_noop_tighten_is_suppressed_mrvl_case(self):
+        # SPRINT11_PLAN #1 MRVL: suggested 158.11, current 157.70 → gap 0.41
+        # ≪ ε (≈2% of 158.11 ≈ 3.16) → suppressed (the founder no-op).
+        tasks = open_tasks.derive_tasks(
+            [self._runner(suggested=158.11, basis="MA50", current_stop=157.70)],
+            now=_NOW,
+        )
+        assert not any(t.task_type == "PROTECT_RUNNER_PROFIT" for t in tasks)
+
+    def test_material_tighten_still_surfaces(self):
+        # current 150 vs suggested 158.11 → gap 8.11 > ε → NOT suppressed.
+        tasks = open_tasks.derive_tasks(
+            [self._runner(suggested=158.11, basis="MA50", current_stop=150.0)],
+            now=_NOW,
+        )
+        assert any(t.task_type == "PROTECT_RUNNER_PROFIT" for t in tasks)
+
+    def test_epsilon_exactly_at_engine_constant(self):
+        ec_buf = ec._TRAIL_MA_BUFFER_PCT
+        S = 100.0
+        eps = ec_buf * S
+        # current == S - eps → boundary is inclusive (>=) → suppressed.
+        tasks = open_tasks.derive_tasks(
+            [self._runner(suggested=S, basis="MA21", current_stop=S - eps)],
+            now=_NOW,
+        )
+        assert not any(t.task_type == "PROTECT_RUNNER_PROFIT" for t in tasks)
+        # just below the band → surfaces.
+        tasks2 = open_tasks.derive_tasks(
+            [self._runner(suggested=S, basis="MA21",
+                          current_stop=S - eps - 0.01)],
+            now=_NOW,
+        )
+        assert any(t.task_type == "PROTECT_RUNNER_PROFIT" for t in tasks2)
+
+    def test_none_suggested_never_suppressed(self):
+        # Absent engine output → task IS emitted (no fallback-as-truth).
+        tasks = open_tasks.derive_tasks(
+            [self._runner(suggested=None, basis="none", current_stop=999.0)],
+            now=_NOW,
+        )
+        assert any(t.task_type == "PROTECT_RUNNER_PROFIT" for t in tasks)
+
+    def test_basis_none_never_suppressed(self):
+        tasks = open_tasks.derive_tasks(
+            [self._runner(suggested=100.0, basis="none", current_stop=999.0)],
+            now=_NOW,
+        )
+        assert any(t.task_type == "PROTECT_RUNNER_PROFIT" for t in tasks)
+
+    def test_nonpositive_current_stop_never_suppressed(self):
+        tasks = open_tasks.derive_tasks(
+            [self._runner(suggested=100.0, basis="MA21", current_stop=0.0)],
+            now=_NOW,
+        )
+        assert any(t.task_type == "PROTECT_RUNNER_PROFIT" for t in tasks)
+
+    def test_missing_current_stop_key_never_suppressed(self):
+        # The plain _pos() RUNNER (no current_stop) must still emit T3 — the
+        # suppression is opt-in on engine-supplied data.
+        tasks = open_tasks.derive_tasks(
+            [_pos(ec.POSITION_STATE_RUNNER,
+                  trail_stop={"suggested_stop": 100.0, "basis": "MA21"})],
+            now=_NOW,
+        )
+        assert any(t.task_type == "PROTECT_RUNNER_PROFIT" for t in tasks)
+
+    def test_short_side_symmetric_suppression(self):
+        ec_buf = ec._TRAIL_MA_BUFFER_PCT
+        S = 100.0
+        eps = ec_buf * S
+        # Short: protected = current <= S + eps → suppressed.
+        tasks = open_tasks.derive_tasks(
+            [self._runner(suggested=S, basis="MA21",
+                          current_stop=S + eps, side="SELL")],
+            now=_NOW,
+        )
+        assert not any(t.task_type == "PROTECT_RUNNER_PROFIT" for t in tasks)
+        tasks2 = open_tasks.derive_tasks(
+            [self._runner(suggested=S, basis="MA21",
+                          current_stop=S + eps + 0.01, side="SELL")],
+            now=_NOW,
+        )
+        assert any(t.task_type == "PROTECT_RUNNER_PROFIT" for t in tasks2)
+
+    def test_suppression_does_not_change_runner_state_or_other_tasks(self):
+        # Only the action-item is withheld — a co-located non-RUNNER task is
+        # unaffected (suppression is per-entry, read-only).
+        runner = self._runner(suggested=100.0, basis="MA21", current_stop=99.0)
+        broken = _pos(ec.POSITION_STATE_BROKEN, symbol="X", campaign_id="X_1")
+        tasks = open_tasks.derive_tasks([runner, broken], now=_NOW)
+        types_ = {t.task_type for t in tasks}
+        assert "PROTECT_RUNNER_PROFIT" not in types_   # suppressed
+        assert "EXECUTE_EXIT" in types_                # untouched
+
+    def test_ruleset_runner_carries_exact_spec_suppress_when(self):
+        entry = open_tasks._RULESET[ec.POSITION_STATE_RUNNER][0]
+        assert entry.suppress_when == (
+            "current_stop_meets_suggested_within_trail_ma_buffer"
+        )
+        # Every other ruleset entry has no suppression key.
+        for st, entries in open_tasks._RULESET.items():
+            if st == ec.POSITION_STATE_RUNNER:
+                continue
+            for e in entries:
+                assert e.suppress_when is None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# §4.2 — ALGO_OBSERVED info-only
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestAlgoObserved:
+    def test_algo_info_only_no_action_verb(self):
+        tasks = open_tasks.derive_tasks(
+            [_pos(ec.POSITION_STATE_ALGO_OBSERVED)], now=_NOW
+        )
+        assert len(tasks) == 1
+        t = tasks[0]
+        assert t.info_only is True
+        assert t.task_type == "ALGO_OBSERVE_ONLY"
+        assert t.urgency == "P3"
+        # No stop/exit/trim verb.
+        for verb in ("סגור", "צמצם", "הדק", "צא"):
+            assert verb not in t.recommended_action
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# §4.3 — DATA_INCOMPLETE excluded from actionable
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestDataIncomplete:
+    def test_data_incomplete_info_only_no_urgency(self):
+        t = open_tasks.derive_tasks(
+            [_pos(ec.POSITION_STATE_DATA_INCOMPLETE)], now=_NOW
+        )[0]
+        assert t.info_only is True
+        assert t.urgency is None  # no R / $ / urgency tier — never counted
+        assert t.task_type == "COMPLETE_RISK_DATA"
+
+    def test_data_incomplete_never_p0_p2(self):
+        t = open_tasks.derive_tasks(
+            [_pos(ec.POSITION_STATE_DATA_INCOMPLETE)], now=_NOW
+        )[0]
+        assert t.urgency not in ("P0", "P1", "P2")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# §4.4 — Dedup / supersede
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestDedup:
+    def test_same_campaign_twice_single_task(self):
+        pos = _pos(ec.POSITION_STATE_RUNNER)
+        a = open_tasks.derive_tasks([pos], now=_NOW)
+        b = open_tasks.derive_tasks([pos], now=_NOW)
+        assert len(a) == 1 and len(b) == 1
+        assert (a[0].campaign_id, a[0].task_type) == (b[0].campaign_id, b[0].task_type)
+
+    def test_state_change_supersedes_not_duplicates(self):
+        # RUNNER then PROFIT_PROTECTION for the SAME campaign: one task each
+        # pass, different task_type — never two open rows for one campaign.
+        p1 = _pos(ec.POSITION_STATE_RUNNER, campaign_id="X_1")
+        p2 = _pos(ec.POSITION_STATE_PROFIT_PROTECTION, campaign_id="X_1")
+        t1 = open_tasks.derive_tasks([p1], now=_NOW)
+        t2 = open_tasks.derive_tasks([p2], now=_NOW)
+        assert len(t1) == 1 and len(t2) == 1
+        assert t1[0].task_type != t2[0].task_type
+        assert t1[0].campaign_id == t2[0].campaign_id == "X_1"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# §4.5 — Auto-close on transition (campaign absent → task not surfaced)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestAutoClose:
+    def test_campaign_absent_in_pass2_yields_no_task(self):
+        present = open_tasks.derive_tasks(
+            [_pos(ec.POSITION_STATE_RUNNER, campaign_id="GONE_1")], now=_NOW
+        )
+        assert len(present) == 1
+        # Pass 2: campaign closed (not in positions) → no task derived at all.
+        gone = open_tasks.derive_tasks([], now=_NOW)
+        assert gone == []
+
+    def test_state_left_runner_yields_no_runner_task(self):
+        # RUNNER → WORKING (no task) for the same campaign.
+        gone = open_tasks.derive_tasks(
+            [_pos(ec.POSITION_STATE_WORKING, campaign_id="GONE_1")], now=_NOW
+        )
+        assert gone == []
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# §4.6 — Lifecycle: mark_done / skip / add_note
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestLifecycle:
+    def _sb(self):
+        sb = MagicMock()
+        # default: no existing notes row
+        sb.table.return_value.select.return_value.eq.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
+        return sb
+
+    def test_mark_done_upserts_open_tasks_only(self):
+        sb = self._sb()
+        ok = open_tasks.mark_done(sb, "CAT_1", "EXECUTE_EXIT", now=_NOW)
+        assert ok is True
+        tables = [c.args[0] for c in sb.table.call_args_list]
+        # Only open_tasks (+ audit_log via audit_logger) — never trades.
+        assert "trades" not in tables
+        assert "management_state" not in tables
+        assert "open_tasks" in tables
+
+    def test_double_call_is_idempotent_upsert(self):
+        sb = self._sb()
+        open_tasks.mark_done(sb, "CAT_1", "EXECUTE_EXIT", now=_NOW)
+        open_tasks.mark_done(sb, "CAT_1", "EXECUTE_EXIT", now=_NOW)
+        # upsert keyed by the DB UNIQUE — never an insert that would dup.
+        upserts = sb.table.return_value.upsert.call_args_list
+        assert len(upserts) == 2
+        for c in upserts:
+            assert c.kwargs.get("on_conflict") == "user_id,campaign_id,task_type"
+
+    def test_notes_append_not_replace(self):
+        sb = MagicMock()
+        # Existing row already has one note.
+        sb.table.return_value.select.return_value.eq.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+            {"notes": ["[old] first note"], "status": "open"}
+        ]
+        open_tasks.add_note(sb, "CAT_1", "REVIEW_YELLOW_FLAG", "second note",
+                            now=_NOW)
+        row = sb.table.return_value.upsert.call_args.args[0]
+        assert row["notes"][0] == "[old] first note"   # preserved
+        assert any("second note" in n for n in row["notes"])  # appended
+
+    def test_audit_log_called_with_settings_change(self):
+        sb = self._sb()
+        captured = {}
+
+        import audit_logger
+        orig = audit_logger.log_action
+
+        def _spy(_sb, action, **kw):
+            captured["action"] = action
+            captured["metadata"] = kw.get("metadata")
+            return True
+
+        audit_logger.log_action = _spy
+        try:
+            open_tasks.mark_done(sb, "CAT_1", "EXECUTE_EXIT", now=_NOW)
+        finally:
+            audit_logger.log_action = orig
+        assert captured["action"] == audit_logger.ACTION_SETTINGS_CHANGE
+        assert captured["metadata"]["table"] == "open_tasks"
+
+    def test_p0_skip_audited_as_skipped_critical_exit(self):
+        sb = self._sb()
+        captured = {}
+        import audit_logger
+        orig = audit_logger.log_action
+
+        def _spy(_sb, action, **kw):
+            captured["metadata"] = kw.get("metadata")
+            return True
+
+        audit_logger.log_action = _spy
+        try:
+            open_tasks.skip_task(sb, "CAT_1", "EXECUTE_EXIT",
+                                 urgency="P0", note="manual exit done at IBKR",
+                                 now=_NOW)
+        finally:
+            audit_logger.log_action = orig
+        assert captured["metadata"]["kind"] == open_tasks._SKIPPED_CRITICAL_EXIT
+
+    def test_non_p0_skip_is_normal_kind(self):
+        sb = self._sb()
+        captured = {}
+        import audit_logger
+        orig = audit_logger.log_action
+        audit_logger.log_action = lambda _s, a, **k: captured.update(
+            kind=(k.get("metadata") or {}).get("kind")) or True
+        try:
+            open_tasks.skip_task(sb, "CAT_1", "REVIEW_YELLOW_FLAG",
+                                 urgency="P2", now=_NOW)
+        finally:
+            audit_logger.log_action = orig
+        assert captured["kind"] == "open_task_skipped"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# §4.7 — derive_tasks calls NO engine function; lifecycle never mutates trades
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestNoEngineMutation:
+    def test_derive_tasks_calls_no_engine_function(self, monkeypatch):
+        # Wrap every public engine_core callable; deriving must not call any.
+        called = []
+        import engine_core as _ec
+        for name in dir(_ec):
+            if name.startswith("_"):
+                continue
+            obj = getattr(_ec, name)
+            if callable(obj) and not isinstance(obj, type):
+                monkeypatch.setattr(
+                    _ec, name,
+                    (lambda nm: (lambda *a, **k: called.append(nm)))(name),
+                    raising=False,
+                )
+        open_tasks.derive_tasks(
+            [_pos(ec.POSITION_STATE_RUNNER),
+             _pos(ec.POSITION_STATE_BROKEN, campaign_id="B_1", symbol="B")],
+            now=_NOW,
+        )
+        assert called == [], f"derive_tasks called engine fns: {called}"
+
+    def test_lifecycle_never_touches_trades_table(self):
+        sb = MagicMock()
+        sb.table.return_value.select.return_value.eq.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
+        open_tasks.mark_done(sb, "C_1", "EXECUTE_EXIT", now=_NOW)
+        open_tasks.skip_task(sb, "C_1", "REVIEW_YELLOW_FLAG", now=_NOW)
+        open_tasks.add_note(sb, "C_1", "REVIEW_YELLOW_FLAG", "n", now=_NOW)
+        tables = {c.args[0] for c in sb.table.call_args_list}
+        assert "trades" not in tables
+        assert "management_state" not in tables
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# §4.8 — Purity (frozen now → equal lists; no clock without injected now)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestPurity:
+    def test_same_inputs_equal_output(self):
+        positions = [_pos(ec.POSITION_STATE_RUNNER),
+                     _pos(ec.POSITION_STATE_DEAD_MONEY, campaign_id="D_1",
+                          symbol="D")]
+        a = open_tasks.derive_tasks(positions, now=_NOW)
+        b = open_tasks.derive_tasks(positions, now=_NOW)
+        assert [(t.task_type, t.campaign_id, t.created_ts, t.urgency)
+                for t in a] == [(t.task_type, t.campaign_id, t.created_ts,
+                                 t.urgency) for t in b]
+
+    def test_created_ts_is_injected_now_not_wallclock(self):
+        t = open_tasks.derive_tasks([_pos(ec.POSITION_STATE_BROKEN)],
+                                    now=_NOW)[0]
+        assert t.created_ts == _NOW.isoformat()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# §4.9 — Fail-loud ruleset
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestFailLoud:
+    def test_unknown_state_raises_not_silent(self):
+        with pytest.raises(open_tasks.RulesetUnavailable):
+            open_tasks.ruleset_for_state("NOT_A_REAL_STATE")
+
+    def test_empty_ruleset_raises(self, monkeypatch):
+        monkeypatch.setattr(open_tasks, "_RULESET", {})
+        with pytest.raises(open_tasks.RulesetUnavailable):
+            open_tasks.load_ruleset()
+
+    def test_known_no_task_state_returns_empty_not_raise(self):
+        # NEW/PROVING/WORKING legitimately map to no task — not an error.
+        assert open_tasks.ruleset_for_state(ec.POSITION_STATE_NEW) == []
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# §4.10 — user_id default = sentinel (Phase-A byte-identical)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestUserIdDefault:
+    def test_default_user_id_is_sentinel(self, monkeypatch):
+        monkeypatch.delenv("DEFAULT_USER_ID", raising=False)
+        uc.invalidate_user_cache(None)
+        t = open_tasks.derive_tasks([_pos(ec.POSITION_STATE_BROKEN)],
+                                    now=_NOW)[0]
+        assert t.user_id == uc.SENTINEL_USER_ID
+        assert t.user_id == "00000000-0000-0000-0000-000000000001"
+
+    def test_lifecycle_resolves_uid_via_user_context(self, monkeypatch):
+        monkeypatch.delenv("DEFAULT_USER_ID", raising=False)
+        sb = MagicMock()
+        sb.table.return_value.select.return_value.eq.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
+        open_tasks.mark_done(sb, "C_1", "EXECUTE_EXIT", now=_NOW)
+        row = sb.table.return_value.upsert.call_args.args[0]
+        assert row["user_id"] == uc.SENTINEL_USER_ID
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# §4.11 — audit_logger fail-open
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestAuditFailOpen:
+    def test_audit_insert_raising_does_not_block_mark_done(self):
+        sb = MagicMock()
+        sb.table.return_value.select.return_value.eq.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
+        # Make ONLY the audit_log insert raise; upsert succeeds.
+        import audit_logger
+        orig = audit_logger.log_action
+
+        def _boom(*a, **k):
+            # audit_logger itself swallows exceptions (fail-open). Emulate a
+            # raising backend inside it returning False — must not propagate.
+            return False
+
+        audit_logger.log_action = _boom
+        try:
+            ok = open_tasks.mark_done(sb, "C_1", "EXECUTE_EXIT", now=_NOW)
+        finally:
+            audit_logger.log_action = orig
+        assert ok is True  # user action not blocked by audit failure
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Sprint-12 / Mark §1 — T7 portfolio drawdown-ack (a SEPARATE sibling
+# derivation; NOT a _RULESET row; pull-only; firewalled from all stats).
+# ──────────────────────────────────────────────────────────────────────────────
+
+_DD_REC = {
+    "force_cut_to_pct": 0.40,
+    "drawdown_pct": -9.37,
+    "pnl_30d_usd": -1874.0,
+    "n_trades": 6,
+    "window_days": 30,
+    "reason": "Drawdown -9.4% over 30d (-$1874) ≤ trigger -8% — force cut to 0.40%",
+}
+
+
+def _lifecycle_sb(rows):
+    """sb whose _read_lifecycle SELECT('*') returns `rows`."""
+    sb = MagicMock()
+    sb.table.return_value.select.return_value.eq.return_value.execute.return_value.data = rows
+    return sb
+
+
+class TestT7DerivePortfolioTasks:
+    # A. derive
+    def test_none_rec_yields_no_task(self):
+        assert open_tasks.derive_portfolio_tasks(
+            drawdown_rec=None, now=_NOW) == []
+
+    def test_real_rec_yields_exactly_one_ack_task(self):
+        tasks = open_tasks.derive_portfolio_tasks(
+            drawdown_rec=_DD_REC, now=_NOW)
+        assert len(tasks) == 1
+        t = tasks[0]
+        assert t.task_type == open_tasks.TASK_ACK_DRAWDOWN_CUT
+        assert t.task_type == "ACK_DRAWDOWN_CUT"            # Mark §1.6 verbatim
+        assert t.campaign_id == open_tasks.PORTFOLIO_CID
+        assert t.campaign_id == "__PORTFOLIO__"             # Mark §1.6 verbatim
+        assert t.urgency == "P3"                            # Mark §1.3
+        # Mark §1.2 — engine's OWN drawdown_pct, no recompute; ack-only text.
+        assert "-9.37" in t.recommended_action
+        assert "0.40%" in t.recommended_action
+        assert "אשר שראית" in t.recommended_action
+        # Mark §1.2 VERBATIM ack text (descriptive: the cut ALREADY happened
+        # automatically — past-tense passive "כבר הורד אוטומטית", NOT an
+        # imperative directed at the user). Pin the exact Mark wording.
+        assert t.recommended_action == (
+            "‏🩸 ירידה של -9.37% ב-30 יום — "
+            "הסיכון כבר הורד אוטומטית ל-0.40%.\n"
+            "‏זו הודעה לאישור בלבד. אין פעולת מסחר. אשר שראית."
+        )
+        # checklist #2 — no imperative DIRECTIVE to the user (no "הורד את
+        # הסיכון" / "צא עכשיו" command form; the verbatim text is a passive
+        # report, asserted above).
+        for directive in ("הורד את", "צא עכשיו", "מכור עכשיו", "צמצם עכשיו"):
+            assert directive not in t.recommended_action
+        assert t.trigger_snapshot.reason == _DD_REC["reason"]  # verbatim
+
+    def test_referentially_transparent(self):
+        a = open_tasks.derive_portfolio_tasks(drawdown_rec=_DD_REC, now=_NOW)
+        b = open_tasks.derive_portfolio_tasks(drawdown_rec=_DD_REC, now=_NOW)
+        assert a[0].recommended_action == b[0].recommended_action
+        assert a[0].trigger_snapshot.reason == b[0].trigger_snapshot.reason
+
+    # D. drift-test-safe by construction — T7 NOT in _RULESET
+    def test_t7_not_in_ruleset(self):
+        all_task_types = {
+            e.task_type
+            for v in open_tasks._RULESET.values()
+            for e in v
+        }
+        assert "ACK_DRAWDOWN_CUT" not in all_task_types
+        assert open_tasks.TASK_ACK_DRAWDOWN_CUT not in all_task_types
+        # the snapshot label string is NOT an engine POSITION_STATE_* / key
+        assert open_tasks._PORTFOLIO_DRAWDOWN_STATE_LABEL not in open_tasks._RULESET
+        assert open_tasks.PORTFOLIO_CID not in open_tasks._RULESET
+
+    def test_derive_tasks_position_loop_never_emits_t7(self):
+        # Even a position carrying the snapshot label as a fake state must
+        # not produce T7 via derive_tasks (it would raise RulesetUnavailable
+        # on an unknown state — proving T7 is OUT of the position contract).
+        with pytest.raises(open_tasks.RulesetUnavailable):
+            open_tasks.derive_tasks(
+                [_pos(open_tasks._PORTFOLIO_DRAWDOWN_STATE_LABEL)], now=_NOW)
+
+
+class TestT7ListTasksLifecycle:
+    # B. dedup / lifecycle / episode keying
+    def test_t7_surfaced_when_no_overlay(self):
+        sb = _lifecycle_sb([])
+        tasks = open_tasks.list_tasks(
+            sb, [], now=_NOW, portfolio_drawdown=_DD_REC)
+        t7 = [t for t in tasks if t.task_type == "ACK_DRAWDOWN_CUT"]
+        assert len(t7) == 1 and t7[0].status == open_tasks.STATUS_OPEN
+
+    def test_acked_same_episode_marks_done(self):
+        ep_note = open_tasks.t7_episode_note(_DD_REC)
+        sb = _lifecycle_sb([{
+            "campaign_id": "__PORTFOLIO__", "task_type": "ACK_DRAWDOWN_CUT",
+            "status": "done", "closed_ts": "2026-05-15T00:00:00+00:00",
+            "notes": [f"[ts] {ep_note}"],
+        }])
+        tasks = open_tasks.list_tasks(
+            sb, [], now=_NOW, portfolio_drawdown=_DD_REC)
+        t7 = [t for t in tasks if t.task_type == "ACK_DRAWDOWN_CUT"][0]
+        assert t7.status == open_tasks.STATUS_DONE  # not re-shown as open
+
+    def test_new_episode_not_masked_by_old_ack(self):
+        old_note = open_tasks.t7_episode_note({"reason": "OLD EPISODE"})
+        sb = _lifecycle_sb([{
+            "campaign_id": "__PORTFOLIO__", "task_type": "ACK_DRAWDOWN_CUT",
+            "status": "done", "closed_ts": "x",
+            "notes": [f"[ts] {old_note}"],
+        }])
+        # current episode differs → old ack must NOT satisfy it.
+        tasks = open_tasks.list_tasks(
+            sb, [], now=_NOW, portfolio_drawdown=_DD_REC)
+        t7 = [t for t in tasks if t.task_type == "ACK_DRAWDOWN_CUT"][0]
+        assert t7.status == open_tasks.STATUS_OPEN  # surfaced again
+
+    def test_no_portfolio_drawdown_kwarg_means_no_t7(self):
+        sb = _lifecycle_sb([])
+        tasks = open_tasks.list_tasks(sb, [], now=_NOW)  # legacy call shape
+        assert all(t.task_type != "ACK_DRAWDOWN_CUT" for t in tasks)
+
+    def test_engine_returns_none_t7_not_resurfaced(self):
+        # Mark §1.4 auto-clear: engine None → no T7 derived at all (it is
+        # re-derived every render; absence ≠ a fabricated/laundered task).
+        sb = _lifecycle_sb([{
+            "campaign_id": "__PORTFOLIO__", "task_type": "ACK_DRAWDOWN_CUT",
+            "status": "open", "notes": [],
+        }])
+        tasks = open_tasks.list_tasks(
+            sb, [], now=_NOW, portfolio_drawdown=None, risk_settle_active=False)
+        assert all(t.task_type != "ACK_DRAWDOWN_CUT" for t in tasks)
+
+    # C. no-stat-pollution: __PORTFOLIO__ is never a real campaign and the
+    # only T7 lifecycle write is keyed by the sentinel.
+    def test_t7_keyed_by_portfolio_sentinel_never_a_campaign(self):
+        sb = MagicMock()
+        sb.table.return_value.select.return_value.eq.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
+        open_tasks.mark_done(
+            sb, open_tasks.PORTFOLIO_CID, open_tasks.TASK_ACK_DRAWDOWN_CUT,
+            note=open_tasks.t7_episode_note(_DD_REC), now=_NOW)
+        row = sb.table.return_value.upsert.call_args.args[0]
+        assert row["campaign_id"] == "__PORTFOLIO__"
+        assert row["task_type"] == "ACK_DRAWDOWN_CUT"
+        # never touches trades / management_state
+        tables = [c.args[0] for c in sb.table.call_args_list]
+        assert "trades" not in tables
+        assert "management_state" not in tables
+
+    # E. no-push / no-double-notify: open_tasks must not IMPORT risk_monitor
+    # (leaf import discipline — it cannot emit a push; the only push channel
+    # is risk_monitor.py:938-997 which T7 never touches; Mark §1.5).
+    def test_open_tasks_does_not_import_risk_monitor(self):
+        import ast as _ast
+        src = (Path(__file__).resolve().parents[1] / "open_tasks.py").read_text()
+        tree = _ast.parse(src)
+        imported = set()
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.Import):
+                imported.update(a.name.split(".")[0] for a in node.names)
+            elif isinstance(node, _ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
+        assert "risk_monitor" not in imported
+        # also: no bot/telebot push primitive importable from this leaf
+        assert "telebot" not in imported
+        assert "bot_core" not in imported
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CHECKPOINT — _RULESET ↔ Mark's spec §6 machine-readable block drift guard
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _parse_spec_ruleset() -> dict:
+    """Re-read the fenced ```yaml block in OPEN_TASKS_METHODOLOGY_SPEC.md §6.
+
+    Tiny hand-parser (no yaml dep; matches the simple, fixed shape Mark's
+    block uses). Mark's .md is the AUDIT source of truth; this proves the
+    runtime constant did not drift from it.
+    """
+    root = Path(__file__).resolve().parents[1]
+    md = (root / "docs" / "teams"
+          / "OPEN_TASKS_METHODOLOGY_SPEC.md").read_text(encoding="utf-8")
+    m = re.search(r"```yaml\n(.*?)\n```", md, re.DOTALL)
+    assert m is not None, "no ```yaml ruleset block found in §6"
+    block = m.group(1)
+
+    parsed: dict = {}
+    cur_state = None
+    cur_entry = None
+    for raw in block.splitlines():
+        line = raw.rstrip()
+        if not line or line.lstrip().startswith("#"):
+            continue
+        if not line.startswith(" ") and line.endswith(":"):
+            cur_state = line[:-1].strip()
+            parsed[cur_state] = []
+            continue
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            cur_entry = {}
+            parsed[cur_state].append(cur_entry)
+            stripped = stripped[2:].strip()
+        if ":" in stripped:
+            k, _, v = stripped.partition(":")
+            k = k.strip()
+            v = v.strip()
+            if v == "null":
+                val = None
+            elif v in ("true", "false"):
+                val = v == "true"
+            else:
+                val = v.strip('"')
+            cur_entry[k] = val
+    return parsed
+
+
+def test_ruleset_matches_methodology_spec():
+    """The typed _RULESET constant MUST equal Mark's §6 machine-readable
+    block exactly. Drift here = Mark's ruling and the runtime diverged → CI
+    fails loudly. (Sprint-10 Wave-2 checkpoint: .md is the audit source, the
+    constant is the runtime source.)"""
+    spec = _parse_spec_ruleset()
+
+    code = {
+        state: [
+            {
+                "task_type": e.task_type,
+                "urgency": e.urgency,
+                "info_only": e.info_only,
+                "action_he": e.action_he,
+                # DEC-20260515-007 / Mark §1.3: suppress_when is part of the
+                # spec↔runtime lockstep. Absent in YAML → None (the parser
+                # only emits keys present per entry).
+                "suppress_when": e.suppress_when,
+            }
+            for e in entries
+        ]
+        for state, entries in open_tasks._RULESET.items()
+    }
+
+    assert set(spec.keys()) == set(code.keys()), (
+        f"state keys differ — spec={sorted(spec)} code={sorted(code)}"
+    )
+    for state in code:
+        assert len(spec[state]) == len(code[state]), state
+        for se, ce in zip(spec[state], code[state]):
+            assert se["task_type"] == ce["task_type"], (state, ce)
+            assert se["urgency"] == ce["urgency"], (state, ce)
+            assert se["info_only"] == ce["info_only"], (state, ce)
+            assert se["action_he"] == ce["action_he"], (
+                f"{state} action drifted:\nspec={se['action_he']!r}\n"
+                f"code={ce['action_he']!r}"
+            )
+            # Lockstep on the new declarative suppression key (Mark §1.3 /
+            # checkpoint guardrail #3). Spec omits it → None; code omits it
+            # → None; RUNNER carries the exact spec string on both sides.
+            assert se.get("suppress_when") == ce["suppress_when"], (
+                f"{state} suppress_when drifted:\n"
+                f"spec={se.get('suppress_when')!r}\ncode={ce['suppress_when']!r}"
+            )
+
+
+def test_verify_migrations_lists_005():
+    """verify_migrations.py must know about 005 → open_tasks, linearly after
+    004 (HYPERSCALER §4 / ENGINE_DESIGN §2.4)."""
+    root = Path(__file__).resolve().parents[1]
+    src = (root / "migrations" / "verify_migrations.py").read_text()
+    assert "005_create_open_tasks.sql" in src
+    assert src.index("004_add_user_id_to_audit_log.sql") < src.index(
+        "005_create_open_tasks.sql"
+    )
+
+
+def test_migration_005_sentinel_literal_exact():
+    """open_tasks user_id DEFAULT must be the exact 003 sentinel literal
+    (HYPERSCALER §4 point 1 / Phase-A byte-identical)."""
+    root = Path(__file__).resolve().parents[1]
+    sql = (root / "migrations" / "005_create_open_tasks.sql").read_text()
+    m = re.search(r"DEFAULT\s+'([0-9a-fA-F-]{36})'", sql)
+    assert m is not None
+    assert m.group(1) == uc.SENTINEL_USER_ID

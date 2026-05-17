@@ -37,6 +37,17 @@ Common fields observed in the system:
 
 Do not assume every field is always populated. Existing code often handles missing values.
 
+**`pnl_usd` is the authoritative broker-side NET realized PnL (commission
+already deducted).** The DEC-019/-020 raw-Supabase reconciliation
+(to the cent: April +$336.14 / +11.01R / PF 4.03) proved production
+`pnl_usd` is net of commission. The realized-PnL path
+(`analytics_engine._aggregate_campaigns` → `sells["pnl_usd"].sum()`) reads
+ONLY `pnl_usd`; `commission` is **informational/audit-only and MUST NOT be
+subtracted again** anywhere in the realized-PnL / R / Net-R / Expectancy
+math — doing so would double-count commission. (Sprint-25 A2/Data-F6:
+this clarifies a documentation gap; no code change — `commission` is
+listed above but was never read by the realized path, by design.)
+
 ## Side and quantity rules
 
 Current logic assumes:
@@ -60,6 +71,25 @@ One campaign can include:
 - management notes
 
 Campaign-level calculations should not treat every row as a separate independent trade.
+
+**Period-boundary / closed-campaign window rule (validated invariant —
+do not "fix" without a regression proof).** For a reporting window
+`[period_start, period_end)`, a campaign counts as **closed for that
+period** if it has **ANY SELL whose `trade_date` falls in
+`[period_start, period_end)`** — NOT only if its *last* SELL falls in the
+window. This is `analytics_engine._get_closed_campaigns`'s real,
+DEC-019/-020-reconciled behaviour (the April `8 / +$180.49 / WR .375 /
+PF 2.626 / excl 2` ground truth depends on exactly this any-in-window-SELL
+semantics). The in-code `_get_closed_campaigns` docstring historically
+said "whose last SELL" — that wording is INACCURATE; the Sprint-24 in-code
+CORRECTNESS NOTE and this contract clause are authoritative. A campaign
+with a partial SELL inside the window and its final SELL *after*
+`period_end` IS counted as closed for the period. Changing this to
+match the stale "last SELL" docstring would silently alter the validated
+campaign set — a forbidden campaign-aggregation change without tests.
+(Sprint-25 A2/Data-F7: doc-only — pins a validated invariant against
+future regression; the LOCKED April regression already pins it
+numerically.)
 
 ## stat_bucket contract
 
@@ -88,6 +118,39 @@ Rules:
 
 The `adaptive_risk_engine.compute_closed_campaigns(df)` function attaches `stat_bucket` to each campaign dict. All downstream stats must read from that field.
 
+**F6 — two intentional Profit-Factor conventions; do NOT "unify" one side (Sprint-25 audit).**
+There are deliberately **two** PF conventions in the codebase and they must stay separate:
+
+- `analytics_engine` profit-factor uses **raw `math.inf`** for a countable set with wins
+  and zero losses (`gross_profit / 0 → math.inf`). DEC-20260516-021 lists this `math.inf`
+  branch as **intentional / DO-NOT-TOUCH**. It is clamped everywhere checked
+  (`compute_trader_development_score`, verdict, renderer); the residual risk is only future
+  serialization / period-delta math, not a current headline.
+- The **`99.0` sentinel** lives **only** in the dashboard `_bucket_stats` (a display cap),
+  NOT in `analytics_engine`.
+
+A future edit must NOT "unify" these — replacing the `analytics_engine` `math.inf` with the
+dashboard `99.0` (or vice-versa) would change the locked April PF `2.6262` path / the
+serialized PF and is a reconciliation trap. The divergence is by design; document, do not fix.
+
+**F4 — exact-`trade_id` dedup before per-campaign aggregation (Phase-Engine-P2/P3).**
+`_aggregate_campaigns` (analytics_engine), `compute_closed_campaigns` (adaptive_risk_engine)
+and `get_open_positions_campaign` (engine_core) drop EXACT-`trade_id`-duplicate rows
+(`keep="first"`, guarded on the column's presence — absent ⇒ no-op) BEFORE the side
+split / `pnl_usd` sum, so a re-exported / double-synced SELL is not counted twice. On
+inputs with no duplicate `trade_id` (the LOCKED April fixture + current prod per DEC-019)
+this is a provable identity (drop_duplicates on an all-unique key returns the same rows in
+the same order). Behavior changes ONLY on the duplicated-row input.
+
+**F9 — out-of-order rows floor `days_held=1`, inflating `avg_r_per_day` / dev-score (display/score only).**
+`_aggregate_campaigns` computes `days_held = max(1, (last_sell - entry).days)`. If a SELL
+row's date precedes its BUY (out-of-order export), the difference is ≤ 0 and `days_held`
+floors to **1**, so `avg_r_per_day = (net_r / days_held).mean()` and the trader-development
+"execution efficiency" / Minervini R-per-day reward a data-ordering artifact. **R itself is
+correct** — only `avg_r_per_day` and the dev-score are affected, and the `max(1, ...)`
+div-by-zero guard is itself correct. The LOCKED fixture has ordered rows so it is
+byte-identical. Documented (not money-affecting); no code change.
+
 ## Initial risk contract
 
 For discretionary trades such as EP/VCP:
@@ -95,6 +158,14 @@ For discretionary trades such as EP/VCP:
 - initial risk should usually be based on first-day buy price/quantity and initial stop
 - partial sells should not rewrite the original campaign risk
 - R calculations must be based on the correct original risk basis
+
+**F7 — the 1R denominator is deliberately cent-rounded (Sprint-25 audit, DO NOT "clean up").**
+`engine_core.compute_original_campaign_risk` returns `round(max(0.0, risk*qty+fees), 2)`,
+and that cent-rounded value is the **denominator** of every `net_r = net_pnl / orig_risk`
+(`analytics_engine`). So every R carries a deliberate sub-cent basis rounding (e.g. raw
+`4.6533 → 4.66`). This is **intentional and load-bearing**: the LOCKED April regression
+(PF `2.6262`, WR `.375`, 8 / +$180.49) was computed *with* this rounding. Removing the
+`round(..., 2)` would shift every R and BREAK the locked fixture — do NOT "clean it up".
 
 For ALGO trades:
 
@@ -153,6 +224,23 @@ Rules:
 2. If IBKR NAV is unavailable and the system falls back to deposited capital/default value, the report must say so.
 3. Do not silently mix host paths and container paths.
 4. If modifying config paths, update Docker Compose, docs, and tests together.
+
+> **Divergence flag (Phase Arch-F1 / Sprint-25 F1 — DEFERRED, founder-gated).**
+> Rule 1 ("one clear source of truth") is NOT yet fully met. Two
+> blessed NAV contracts coexist behind the SAME risk math:
+> `account_state.load()` (report pipeline — shape A, honest fallback,
+> `ok=False` only on fallback) and `engine_core.get_nav_with_freshness()`
+> (bot + risk-monitor `:607-609` — different shape `source`/`updated_at`,
+> different fallback `is_critical=True`/different label/`ok=False`). A future
+> edit to one fallback silently desyncs Telegram risk sizing, the
+> risk-monitor Sizing-Leak threshold, and the weekly/monthly report
+> target-risk. Unifying them is money-affecting (changes which
+> fallback/freshness a path sees) → **OUT of Arch-F1, a deferred
+> founder-gated decision**. Arch-F1 only de-duplicated the
+> `sentinel_config.json` *reader* (one shared
+> `bot_helpers.get_account_settings`, bare-`except:` removed); the
+> `risk_monitor.py:607-609` math + `engine_core.py` + `account_state.py` are
+> byte-unchanged.
 
 Known deployment detail:
 

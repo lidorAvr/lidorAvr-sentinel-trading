@@ -34,10 +34,188 @@ from telegram_backlog import get_next_missing  # noqa: E402 — re-exported for 
 
 from telegram_portfolio import handle_drilldown, handle_market_regime, handle_portfolio_room  # noqa: E402 — re-exported for telegram_callbacks lazy import
 
+from telegram_stop_promote import (handle_stop_promote_entry,  # noqa: E402 — re-exported for telegram_callbacks lazy import
+                                    handle_stop_promote_pick,
+                                    build_stop_promote_keyboard,
+                                    guard_stop_write,
+                                    get_campaign_current_stop,
+                                    finalize_pending_loosen)
+
+from telegram_tasks import (handle_open_tasks_entry,  # noqa: E402 — re-exported for telegram_callbacks lazy import
+                            handle_task_open,
+                            handle_task_refresh,
+                            handle_algo_panel,
+                            handle_task_done,
+                            handle_task_done_confirm,
+                            handle_task_skip,
+                            handle_task_skip_confirm,
+                            handle_task_skip_reason,
+                            handle_task_note,
+                            handle_task_add_note)
+
+from telegram_audit_review import handle_my_actions  # noqa: E402 — re-exported for telegram_callbacks lazy import
+
+from telegram_clean_gate import (handle_clean_entry,  # noqa: E402 — re-exported for telegram_callbacks lazy import
+                                 finalize_pending_clean)
+
+def _send_probe_chunks(chat_id, text):
+    """Loss-free, plain-text (NO parse_mode) multi-send for the dev-menu Probe.
+
+    Sprint-23 / DEC-20260516-020 fix for Telegram `Bad Request: message is
+    too long` (the probe's ~20-campaign × 2-window output exceeds the 4096
+    hard cap). This is the ONLY production caller path that splits
+    `period_data_probe.build_probe_report()`'s string; the probe itself is
+    byte-identical and still NEVER sends/persists.
+
+    Per Mark's BINDING rulings (docs/teams/MARK_SPRINT23_RULINGS.md):
+
+    * Ruling 1 — chunk, NEVER truncate: every real campaign row is sent;
+      no "show first N", no per-window cap, no head/tail trimming.
+    * Ruling 3 — plain-text invariant: NO `parse_mode` on ANY part (a
+      `campaign_id` `_` under Markdown would italicise / Telegram-400).
+      `telegram_portfolio._send_long_message` is NOT reused verbatim
+      (it forces `parse_mode="Markdown"`); only its proven SHAPE is mirrored.
+    * Ruling 4 — split boundaries: (1) short input (<= LIMIT) → ONE send,
+      byte-identical to the pre-Sprint-23 behaviour; (2) else split first
+      at the weekly/monthly glue `"\n\n" + _RTL` (period_data_probe.py:328);
+      (3) within a window still over budget, split ONLY at `\n` (never
+      mid-line / mid-campaign); a single source line > LIMIT is emitted
+      whole in its own part (loss-free dominates the size target).
+      Every part is independently re-prefixed with the RTL marker
+      (U+200F, == bot_core.RTL == period_data_probe._RTL) so each bubble
+      renders RTL-correct on its own.
+    * Ruling 4 — `reply_markup=get_developer_menu()` on the LAST part ONLY.
+    * Mirrors `telegram_portfolio._send_long_message`'s per-part try/except
+      shape so one failed part cannot suppress the rest.
+    """
+    LIMIT = 3900  # ⟨MARK:3900⟩ — mirrors the proven telegram_portfolio.py:23
+                  # budget; comfortably under Telegram's 4096 hard cap.
+
+    # Step 1 — short-circuit: byte-for-byte the pre-Sprint-23 single send.
+    if len(text) <= LIMIT:
+        return bot.send_message(chat_id, text,
+                                reply_markup=get_developer_menu())
+
+    import period_data_probe
+    _RTL = period_data_probe._RTL  # U+200F — == bot_core.RTL (parity proven)
+
+    # Step 2 — split first at the weekly/monthly glue "\n\n" + _RTL
+    # (period_data_probe.py:328). Each resulting segment keeps its own
+    # leading _RTL (weekly's head _RTL; monthly's _RTL right after "\n\n").
+    glue = "\n\n" + _RTL
+    if glue in text:
+        head, tail = text.split(glue, 1)
+        segments = [head, _RTL + tail]
+    else:
+        segments = [text]
+
+    # Step 3 — within a segment still over budget, split ONLY at a "\n"
+    # line boundary (never mid-line / mid-campaign). The cut is taken
+    # AFTER the newline so the "\n" itself is retained at the END of the
+    # preceding part — the split is byte loss-free: concatenating the
+    # parts (minus the injected per-part _RTL prefixes) reproduces the
+    # segment exactly. Each continuation part is re-prefixed with _RTL so
+    # every bubble renders RTL on its own (the ONLY injected bytes).
+    parts = []
+    for seg in segments:
+        while len(seg) > LIMIT:
+            nl = seg.rfind('\n', 0, LIMIT)
+            if nl == -1:
+                # No line boundary within budget: a single source line
+                # exceeds LIMIT. Loss-free dominates the size target —
+                # emit up to the next "\n" (the whole oversized line)
+                # WHOLE in its own part; never drop / truncate it.
+                nl = seg.find('\n')
+                if nl == -1:
+                    parts.append(seg)
+                    seg = ""
+                    break
+            split_idx = nl + 1            # keep the "\n" with this part
+            parts.append(seg[:split_idx])
+            rest = seg[split_idx:]
+            seg = rest if rest.startswith(_RTL) else _RTL + rest
+        if seg:
+            parts.append(seg)
+
+    # Step 4 — send each part plain-text (NO parse_mode); reply_markup on
+    # the LAST part ONLY; per-part try/except (mirrors _send_long_message).
+    last = None
+    for i, part in enumerate(parts):
+        try:
+            if i == len(parts) - 1:
+                last = bot.send_message(chat_id, part,
+                                        reply_markup=get_developer_menu())
+            else:
+                last = bot.send_message(chat_id, part)
+        except Exception as e:
+            print(f"Error sending Probe part {i}: {e}")
+    return last
+
+
+def _require_active_dev_session(chat_id) -> bool:
+    """Sprint-25 C1 (Security S-1/S-2/S-3) — fail-CLOSED privileged-action gate.
+
+    The dev menu is a *persistent* ReplyKeyboardMarkup of literal Hebrew
+    strings. Before C1 the ONLY dev-PIN check was on the `🛠️ מפתח`
+    menu-OPEN button (the gate at telegram_bot.py — the
+    `dev_pin_is_configured()`/`dev_pin_session_active(chat_id)` check).
+    Every privileged dev handler then dispatched purely on `text ==
+    "<button>"` with NO session re-check, so the admin could type/tap a
+    button (or use a still-visible keyboard from an EXPIRED session) and
+    reach `git pull` (subprocess), IBKR sync, the XML upload→Supabase
+    insert + NAV overwrite, config/log dump, or on-demand reports with
+    NO active 30-minute PIN session (S-1). With `DEV_PIN` unset,
+    `dev_pin_is_configured()` is False and the old menu-open gate
+    short-circuited OPEN (S-2, fail-open); the XML write path inherited
+    this (S-3).
+
+    This shared guard, called at the TOP of every privileged dev handler,
+    re-asserts an active PIN session and is **fail-CLOSED**: an
+    unconfigured (empty/unset) `DEV_PIN` DENIES every privileged action.
+    It performs the action ONLY when a valid, non-expired session exists.
+    On refusal it replies in the existing Hebrew refusal style and
+    returns False — the caller must `return` without performing the
+    action. It does NOT weaken the constant-time PIN compare or the
+    session expiry (telegram_devops); it only ENFORCES them at the
+    privileged call sites. It does NOT change the outer admin (chat-id)
+    gate in telegram_bot_secure_runner.py, which stays the outer check.
+    """
+    if not dev_pin_is_configured():
+        # S-2: an unconfigured dev-PIN must DENY (never open) — production
+        # with no DEV_PIN is now safe-by-default.
+        bot.send_message(
+            chat_id,
+            f"{RTL}⛔ *גישת מפתח חסומה — DEV_PIN לא מוגדר*\n"
+            f"{RTL}פעולות מפתח מושבתות עד שמוגדר PIN.",
+            reply_markup=get_main_menu(), parse_mode="Markdown",
+        )
+        return False
+    if not dev_pin_session_active(chat_id):
+        # S-1/S-3: no active (or expired) PIN session — refuse and route
+        # back to PIN entry, mirroring the menu-open gate's behaviour.
+        user_state[chat_id] = {"action": "awaiting_dev_pin"}
+        bot.send_message(
+            chat_id,
+            f"{RTL}🔐 *פעולת מפתח דורשת PIN פעיל*\n"
+            f"{RTL}הפגישה אינה פעילה או פגה. הזן את ה-PIN:",
+            parse_mode="Markdown",
+        )
+        return False
+    return True
+
+
 @bot.message_handler(content_types=['document'])
 def handle_document_upload(message):
     chat_id = message.chat.id
     if user_state.get(chat_id, {}).get('action') != 'awaiting_ibkr_xml':
+        return
+    # Sprint-25 C1 (Security S-3): the XML upload writes sentinel_config.json
+    # NAV + inserts trades into Supabase. Re-assert an active dev-PIN session
+    # at the actual write entry (defence-in-depth: even though arming
+    # `awaiting_ibkr_xml` now requires the gated XML handler, a stale/expired
+    # session must not be able to complete a real-money NAV/Supabase write).
+    if not _require_active_dev_session(chat_id):
+        del user_state[chat_id]
         return
     del user_state[chat_id]
     _process_uploaded_ibkr_xml(chat_id, message)
@@ -67,6 +245,15 @@ def handle_all_messages(message):
         else:
             dev_pin_record_failure(chat_id)
             bot.send_message(chat_id, f"{RTL}⛔ *PIN שגוי — גישה נדחתה*", reply_markup=get_main_menu(), parse_mode="Markdown")
+        return
+
+    if active_state.get("action") == "task_skip_reason":
+        # P0 Open-Task skip: typed reason is mandatory (spec §3 / G8).
+        handle_task_skip_reason(chat_id, text)
+        return
+
+    if active_state.get("action") == "task_add_note":
+        handle_task_add_note(chat_id, text)
         return
 
     if active_state.get("action") == "risk_reject_reason":
@@ -112,7 +299,20 @@ def handle_all_messages(message):
         return
 
     if text == "🛠️ מפתח":
-        if dev_pin_is_configured() and not dev_pin_session_active(chat_id):
+        if not dev_pin_is_configured():
+            # Sprint-25 C1 (Security S-2) — fail-CLOSED: an unconfigured
+            # (unset/empty) DEV_PIN must DENY the dev menu, never open it.
+            # Before C1 this branch fell through to `else` and opened the
+            # menu with ZERO PIN. CI sets DEV_PIN=0000 so configured
+            # paths/tests are unaffected; production with no DEV_PIN is
+            # now safe-by-default.
+            bot.send_message(
+                chat_id,
+                f"{RTL}⛔ *תפריט מפתח חסום — DEV_PIN לא מוגדר*\n"
+                f"{RTL}פעולות מפתח מושבתות עד שמוגדר PIN.",
+                reply_markup=get_main_menu(), parse_mode="Markdown",
+            )
+        elif not dev_pin_session_active(chat_id):
             user_state[chat_id] = {"action": "awaiting_dev_pin"}
             bot.send_message(chat_id, f"{RTL}🔐 *תפריט מפתח — דרוש PIN*\nהזן את ה-PIN:", parse_mode="Markdown")
         else:
@@ -122,6 +322,8 @@ def handle_all_messages(message):
     # ── Developer menu handlers ────────────────────────────────────────────────
 
     if text == "📡 IBKR Sync ידני":
+        if not _require_active_dev_session(chat_id):
+            return
         allowed, reason, state_dict = _dev_sync_check()
         if not allowed:
             bot.send_message(chat_id, f"{RTL}⛔ *Sync נחסם:*\n{RTL}{reason}",
@@ -139,6 +341,8 @@ def handle_all_messages(message):
         return
 
     if text == "📤 העלה דוח XML":
+        if not _require_active_dev_session(chat_id):
+            return
         user_state[chat_id] = {'action': 'awaiting_ibkr_xml'}
         bot.send_message(
             chat_id,
@@ -150,6 +354,8 @@ def handle_all_messages(message):
         return
 
     if text == "📊 תוצאת Sync אחרון":
+        if not _require_active_dev_session(chat_id):
+            return
         try:
             if not os.path.exists(MANUAL_RESULT_FILE):
                 bot.send_message(chat_id, f"{RTL}⚪ אין תוצאת סנכרון ידני שמורה.",
@@ -176,6 +382,8 @@ def handle_all_messages(message):
         return
 
     if text == "📋 לוגים":
+        if not _require_active_dev_session(chat_id):
+            return
         # Inline keyboard to choose service
         kb = types.InlineKeyboardMarkup(row_width=1)
         for name in _DEV_LOG_FILES:
@@ -185,6 +393,8 @@ def handle_all_messages(message):
         return
 
     if text == "🔄 Git Pull + Deploy":
+        if not _require_active_dev_session(chat_id):
+            return
         bot.send_message(chat_id, f"{RTL}🔄 *Git Pull — מריץ...*",
                          reply_markup=get_developer_menu(), parse_mode="Markdown")
         _bot_log(f"Git pull triggered by {chat_id}")
@@ -211,10 +421,15 @@ def handle_all_messages(message):
                     import time as _time
                     with open(_TRIGGER_FILE, "w") as _tf:
                         _tf.write(str(_time.time()))
-                    msg += f"\n\n{RTL}🚀 *trigger נכתב* — deploy_watcher יאסוף ויפעיל docker compose תוך ~5 שניות"
-                    _bot_log("Deploy trigger file written")
+                    msg += (
+                        f"\n\n{RTL}ℹ️ git נמשך *בתוך הקונטיינר בלבד* — זה לא deploy."
+                        f"\n{RTL}deploy-watcher אינו מותקן (DEC-20260515-010)."
+                        f"\n{RTL}כדי לפרוס בפועל, הרץ ב-Orange Pi:\n"
+                        f"`cd ~/sentinel_trading && ./deploy.sh`"
+                    )
+                    _bot_log("Deploy trigger file written (no watcher installed — informational)")
                 except Exception as te:
-                    msg += f"\n\n{RTL}⚠️ לא הצלחתי לכתוב trigger file: {te}\nהרץ ידנית: `docker compose up -d --build`"
+                    msg += f"\n\n{RTL}⚠️ trigger לא נכתב: {te}\nהרץ ב-Orange Pi: `cd ~/sentinel_trading && ./deploy.sh`"
             else:
                 msg += f"\n\n{RTL}⚠️ Git pull נכשל — trigger לא נכתב. בדוק שגיאות למעלה."
             _bot_log(f"Git pull rc={rc}: {stdout[:200]}")
@@ -222,7 +437,7 @@ def handle_all_messages(message):
             msg = (
                 f"{RTL}⚠️ *git לא מותקן בקונטיינר זה.*\n"
                 f"{RTL}כדי לפרוס עדכון, הרץ על Orange Pi:\n"
-                f"`cd ~/sentinel_trading && git pull && docker compose up -d --build`"
+                f"`cd ~/sentinel_trading && ./deploy.sh`"
             )
         except subprocess.TimeoutExpired:
             msg = f"{RTL}⏳ *Git pull פג timeout (60s).*"
@@ -232,6 +447,8 @@ def handle_all_messages(message):
         return
 
     if text == "⚙️ הצג Config":
+        if not _require_active_dev_session(chat_id):
+            return
         try:
             cfg_paths = ["/app/sentinel_config.json", "sentinel_config.json"]
             cfg = None
@@ -262,8 +479,91 @@ def handle_all_messages(message):
         return
 
     if text == "🏥 בריאות מערכת":
+        if not _require_active_dev_session(chat_id):
+            return
         return bot.send_message(chat_id, _build_health_report(),
                                 reply_markup=get_developer_menu())
+
+    # ── Sprint-21 WS-A — live PURE READ-ONLY data-delivery probe ────────────
+    # Re-runs the EXACT scheduler `_fetch_trades_df` for BOTH on-demand
+    # windows read-only and reports, honestly, what the real pipeline yields
+    # (distinguishing "input ריק/כשל" from "0 closes"; no secrets — only the
+    # JWT role word). NO write/snap_save/state-mutation (AST-proven). Admin-
+    # gated by construction: this branch is in the developer-menu region,
+    # reachable ONLY inside an authenticated dev-PIN session (the EXISTING
+    # gate at telegram_bot.py:241-247 — the `🛠️ מפתח` menu-open
+    # `dev_pin_is_configured()`/`dev_pin_session_active(chat_id)` check;
+    # Sprint-25 A2/S-4 corrected anchor — the old "147-153" cite was
+    # WRONG, those lines are the `_send_probe_chunks` message-split loop,
+    # not a gate; unchanged, not bypassed). Mirrors the synchronous
+    # `🏥 בריאות מערכת` handler exactly.
+    if text == "🔬 בדיקת נתוני תקופה (Probe)":
+        if not _require_active_dev_session(chat_id):
+            return
+        try:
+            import period_data_probe
+            txt = period_data_probe.build_probe_report()
+            return _send_probe_chunks(chat_id, txt)
+        except Exception as e:
+            return bot.send_message(
+                chat_id, f"{RTL}❌ שגיאת Probe: `{str(e)[:300]}`",
+                reply_markup=get_developer_menu(), parse_mode="Markdown")
+
+    # ── Sprint-17 Scope item B — on-demand report (dev/testing only) ─────────
+    # Generates the weekly/monthly report for the LAST COMPLETE period using
+    # the SAME scheduler period logic + render/deliver path (Sprint-16 graceful
+    # degradation intact). HARD: never snap_save into the real snapshot store,
+    # never touch the scheduler period-dedup (report_on_demand is read-only
+    # w.r.t. that state). Admin-gated by this dev-menu/PIN path already.
+    if text in ("📈 דוח שבועי עכשיו", "📆 דוח חודשי עכשיו"):
+        if not _require_active_dev_session(chat_id):
+            return
+        period_type = "weekly" if text == "📈 דוח שבועי עכשיו" else "monthly"
+        kind_he = "שבועי" if period_type == "weekly" else "חודשי"
+        bot.send_message(
+            chat_id,
+            f"{RTL}📊 *מפיק דוח {kind_he} (On-Demand) — לתקופה השלמה האחרונה...*\n"
+            f"{RTL}ריצת בדיקה בלבד — לא נשמר ל-snapshot ולא משפיע על הדוח המתוזמן.",
+            reply_markup=get_developer_menu(), parse_mode="Markdown",
+        )
+        _bot_log(f"On-demand {period_type} report triggered by {chat_id}")
+
+        def _run_on_demand_report_thread(_pt, _kind, _cid):
+            try:
+                import report_on_demand
+                # This thread runs in the telegram-bot process — pass ITS
+                # working bot creds (bot_core TOKEN + the requesting admin
+                # chat); the scheduler's TELEGRAM_TOKEN/TELEGRAM_CHAT_ID env
+                # convention is not set in this container.
+                res = report_on_demand.run_on_demand(
+                    _pt, token=TOKEN, chat_id=str(_cid))
+                if res.get("ok"):
+                    deg = " (PDF דרדור — טקסט מלא נשלח)" if res.get("pdf_degraded") else ""
+                    bot.send_message(
+                        _cid,
+                        f"{RTL}✅ *דוח {_kind} (On-Demand) נשלח*{deg}\n"
+                        f"{RTL}תקופה: `{res.get('period_label', '—')}`\n"
+                        f"{RTL}summary={res.get('summary_ok')} · pdf={res.get('pdf_ok')}",
+                        reply_markup=get_developer_menu(), parse_mode="Markdown",
+                    )
+                else:
+                    bot.send_message(
+                        _cid,
+                        f"{RTL}❌ *דוח {_kind} (On-Demand) נכשל*\n"
+                        f"{RTL}שגיאה: `{str(res.get('error'))[:300]}`",
+                        reply_markup=get_developer_menu(), parse_mode="Markdown",
+                    )
+            except Exception as e:
+                bot.send_message(
+                    _cid, f"{RTL}❌ שגיאה בדוח On-Demand: `{str(e)[:300]}`",
+                    reply_markup=get_developer_menu(), parse_mode="Markdown",
+                )
+
+        threading.Thread(
+            target=_run_on_demand_report_thread,
+            args=(period_type, kind_he, chat_id), daemon=True,
+        ).start()
+        return
 
     if text in ["❓ עזרה", "❓ פקודות מערכת", "/help"]:
         help_txt = (
@@ -274,6 +574,8 @@ def handle_all_messages(message):
             f"{RTL}📚 *יומן* — מילוי יומן וארכיון\n"
             f"{RTL}───────────────\n"
             f"{RTL}/portfolio — חדר מצב\n"
+            f"{RTL}/tasks — משימות פתוחות (Action-Items)\n"
+            f"{RTL}/myactions — הפעולות שלי (יומן ביקורת)\n"
             f"{RTL}/trade SYMBOL — ניתוח עומק לפוזיציה\n"
             f"{RTL}/mentor SYMBOL — Trend Template מלא\n"
             f"{RTL}/analyze SYMBOL — ניתוח VCP מינרביני\n"
@@ -338,34 +640,30 @@ def handle_all_messages(message):
         user_state[chat_id] = {'action': 'analyze_symbol'}
         return
 
-    if text in ["🔍 סריקת יומן (Backlog)", "/next", "📚 ניהול יומן (Backlog)"]: return get_next_missing(chat_id)
-
-    if text in ["🧹 ארכיון עסקאות (Legacy)", "/clean"]:
-        bot.send_message(chat_id, "🧹 *מבצע ניקוי היסטוריה (עסקאות מעל 30 יום בלבד)...*", parse_mode="Markdown")
-        try:
-            thirty_days_ago = (datetime.now() - pd.Timedelta(days=30)).strftime('%Y-%m-%d')
-            count = 0
-            for t in repo.get_old_trades(supabase, thirty_days_ago):
-                needs_update = False
-                upd = {}
-                if t.get('setup_type') is None: upd['setup_type'] = "Legacy"; needs_update = True
-                if t.get('quality') is None: upd['quality'] = -1; needs_update = True
-                if t.get('side', '').upper() == 'BUY':
-                    if t.get('initial_stop') in [None, 0]: upd['initial_stop'] = -1; upd['stop_loss'] = -1; needs_update = True
-                if t.get('side', '').upper() == 'SELL':
-                    if t.get('score') is None: upd['score'] = -1; needs_update = True
-                    if t.get('image_url') is None: upd['image_url'] = "Skipped"; needs_update = True
-                    if t.get('management_notes') is None: upd['management_notes'] = "Skipped"; needs_update = True
-                if needs_update:
-                    repo.update_trade(supabase, t['trade_id'], upd)
-                    count += 1
-            bot.send_message(chat_id, f"✅ ארכיון נקי! {count} עסקאות ישנות טופלו בהצלחה.", parse_mode="Markdown")
-        except Exception as e:
-            bot.send_message(chat_id, f"❌ שגיאה בניקוי הארכיון: {e}")
+    if text in ["🔍 השלמת יומן — הפריט הבא", "🔍 סריקת יומן (Backlog)",
+                "/next", "📚 ניהול יומן (Backlog)"]:
         return get_next_missing(chat_id)
 
-    if text in ["❓ פקודות מערכת", "/help"]:
-        return bot.send_message(chat_id, "🛡️ *מערכת הפיקוד (Sentinel Command)*\n\n/trade SYMBOL - צלילת עומק לפוזיציה\n/next - סריקת יומן\n/portfolio - חדר מצב\n/clean - מטאטא ארכיון (מוגן 30 יום)", parse_mode="Markdown")
+    if text in ["🧹 ארכיון עסקאות (Legacy)", "/clean"]:
+        # Sprint-12 / Mark §2 — `/clean` no longer writes on a single tap. It
+        # runs a read-only dry-run preview and a defaulted-NO inline confirm
+        # (reuses the proven guard_stop_write / finalize_pending_loosen
+        # pattern). The bulk-write body is relocated BYTE-IDENTICAL behind the
+        # gate in telegram_clean_gate.finalize_pending_clean. Additive routing
+        # only (CLAUDE.md — no telegram_bot.py wholesale rewrite).
+        handle_clean_entry(chat_id)
+        return
+
+    # Sprint-25 A2 (Arch F5) — removed a provably-UNREACHABLE duplicate
+    # `/help` block here. The earlier handler at the top of this dispatcher
+    # `if text in ["❓ עזרה", "❓ פקודות מערכת", "/help"]:` UNCONDITIONALLY
+    # `return bot.send_message(...)` for ALL THREE of those literals; its
+    # literal set is a strict SUPERSET of this block's `["❓ פקודות מערכת",
+    # "/help"]`, and `text` is assigned exactly once at handler entry and
+    # NEVER reassigned in between → control flow could never reach this
+    # branch (it always returned earlier). It rendered a second, stale
+    # help string that can never ship. Pure dead-code removal: no
+    # behavior change (the live `/help` is the earlier block).
 
     if text == "🌡️ משטר שוק וסיכונים":
         handle_market_regime(chat_id)
@@ -373,6 +671,18 @@ def handle_all_messages(message):
 
     if text in ["📊 חדר מצב (פוזיציות)", "/portfolio"]:
         handle_portfolio_room(chat_id)
+        return
+
+    if text in ["📋 משימות פתוחות", "/tasks"]:
+        handle_open_tasks_entry(chat_id)
+        return
+
+    if text in ["🧾 הפעולות שלי", "/myactions"]:
+        handle_my_actions(chat_id)
+        return
+
+    if text in ["🎯 קידום סטופ", "/promote"]:
+        handle_stop_promote_entry(chat_id)
         return
 
     if chat_id in user_state:
@@ -420,6 +730,11 @@ def handle_all_messages(message):
                 sym_ts  = state.get('sym', '')
                 cid_ts  = state.get('campaign_id', '')
                 if cid_ts:
+                    if guard_stop_write(chat_id, cid=cid_ts, sym=sym_ts,
+                                        new_sl=new_sl,
+                                        current_stop=get_campaign_current_stop(cid_ts),
+                                        resume={'batch': False}):
+                        return  # loosen — confirmation pending, do not write
                     repo.update_stop_for_campaign(supabase, cid_ts, new_sl)
                     bot.send_message(chat_id, f"{RTL}🔒 *סטופ עודכן — {sym_ts}*\nסטופ חדש: `${new_sl:.2f}`", reply_markup=get_main_menu(), parse_mode="Markdown")
                 else:
@@ -441,16 +756,53 @@ def handle_all_messages(message):
             return
 
         elif action == 'input_new_sl':
+            # NOTE: stop-write logic below is byte-identical to the legacy
+            # flow (repo.update_stop_for_campaign). Only the post-write
+            # navigation differs: batch flow re-opens the position list so
+            # the user can promote the next stop without a heavy re-run.
+            batch_mode = state.get('promote_batch', False)
             try:
                 new_sl = float(text)
                 trade = state['selected_trade']
                 cid = trade.get('campaign_id')
                 if cid:
+                    if guard_stop_write(chat_id, cid=cid,
+                                        sym=trade.get('symbol', ''),
+                                        new_sl=new_sl,
+                                        current_stop=trade.get('stop_loss'),
+                                        resume={'batch': batch_mode}):
+                        return  # loosen — confirmation pending, do not write
                     repo.update_stop_for_campaign(supabase, cid, new_sl)
-                    bot.send_message(chat_id, f"🚀 *הסטופ עודכן בהצלחה!*\nנכס: `{trade['symbol']}`\nסטופ מעודכן ל: `${new_sl:.2f}`\nפקודות הקנייה בקמפיין עודכנו.", reply_markup=get_main_menu(), parse_mode="Markdown")
-                else: bot.send_message(chat_id, "❌ תקלת מערכת: לא נמצא מזהה קמפיין לעסקה זו.")
-                del user_state[chat_id]
-            except: bot.send_message(chat_id, "❌ מחיר לא תקין. נא להזין מספר.")
+                    if batch_mode:
+                        bot.send_message(
+                            chat_id,
+                            f"{RTL}🚀 *הסטופ עודכן — {trade['symbol']}*\n"
+                            f"{RTL}סטופ חדש: `${new_sl:.2f}` | פקודות הקנייה בקמפיין עודכנו.\n"
+                            f"{RTL}בחר פוזיציה נוספת לקידום, או '❌ סגור':",
+                            parse_mode="Markdown",
+                        )
+                    else:
+                        bot.send_message(chat_id, f"🚀 *הסטופ עודכן בהצלחה!*\nנכס: `{trade['symbol']}`\nסטופ מעודכן ל: `${new_sl:.2f}`\nפקודות הקנייה בקמפיין עודכנו.", reply_markup=get_main_menu(), parse_mode="Markdown")
+                else:
+                    bot.send_message(chat_id, "❌ תקלת מערכת: לא נמצא מזהה קמפיין לעסקה זו.")
+                    batch_mode = False
+                if batch_mode and cid:
+                    # Stay in the batch list: clear the per-pick action but
+                    # keep temp_positions so the next tap works with no
+                    # expiry and no heavy 'חדר מצב' re-run.
+                    positions = state.get('temp_positions')
+                    user_state[chat_id] = {'temp_positions': positions} if positions else {}
+                    if positions:
+                        bot.send_message(
+                            chat_id,
+                            f"{RTL}🎯 *קידום סטופ — בחר פוזיציה הבאה:*",
+                            reply_markup=build_stop_promote_keyboard(positions),
+                            parse_mode="Markdown",
+                        )
+                else:
+                    del user_state[chat_id]
+            except Exception:
+                bot.send_message(chat_id, "❌ מחיר לא תקין. נא להזין מספר.")
             return
 
         t_id = state.get('t_id')
@@ -606,15 +958,26 @@ def _handle_addon_command(chat_id: int, text: str):
         try: bot.delete_message(chat_id, loading.message_id)
         except: pass
 
-        # Store plan for confirmation step
-        import json as _json
+        # Store plan for confirmation step.
+        # Phase B3: persist the planned campaign_id — the campaign_id of the
+        # exact open-position row this /addon was planned against (same `row`
+        # used above for entry/stop/qty). At confirm we verify the open
+        # campaign for the symbol has not changed since the plan, so the
+        # Add-On write can never silently land on a different campaign's
+        # Supabase rows than the one the user reviewed. If for some reason the
+        # planned row has no resolvable campaign_id, store None so confirm
+        # falls back to the legacy (pre-B3) re-resolution behavior.
+        _planned_cid = row.get("campaign_id")
+        if pd.isna(_planned_cid):
+            _planned_cid = None
         user_state[chat_id] = {
-            "action":   "addon_pending",
-            "symbol":   symbol,
-            "entry":    add_entry,
-            "stop":     add_stop,
-            "qty":      plan.get("proposed_qty", qty_arg),
-            "add_type": type_arg,
+            "action":      "addon_pending",
+            "symbol":      symbol,
+            "entry":       add_entry,
+            "stop":        add_stop,
+            "qty":         plan.get("proposed_qty", qty_arg),
+            "add_type":    type_arg,
+            "campaign_id": _planned_cid,
         }
 
         markup = telebot.types.InlineKeyboardMarkup(row_width=2)

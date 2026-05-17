@@ -670,3 +670,623 @@ The Orange Pi's home router DNS was intermittently failing, causing both `api.te
 ### Constraint
 
 If both Google and Cloudflare are unreachable (extremely rare), containers lose DNS regardless of the router. Acceptable — this is the standard graceful-degradation tradeoff for public DNS.
+
+---
+
+## DEC-20260515-001 — Minervini name used as acknowledgment only, not branding
+
+Date: 2026-05-15
+Status: decided (product/GTM)
+
+### Decision
+
+Public marketing may reference *Trade Like a Stock Market Wizard* as an acknowledgment ("built on principles from …") under fair use. Mark Minervini's name is **not** used as a brand, endorsement, or hero line. Revisit a licensing/partnership approach only once there is real traction.
+
+### Rationale
+
+Bold name-use is the strongest positioning but requires a licensing agreement or explicit approval and carries DMCA/litigation risk if refused. Acknowledgment-only is legally neutral, costs nothing, and keeps the partnership option open for later from a position of strength.
+
+### Alternatives considered
+
+- **Name bold in branding** ("your Minervini co-pilot"): strongest, but needs legal clearance; rejected for launch.
+- **No reference at all**: safest legally but neuters the competitive edge and weakens positioning.
+
+### Unblocks
+
+Marketing team — landing-page hero and Phase 3 positioning (see `docs/teams/MARKETING_PLAN_V0.md`). Mark review conflict #4 resolved.
+
+---
+
+## DEC-20260515-002 — Minervini-strict is the only methodology profile for now
+
+Date: 2026-05-15
+Status: decided (product/GTM)
+
+### Decision
+
+Ship a single, hardened, validated `minervini_strict` profile for all users. The 4-profile model (minervini_strict / minervini_relaxed / oneill_classic / swing_low_risk) is deferred to Sprint 13. A full user-tunable "custom profile" is permanently rejected.
+
+### Rationale
+
+One profile is the safest and most consistent with the AGENTS.md Red Lines. Multiple profiles widen the test surface and complicate Hyperscaler Phase B before the single-tenant base is even productized. Regardless of future profiles, the Red Lines (`mix_algo_into_wr=false`, admin-only, no DATA_INCOMPLETE in stats, secure_runner required) stay hard-coded constants, never profile fields.
+
+### Alternatives considered
+
+- **4 profiles now**: more flexible, but premature; deferred to Sprint 13.
+- **Full custom profile**: breaks Mark's methodology and risks the Red Lines; rejected permanently.
+
+### Unblocks
+
+Hyperscaler Phase B architecture (`docs/teams/HYPERSCALER_DESIGN_V0.md`). Mark directive #1 (`mix_algo_into_wr` hard constant) stands. Adaptive-UX `methodology_profile` field has a single enum value for V1.
+
+---
+
+## DEC-20260515-003 — Launch geography: Israel only (Hebrew-first)
+
+Date: 2026-05-15
+Status: decided (product/GTM)
+
+### Decision
+
+First launch targets the Hebrew-speaking Israeli momentum-trader market only. English/i18n is deferred to ~Q3, aligned with Hyperscaler Phase C readiness. No translation work in the near term.
+
+### Rationale
+
+The bot is already Hebrew-native with minimal friction and local networking; this is the fastest path to validating the product. A smaller market (~5k active momentum traders) is an acceptable trade for speed-to-feedback. English expansion rides on the multi-tenant infrastructure that Phase C delivers anyway.
+
+### Alternatives considered
+
+- **Global English only**: larger market but mandatory full translation, heavy competition, and a launch delay.
+- **Bilingual from day one**: best long-term growth but doubles work and delays first launch.
+
+### Unblocks
+
+Marketing channel strategy and the i18n investment line (deferred). Adaptive-UX Layer-1 `language` field defaults to `he` for V1.
+
+---
+
+## DEC-20260515-004 — Public track record: process/demo only, no numbers
+
+Date: 2026-05-15
+Status: decided (product/GTM)
+
+### Decision
+
+Public materials show *how the system behaves* (e.g., how it cuts drawdown, how the state machine reacts) — not performance numbers. No synthetic backtest figures, no founder PnL. Real (anonymized, consented) beta-user metrics may be introduced from Sprint 12.
+
+### Rationale
+
+Process demos are the safest path regulatorily and avoid FINRA-style disclaimer exposure entirely. Synthetic backtests are weak (anyone can backtest); founder PnL needs legal review before any publication. Consented beta data later gives credible numbers without the personal-exposure risk.
+
+### Alternatives considered
+
+- **Synthetic backtest**: weak and not credible.
+- **Founder's anonymized real data**: strong but exposure + legal review required; not before counsel.
+- **Beta-user data now**: needs 5+ consented beta users first — months away.
+
+### Unblocks
+
+Marketing trust rail (`docs/teams/MARKETING_PLAN_V0.md`). Ties to DEC-20260515-005 (closed beta supplies the future consented dataset).
+
+---
+
+## DEC-20260515-005 — Closed free beta; testers get 1 year free Pro at launch
+
+Date: 2026-05-15
+Status: decided (product/GTM)
+
+### Decision
+
+First stage is a **free closed beta** for a founder-selected community (friends, family, trusted traders) for testing, feedback, and improvement. Beta participants receive a **full year of the Pro tier free at launch** as a loyalty reward. The full pricing model and subscription tiers are designed later, after beta feedback.
+
+### Rationale
+
+A closed free beta removes any need for a billing system in the near term (Hyperscaler Phase D), de-risks pricing by deferring it until product value is understood, and produces the consented real dataset that DEC-20260515-004 needs. The 1-year-Pro reward aligns early-tester incentives with long-term retention.
+
+### Alternatives considered
+
+- **Retail $29 + Pro $99 from launch**: premature; requires billing and a pricing model before product validation.
+- **Single flat tier / free public trial**: free public trial needs synthetic demo-mode product work; closed beta is leaner and higher-signal.
+
+### Constraint / unblocks
+
+No billing/payments work needed before Phase D. Marketing Q1 should plan for closed-beta recruitment, not paid acquisition. Pricing model is an explicit open item for a future decision (post-beta). Adaptive-UX onboarding can assume invited users (no public signup) for V1.
+
+---
+
+## DEC-20260515-006 — ALGO in Open Tasks: one consolidated button + non-binding recommendations
+
+Date: 2026-05-15
+Status: decided (product) — **conditional on Mark's observer-safe ruling (Sprint 11 Wave 1)**
+
+### Decision
+
+Replace the per-ALGO `task_algo_noop` popup with a SINGLE consolidated ALGO entry in the Open Tasks list. Tapping it shows: (1) an explicit disclaimer "המלצה בלבד, לא חובת ביצוע — מנוהל חיצונית", then (2) for each ALGO-managed position, the engine's *observed* recommended action. These are **info-only**: never a `Task` with a status, never counted, never enter Win-Rate/Expectancy, never instruct an ALGO stop write.
+
+### Rationale
+
+Founder wants visibility into what the system *observes* for ALGO positions instead of a dead-end popup. Surfacing the engine's existing observation as a clearly non-binding read-out preserves the value while keeping Sentinel out of ALGO management.
+
+### Constraint (hard — gates implementation)
+
+This shifts ALGO from "pure observation, no text" toward "advisory read-out", which is adjacent to the AGENTS.md ALGO-observer Red Line (DEC-20260511-001 / invariants #5, #8). **Implementation is blocked until Mark rules** (Sprint 11 Wave 1) on the exact observer-safe form: the wording must be descriptive of the engine's observation only, explicitly non-binding, produce no actionable `Task`, and never feed stats. If Mark cannot define a safe form, fall back to DEC option "consolidated button, no recommendations".
+
+### Alternatives considered
+
+- **Consolidated button, no recommendations** (red-line-safe fallback): one button "מנוהל חיצונית — אין פעולת Sentinel".
+- **Remove ALGO from tasks entirely**: cleanest, but loses the signal that ALGO positions exist.
+
+---
+
+## DEC-20260515-007 — Suppress the RUNNER task when the stop already meets the engine suggestion
+
+Date: 2026-05-15
+Status: decided (methodology) — Mark defines the epsilon (Sprint 11 Wave 1)
+
+### Decision
+
+`PROTECT_RUNNER_PROFIT` is **not** emitted when the campaign's current stop already satisfies the engine's own `compute_suggested_trail_stop()` — i.e. `current_stop >= suggested_stop - epsilon`. A RUNNER task appears only when there is a *material* tighten to perform.
+
+### Rationale
+
+Observed live (MRVL): current stop $157.70 vs engine suggestion $158.11 — a $0.41 (0.26%) "task" that is pure noise. A task list must contain *actionable* items; surfacing a no-op tighten erodes trust in the whole list.
+
+### Constraint
+
+`epsilon` is a methodology threshold, defined by Mark in Sprint 11 Wave 1 (not invented by engineering). The check is read-only over the engine's own suggested-stop output — zero new R/NAV/campaign math. Tightening that *is* material still surfaces unchanged.
+
+---
+
+## DEC-20260515-008 — Audit trail exposed to the USER as a retrospective review surface
+
+Date: 2026-05-15
+Status: decided (product)
+
+### Decision
+
+The recorded action trail (`audit_log`: stop changes incl. loosen-overrides, task done/skip, risk-pct changes, etc.) is exposed to the **user** — not buried in the developer menu — as a read-only "review my actions / performance" surface in the normal menu, in friendly Hebrew, most-recent-first.
+
+### Rationale
+
+The founder's goal is self-review ("שיכול לעבור אחרונה על הביצועים") — retrospective accountability over their own decisions. That is a first-class user need, not a dev/forensic one.
+
+### Constraint
+
+`audit_logger.py` is currently write-only **by design**. This adds a *deliberate, additive read path* (a new read function) — read-only, never mutates, honest data-source labels, still admin-only at the bot boundary (secure_runner unchanged). Mark (Sprint 11 Wave 1) confirms the read surface cannot present any fallback/derived number as authoritative (AGENTS.md #1).
+
+---
+
+## DEC-20260515-009 — Telegram rate-limit stays 8 msgs / 60s (secure_runner unchanged)
+
+Date: 2026-05-15
+Status: decided (security)
+
+### Decision
+
+The `telegram_bot_secure_runner.py` rate-limit (8 messages / 60s, 90s cooldown) is **kept as-is**. It tripped during intensive smoke-testing; that is the guardrail working. Work at a reasonable pace rather than weaken a security Red Line.
+
+### Rationale
+
+`telegram_bot_secure_runner.py` is a CLAUDE.md hard constraint. A single-user-admin convenience is not worth loosening anti-spam. Recorded so it is not re-litigated.
+
+---
+
+## DEC-20260515-010 — Manual operator-run `deploy.sh`; `deploy-watcher` not installed
+
+Date: 2026-05-15
+Status: decided (ops)
+
+### Decision
+
+The host `deploy-watcher` systemd service is **not** installed on the Pi (`systemctl restart deploy-watcher` → "Unit not found"), so the Telegram "🔄 Git Pull + Deploy" button has always been a no-op and the real deploy path is a manual SSH command. Going forward the supported deploy path is a new operator-run `deploy.sh` at the repo root. The auto-deploy `deploy-watcher` is **not** installed (founder chose explicit control over auto-deploy). `deploy_watcher.sh` (Sprint 13) stays in the repo for a possible future watcher install but is dormant.
+
+### Rationale
+
+The founder wants deploys under explicit control, not auto-fired by a Telegram tap. `deploy.sh` applies the exact Sprint-13 resilience Mark ruled (MARK_SPRINT13_RULINGS.md §1) — `up -d --build --force-recreate` (no `down`), a forced-IPv4 in-container connectivity self-check, retry-once, and on persistent failure it prints the exact `down && up -d` recovery and exits non-zero (never a fabricated success on a dead bot; never an unattended `down`).
+
+### Constraint
+
+`deploy.sh` is a new standalone file. It does NOT modify `docker-compose.yml` service commands, `deploy_watcher.sh`, `deploy-watcher.service`, `telegram_bot_secure_runner.py`, or any app/risk/NAV/campaign math (CLAUDE.md most-fragile area). Host bash → not unit-testable; `bash -n` clean; manual verification only.
+
+### Alternatives considered
+
+- **Install the `deploy-watcher` systemd service**: makes the Telegram button a live auto-deploy; rejected — founder wants explicit control.
+- **Both watcher + manual script**: deferred; revisit only if unattended auto-deploy is wanted later.
+- **Keep raw `docker compose up -d --build`**: rejected — it is exactly what caused the [Errno 101] stale-bridge outage this session.
+
+---
+
+## DEC-20260515-011 — Dual R: Structure R + Account R (never one conflated number)
+
+Date: 2026-05-15
+Status: decided (methodology) — Mark defines exact formulas/labels (Sprint 15 Wave 1)
+
+### Decision
+
+Every surface that shows an open-R (Telegram report, dashboard, AI-copy textbox) MUST show **two distinct, labelled metrics**, never a single number labelled with the wrong basis:
+- **Structure R** — net/open PnL ÷ the trade's **own original campaign risk** (existing `engine_core.compute_r_true`, :997).
+- **Account R** — net/open PnL ÷ the **frozen target risk** (existing `engine_core.compute_r_target`, :1004).
+
+### Rationale
+
+Founder-found defect: the report prints `RiskBasis: Target` but the OpenR is computed off original campaign risk. Live: MRVL shows 9.22R (Structure, ~$19 base) while Account R vs $47.53 target is ~3.73R; PWR 1.34R vs 0.89R; WCC 0.26R vs 0.11R. Both are true but they are different truths — collapsing them into one mislabelled number misrepresents real account impact (a "9R monster" is ~3.7R to the account).
+
+### Constraint
+
+This is a *surfacing + labelling* fix using the TWO formulas that already exist — it must introduce **no new R/NAV/campaign math** (AGENTS.md / CLAUDE.md red line). Mark (Sprint 15 Wave 1) rules the exact label strings, which existing function feeds which, and ALGO handling (ALGO has no real stop → Structure R may be N/A, Account R only). Test-gated.
+
+---
+
+## DEC-20260515-012 — Risk Capital Basis must be declared (NAV vs Base Capital)
+
+Date: 2026-05-15
+Status: decided (methodology)
+
+### Decision
+
+Wherever a target-risk $ figure is shown, the report MUST state the capital basis it was derived from: `Risk Capital Basis: NAV` or `Risk Capital Basis: Base Capital`. No silent basis.
+
+### Rationale
+
+Founder-found: $47.53 target risk is from NAV ($7,921); from Base Capital ($7,500) it would be $45.00. Not dramatic, but the reader must know which figure the system pulled from (data-source honesty — AGENTS.md #1).
+
+### Constraint
+
+Declaration/labelling only — does not change which basis the engine uses (that stays as implemented unless a separate decision changes it). Mark confirms the wording and that no number changes.
+
+---
+
+## DEC-20260515-013 — Broker Reconciliation Status (never silent on NAV vs DB gap)
+
+Date: 2026-05-15
+Status: decided (methodology)
+
+### Decision
+
+The report MUST surface a `Broker Reconciliation Status`: `Balanced` / `Minor Difference` / `Material Gap` / `Critical Data Gap`, computed from Broker NAV vs DB-derived net PnL (accounting for base capital). The system must never pass over a material discrepancy silently.
+
+### Rationale
+
+Founder-found: Broker NAV $7,921.08 (+$421.08 over $7,500 base, +5.61%) vs DB Net PnL all −$320.23 → ~$741.31 gap. Likely deposits/withdrawals/open positions/fees/revaluation or — founder's hypothesis — trades absent because the IBKR report pulls YTD only. Whatever the cause, silence is unacceptable.
+
+### Constraint
+
+Mark (Sprint 15 Wave 1) defines the band thresholds (grounded, no invented numbers) and the honest "cause unknown — verify" wording (#1, never present a guessed cause as truth). System/Infra verifies the YTD-window hypothesis. No change to NAV/PnL math — this is a derived status indicator + disclosure.
+
+### Open (NOT decided — for the Sprint 15 team meeting / pending founder input)
+
+- **ALGO Oversight Gate** — **RESOLVED → see DEC-20260515-014 below** (founder accepted Mark's REFINE; structure locked, numeric thresholds pending founder's real-ALGO-data fine-tuning).
+- **BLOCKED pending founder's ALGO rules** (founder will provide): ALGO open-position data quality (`State/InitStop/CurrStop unknown`, `Visibility 40/100` not good enough); strategy-adaptive "dead money" alert when no smart follow-through. Team designs the *framework to absorb* the rules; no ALGO logic invented.
+
+---
+
+## DEC-20260515-014 — ALGO Oversight Gate (Mark's refined structure, accepted)
+
+Date: 2026-05-16
+Status: **structure accepted (founder); real ALGO data RECEIVED 2026-05-16** (`docs/teams/ALGO_REFERENCE_2026_05_16.md` — authoritative) → Sprint 17 fine-tunes numbers + unblocks #4/#5. **NOT built** until Sprint-17 Mark-gated tuning + re-confirmation.
+
+### Decision
+
+The founder accepted Mark's `REFINE` (`MARK_SPRINT15_RULINGS.md §4`). The Gate's **structure is locked**; the founder will supply a full review with real ALGO data to fine-tune the exact numbers.
+
+**Locked structure:**
+- **Advisory only.** The Gate withholds the *founder's own* discretionary ALGO size-up / new-asset / exposure-up decision. It NEVER instructs the ALGO, never alters an ALGO trade, emits at most `Review Required` (DEC-20260511-001 display rule) — never `Action Required`. This is the methodological clearance: advisory oversight ≠ management, so it is admissible under DEC-20260511-001.
+- **Triggers (any → Gate engages):**
+  1. ALGO Net PnL `< −5R` on an explicit **Account-R** basis (ALGO has no real stop; per DEC-20260515-011) — must be stated.
+  2. Rolling expectancy negative over the last 20–30 ALGO trades, computed on an **ALGO-segregated cohort that is EXCLUDED from headline Win-Rate/Expectancy** (invariant #8) — a separate observer metric, never leaking into main stats.
+  3. ALGO Profit Factor `< 1`, same ALGO-segregated cohort, same #8 isolation.
+  4. Stop / max-loss unknown → gates **new ALGO assets ONLY** (not size-up on existing, not a blanket exposure freeze).
+- **DROPPED:** the original `Visibility < 70` condition — vacuous (ALGO visibility is capped at 40 by design, `compute_risk_visibility_score:298-299`, so `<70` is always true). The existing visibility score already encodes the intent; if a visibility trigger is wanted it must be reframed (e.g. `Visibility == 20` / no target risk), to be decided with the real data.
+
+### Rationale
+
+Founder's risk-discipline intent is sound; Mark cleared the observer-mode compatibility (advisory, `Review Required` only). The exact thresholds (−5R basis, 20–30 window, PF<1, any reframed visibility trigger) interlock with the founder's real ALGO performance data and forthcoming ALGO rules — locking the structure now while fine-tuning numbers against real data avoids both rework and an invented-number red-line breach.
+
+### Constraint / next
+
+NOT built this sprint or until: (a) the founder's full real-ALGO-data review arrives, (b) Mark + team fine-tune the numeric thresholds against it, (c) it is re-confirmed. The ALGO-segregated expectancy/PF cohort must never contaminate headline stats (#8). Build also stays gated on the still-pending founder ALGO rules (the same data feeds the BLOCKED #4/#5 framework above).
+
+---
+
+## DEC-20260516-015 — Weekly/Monthly report: open-book + honest empty-state
+
+Date: 2026-05-16
+Status: **decided (founder); Sprint 18, Mark-led** — not built until Mark rulings + checkpoint.
+
+### Problem (founder smoke-test, Sprint-17 on-demand button)
+
+The weekly/monthly report is **realized-only by design** (`compute_period_analytics`: "campaigns that closed within [period_start, period_end)"). With a live 6-position book (HOOD/MRVL/PLTR/PWR/TSLA/WCC, +$230 floating, 31.3% exposure) and **0 campaigns closed** in the on-demand window (03–09/05), the report rendered "🔴 שבוע ללא עסקאות" — technically true for *closed* campaigns but **misleading** (a #1 concern: presents an empty realized set as "no trading activity") and a real product gap: the open book's state + how it performed is entirely absent.
+
+### Decision (founder chose "מלא + snapshot קדימה")
+
+Sprint 18 adds to the weekly/monthly report:
+1. **Open-book section** — current state per open position (entry / current / floating PnL / Open-R / exposure), reusing the existing live source `ec.get_open_positions_campaign` (engine_core.py:473; same as the command room). **Realized vs unrealized strictly separated**; the open book NEVER enters realized Win-Rate/Expectancy/PF/Net-R. **ALGO open positions segregated** (#8 / DEC-20260515-014) — observation-only, never an instruction (DEC-20260511-001).
+2. **Honest empty-state** — replace the misleading "שבוע/חודש ללא עסקאות" when there IS a live book: state plainly "0 קמפיינים נסגרו בתקופה" + the open-book summary; #1-honest about the data window and source (Live/Cached/Sync-temporary).
+3. **Begin snapshotting open-position marks** with each scheduled run (new `report_snapshot_store` field) so a **true weekly mark-to-market delta** appears from the NEXT week onward. Honest constraint surfaced: the delta is "—" until a baseline week accumulates (no retroactive week-ago open-mark exists — accuracy over confidence, #1).
+
+### Hard constraints
+
+- No change to realized R/NAV/campaign/Expectancy math (CLAUDE.md fragile area; Safe-Change: tests required). Realized KPIs byte-identical.
+- Strict realized/unrealized separation + ALGO #8 segregation provable by construction + test (open book never contaminates realized stats; ALGO never in headline).
+- Advisory/observation only for ALGO (DEC-20260511-001). Backtest/Live/Cached honesty (#1).
+- New snapshot field is additive (Hyperscaler: no migration; per-host derived state).
+- No wholesale rewrite; reuse `get_open_positions_campaign` (battle-tested in the command room) — invent no new position math.
+
+---
+
+## DEC-20260516-016 — Period-honest headline + period-over-period context + System-Health #1 bug
+
+Date: 2026-05-16
+Status: **decided (founder); Sprint 19, Mark-led** — not built until Mark rulings + checkpoint.
+
+### Trigger (founder smoke-test of deployed Sprint-18 f43a94c)
+
+Sprint-18 shipped & verified live: the open book now renders in weekly/monthly, period-scoped (opened-in-period / held-from-before / opened-after-window excluded), ALGO-segregated, honest empty-state line. Real progress on the founder's prior asks. Re-test surfaced THREE remaining issues:
+
+1. **Headline still reads "0 / ללא עסקאות".** Despite the new honest empty-state LINE, the dominant visuals — the big `verdict-badge` ("שבוע/חודש ללא עסקאות") and the all-zero KPI cards (WR/Exp/PF/Realized $0) — still scream "no trading / zero" while a live book (+$72 weekly, +$224 monthly, 33–34% exposure, 4 opened-in-period) spanned the period. Founder: "עדיין הנתונים אפסיים, אין התייחסות לנתונים ביחס לשבוע/חודש ביחס לתיק."
+2. **No period-over-period / vs-average context.** Founder: "אין התייחסות לגבי השבוע/החודש שנבדקו ביחס לשבועות/חודשים קודמים ולעומת שבוע/חודש ממוצעים." `compute_period_comparison` ("vs previous") is omitted in on-demand by design and only fires for scheduled runs once a prior snapshot exists; there is NO "vs average" metric anywhere; the open book has no period-over-period view.
+3. **System-Health #1 bug (RCA done).** `ibkr_sync_runner.py:16` `IBKR_ERROR_CLASSES[1001]=("temporary","הדוח לא נוצר כרגע — ניסיון מאוחר יותר")` is the IBKR **flex-query** status; `report_scheduler._build_system_health` blindly renders it as `✅ Sync temporary — הדוח לא נוצר כרגע …` INSIDE a successfully delivered Sentinel report. Two faults: (a) "הדוח" reads as the Sentinel report → actively misleading (#1); (b) `✅` prefix on a non-ok/temporary state. Minor sibling: monthly PDF header shows "1–29 באפריל" (April=30) — suspected `_period_label` off-by-one.
+
+### Decision (Sprint 19, Mark-led)
+
+1. **Period-honest headline (presentation only — NO realized-math / `compute_verdict` / 920be95 / #8 change):** when 0 closed but an active book spanned the period, the verdict badge + KPI framing must NOT visually read "no trading / zero". Surface the period's OPEN-BOOK performance prominently (floating PnL, exposure, # opened-in-period, mark-to-market Δ once a baseline exists) clearly separated from realized; realized KPI cards stay byte-identical but are framed as "0 ממומש" not the dominant verdict.
+2. **Period-over-period + vs-average context:** add "מול תקופה קודמת" and "מול ממוצע" for BOTH realized (existing snapshot history via `load_recent`) and the open book (new `open_marks` history). Honest baseline-pending until ≥N prior snapshots accumulate (#1 — never a fabricated average). On-demand may show it READ-ONLY from existing history (no snap_save — Scope-B invariant holds).
+3. **Fix System-Health #1 bug:** `_build_system_health` must map sync status to an honest, non-self-contradictory line — no `✅` on `temporary`; never surface the IBKR-flex "הדוח לא נוצר" string verbatim where it reads as the Sentinel report. Mark rules exact Hebrew. Check & fix the monthly `_period_label` "1–29" off-by-one.
+
+### Hard constraints
+
+- No realized R/NAV/campaign/Expectancy math change; `analytics_engine.py` realized path byte-identical (guard). `compute_verdict` 920be95 signature + bcf32f5 + Sprint-16 graceful + Sprint-18 period-scoping all preserved.
+- Realized vs unrealized strictly separated; ALGO #8-segregated & observation-only (DEC-20260511-001) in every new comparison too — ALGO never in headline/realized comparison.
+- #1: never fabricate an average/comparison without enough history — explicit baseline-pending; never present sync-temporary as ✅ or as "report not created".
+- On-demand stays NO snap_save; comparison/average read-only from existing history. Hyperscaler: comparison uses existing per-host snapshot files; no migration.
+- No wholesale renderer rewrite; presentation-layer + additive ctx; reuse `compute_period_comparison` + `load_recent` + the Sprint-18 `open_marks`.
+
+---
+
+## DEC-20260516-017 — Period view = union(opened ∪ closed ∪ open); RCA-gated on the "0 realized" data-integrity question
+
+Date: 2026-05-16
+Status: **decided (founder direction); Sprint 20, Mark-led, RCA-GATED** — no analytics/campaign-math build until the read-only RCA confirms root cause.
+
+### Trigger (founder smoke-test of deployed Sprint-19 2075756)
+
+Sprint-19 verified live: period-honest headline (no dominant "ללא עסקאות" with a live book), realized cards truthfully demoted "0 בתקופה", vs-average baseline-pending honest, System-Health honest, `_period_label` "3–9 במאי"/"1–30 באפריל". Founder's sharpened core objection: **"רוב הנתונים 0 ולא תואם לאמת — גם נפתחו וגם נסגרו פוזיציות במהלך השבוע/החודש."** Proposed direction: the period basis must be the **union (OR)** — *opened-in-period* OR *closed-in-period* OR *open-spanning* — then compute on that union (incl. positions that BOTH open AND close within the same period).
+
+### RCA finding (code-level, this session — leading hypothesis, NOT yet data-confirmed)
+
+`analytics_engine._get_closed_campaigns:255-262` ALREADY counts any campaign with an in-window SELL, **including same-period open→close round-trips** — so this is NOT a formula bug that drops round-trips. BUT:
+- `:258` `closed_ids = in_period["campaign_id"].dropna().unique()` → an in-window SELL with **NULL campaign_id is silently dropped** (never counted, never `excluded`).
+- `engine_core.get_open_positions_campaign:479` `valid_df = work[work["campaign_id"].notnull()]` → null-campaign trades are invisible to the OPEN book too. ⇒ a trade without `campaign_id` vanishes from BOTH views.
+- `bot_health.py:146` already tracks `df_c["campaign_id"].isnull()` → null-campaign trades are a **known real condition** in this system (consistent with the open broker-recon $190.29 "requires manual verification" gap).
+- `excluded_pnl`/`excluded_count` are **not surfaced** in the weekly/monthly templates → linked-but-DATA_INCOMPLETE round-trips are silently 0 (a second #1 honesty gap).
+
+Leading hypothesis: the founder's missing closes are NOT in the data the report reads *with a campaign_id* (null-linkage and/or unsynced), OR are linked-but-excluded and not surfaced. Per #1 the report is honest about the data it has; the gap is data-integrity upstream — building the union view on the assumption "the closes are in the data" would not fix "0" and would itself violate #1.
+
+### Decision (Sprint 20, Mark-led, RCA-GATED)
+
+1. **RCA FIRST (no campaign-math change until done):** a read-only, admin-gated dev-menu probe ("תקינות נתוני תקופה") that, for the last weekly+monthly windows, reports the decisive numbers — total trades in window; BUY/SELL counts; **BUY/SELL with NULL campaign_id**; # campaigns with an in-window SELL; # opened-AND-closed-in-window round-trips; Σ `pnl_usd` in window; `excluded_count`/`excluded_pnl`. This classifies the root cause (null-linkage vs unsynced vs out-of-window vs linked-but-excluded) without guessing or mutating anything.
+2. **Gated on the RCA:** implement the founder's union-based period view — period basis = opened-in-period ∪ closed-in-period ∪ open-spanning; same-period round-trips explicitly counted in realized; **surface excluded/unlinked realized PnL honestly** so nothing real is silently 0 (#1). Realized stats for the existing linked-closed countable subset stay **byte-identical** (guard test). ALGO #8-segregated throughout; observation-only.
+
+### Hard constraints
+
+- No campaign/R/NAV/Expectancy math change until RCA confirms root cause; the existing linked-closed countable realized KPIs must remain byte-identical (guard). #8 ALGO segregation + #1 honesty (never present unlinked/incomplete data as exact truth; never fabricate closes that aren't in the data — say so explicitly).
+- RCA probe is strictly read-only (no Supabase mutation, no snap_save, admin-gated via existing dev-menu/PIN path).
+- Preserve 920be95 / bcf32f5 / Sprint-16 graceful / Sprint-18 period-scoping / Sprint-19 headline+comparison+System-Health. No migration / compose / secure_runner change.
+
+---
+
+## DEC-20260516-017 — UPDATE: RCA GATE PASSED, root cause CONFIRMED (data-confirmed via 🏥 בריאות מערכת)
+
+Date: 2026-05-16
+Status: **RCA gate PASSED; Step-2 UNGATED with precise confirmed scope; Sprint-20 Step-2 Mark-led.**
+
+### Founder ran the existing `🏥 בריאות מערכת` (no build) — decisive result
+
+- `✅ Campaign IDs — כולם מלאים` → **null-campaign_id hypothesis RULED OUT** (all trades linked).
+- `✅ Supabase — טרייד אחרון: 2026-05-15` → **not a sync gap** (data current).
+- `🧹 רשומות סגורות/ארכיון ללא סטופ: 52 (HOOD, HP, JPM, MSGE, PLTR) — אינו נספר` → **the smoking gun.**
+
+### Confirmed root cause (RCA path f, data-confirmed + code-traced)
+
+The founder's period closes ARE real, ARE campaign-linked, ARE in the data — but lack `initial_stop`. Trace: `_get_closed_campaigns` picks them up (campaign_id present, in-window SELL) → `_aggregate_campaigns` → `classify_stat_bucket(setup, true_orig_risk=0)` → `STAT_BUCKET_DATA_INCOMPLETE` (engine_core.py:1257-1258) → `is_stat_countable` False (1263) → NOT in `countable` → `campaigns_closed = len(countable) = 0` (analytics_engine.py:89,129). They DO land in `excluded_count`/`excluded_pnl` (analytics_engine.py:57-58,144-145) — **which are computed but rendered NOWHERE** (confirmed absent from report_renderer.py + both templates). So the report shows "0 קמפיינים נסגרו / Realized $0" while N campaigns truly closed with $X realized PnL.
+
+**This is a #1 disclosure/honesty defect — NOT a campaign-math bug.** Excluding no-stop campaigns from edge stats (WR/Expectancy/PF/Net-R) is methodologically CORRECT (#8 — no R without a stop). The defect is the SILENT omission: the report must honestly disclose "N קמפיינים נסגרו בתקופה אך הוחרגו מסטטיסטיקת edge (חסר stop) — רווח/הפסד ממומש לא-מאומת: $X · השלם entry/stop כדי להיכלל." Partly also a founder-side data-completion task (52 closed records lack stop; the system already says "השלם entry/stop").
+
+### Step-2 scope (UNGATED, Mark-led, Wave-1/2 rigor)
+
+1. **Surface the excluded/closed-but-incomplete leg honestly** in weekly/monthly + the Telegram summary, using the ALREADY-COMPUTED `excluded_count`/`excluded_pnl` — ZERO campaign/R/NAV/Expectancy math change. Strictly separated from countable edge stats (which stay byte-identical & #8-clean). Labeled "לא-מאומת / חסר stop", never as exact edge truth (#1).
+2. **ALGO stays segregated** (DEC-20260515-014 / DEC-20260511-001): the excluded bucket mixes DATA_INCOMPLETE (manual, missing stop) AND ALGO — disclose them on SEPARATE lines, ALGO observation-only, never merged, never in headline edge stats.
+3. Satisfies the founder's union framing: closed-but-excluded now visible (closed leg) alongside Sprint-18/19 opened-in-period + open-book legs.
+
+### Hard constraints
+No campaign/R/NAV/Expectancy math change (excluded_pnl already computed); countable realized KPIs byte-identical (guard). #8 ALGO/DATA_INCOMPLETE never in countable; #1 honest ("לא-מאומת", explicit incomplete-data disclosure, never fabricated). Preserve 920be95/bcf32f5/Sprint-16/Sprint-18 period-scoping/Sprint-19. No migration/compose/secure_runner change. No wholesale renderer rewrite — additive presentation.
+
+---
+
+## DEC-20260516-018 — Full-DB read-only diagnostic ("where are my closes")
+
+Date: 2026-05-16
+Status: **decided (founder); Sprint 21, Mark-led — read-only diagnostic, no analytics/campaign-math change.**
+
+### Trigger (founder smoke-test of deployed Sprint-20 8e6834b)
+
+Sprint-20 verified live: NO excluded-disclosure block appears for the 03–09/05 weekly or April monthly windows → `excluded_count==0` AND `campaigns_closed==0` for those windows. The report is now HONEST and correct across all three legs (countable / excluded-closed / open-book + opened-in-period). The 52 missing-stop CLOSED records from `🏥 בריאות מערכת` are GLOBAL/all-time (that check is unwindowed) — they are NOT dated within the tested windows (else Sprint-20's `excluded_count>0` block would render). Conclusion: this is no longer a report-logic defect — it is a **data-location / visibility** question: *where in time are the founder's closes, and why are they not in the tested windows?* Founder direction: **look at the FULL database**, not a single window.
+
+### Decision (Sprint 21, Mark-led)
+
+Build a strictly **read-only, admin-gated** diagnostic surfacing the FULL trades history so the founder can SEE the real distribution:
+- Total trades; `trade_date` min/max; per-month breakdown (recent N months): #BUY, #SELL, #closed campaigns split countable vs excluded(no-stop)/ALGO, Σ realized `pnl_usd`, #round-trips (opened&closed same month).
+- The missing-stop CLOSED records listed WITH their actual close dates + symbol + pnl (so the founder sees which periods the 52 fall in).
+- Windowed null/blank `campaign_id` reconfirm (bot_health is global-clean; confirm per-window).
+- #1-honest labels (Live/Cached, "לא-מאומת" for no-stop, explicit "אין סגירות בחלון" vs "סגירות קיימות בחודש X"); #8 ALGO segregated in the breakdown (observation-only, never merged into edge).
+
+### Hard constraints
+
+- **Strictly read-only:** no Supabase write, no `snap_save`, no scheduler state mutation; reuse the existing read path (`_fetch_trades_df`-style select) — NO new campaign/R/NAV/Expectancy math (counts + already-stored `pnl_usd` sums only).
+- **Admin protection preserved (AGENTS.md / CLAUDE.md):** wire ONLY via the EXISTING dev-menu admin/PIN gate; do NOT remove admin protection, do NOT bypass `telegram_bot_secure_runner.py`, do NOT rewrite `telegram_bot.py` wholesale — minimal additive handler + one menu entry.
+- No secrets in output (no account numbers / tokens / NAV-source internals beyond what existing reports already show).
+- Preserve 920be95 / bcf32f5 / Sprint-16 / Sprint-18 period-scoping / Sprint-19 / Sprint-20 disclosure. No migration / compose / secure_runner change.
+
+---
+
+## DEC-20260516-018 — UPDATE: engine PROVEN CORRECT on real data → production "0" is a DATA-DELIVERY gap
+
+Date: 2026-05-16
+Status: **RCA decisive. Report logic exonerated by real-data reproduction. Sprint-21 probe re-targeted to the LIVE fetch path.**
+
+### Decisive reproduction (founder dumped full `trades` table; ran the REAL code)
+
+`tests/test_real_data_april_regression.py` runs the REAL `compute_period_analytics` on the founder's verbatim rows:
+
+- **April 2026 → `campaigns_closed=8`, `realized_pnl=+$180.49`, win_rate 37.5%, expectancy +1.07R, PF 2.63, net_r +8.59** (CVX/DAR/RVMD×2/MTZ/NEE/INTC/AXGN — manual EP/VCP, valid stops, correctly countable). Excluded split correct: AEHR +69.34 (stop 68.4 ABOVE entry 60.3 → DATA_INCOMPLETE, founder data-entry error — real stop is in `initial_risk_price` 54.85), TSLA -48.905 (ALGO).
+- **Weekly 03–09/05 → `campaigns_closed=0` (correct, all 3 closes are ALGO #8), `excluded_count_algo=3`, `excluded_pnl_algo=-$37.23`.**
+
+### Conclusion (evidence-based, ends the speculation)
+
+The analytics/classification/Sprint-20-split logic is **CORRECT**. Given the founder's data it returns 8 closed / +$180 for April. Therefore the production report's "0 קמפיינים" is **NOT** a logic/display defect — the live report run is **not receiving these rows** (`report_scheduler._fetch_trades_df` → Supabase returns empty/partial/None at report time, OR the on-demand path's data input differs from the DB state). Sprint 17–20 display fixes were all correct and necessary; they could never resolve "0" because the *input* is empty in production, not the math.
+
+Corroborating real data issues (independent of the delivery gap):
+- Trades from 2026-05-11+ (`9476246095`…, incl. CAT SELL 05-15 +13.71) have **`campaign_id=null`** → silently dropped both views (still a real fix: surface/repair null-linkage).
+- AEHR-class campaigns: `initial_stop` holds a value ABOVE entry (real stop sits in `initial_risk_price`) → correctly DATA_INCOMPLETE; founder-side data correction OR a future ruling on `initial_risk_price` fallback (campaign-math → Mark-gated, separate).
+
+### Sprint-21 re-target (no logic change)
+
+The read-only admin-gated probe must run **inside the live environment** and report, for the on-demand weekly/monthly windows: `_fetch_trades_df` row count, `trade_date` min/max, #SELL in-window, #closed campaigns the real pipeline computes, per-campaign classification (campaign_id/setup/initial_stop/original_risk+valid+reason/bucket/countable/net_pnl), and in-window NULL-`campaign_id` count. This catches the production data-delivery gap definitively. Still strictly read-only, existing admin/PIN gate, no campaign-math, no Supabase write.
+
+---
+
+## DEC-20260516-018 — UPDATE 2: comprehensive 3-workstream fix (founder: "תיקון מלא וזהיר")
+
+Date: 2026-05-16
+Status: **decided (founder); Sprint 21 COMPREHENSIVE, Mark-led, full Wave-1/2 rigor.**
+
+Engine PROVEN correct on real data (April→8 closed/+$180.49; weekly→3 ALGO-excluded; `tests/test_real_data_april_regression.py`). Production "0" = data-delivery. Founder chose a full, careful, team-divided treatment. Sprint-21 = 3 bounded workstreams:
+
+### WS-A — Live read-only diagnostic probe (LOW risk)
+Admin-gated, strictly read-only module that runs the REAL `_fetch_trades_df` in the live env for the on-demand weekly/monthly windows and reports: rows fetched, `trade_date` min/max, #SELL in-window, #closed campaigns the real pipeline computes, per-campaign classification (campaign_id/setup/initial_stop/original_risk+valid+reason/bucket/countable/net_pnl), #in-window NULL-`campaign_id`, and the effective Supabase key/RLS context (no secret values — only "service-role vs anon", row visibility). Localizes WHY production input is empty (RLS/key vs runtime-failure vs data). Reuse existing dev-menu admin/PIN gate; minimal additive handler; no telegram_bot.py wholesale rewrite.
+
+### WS-B — NULL-`campaign_id` honest surfacing + repair runbook (MED risk)
+Code: trades with NULL/blank `campaign_id` currently vanish silently from BOTH realized (`analytics_engine.py:258 .dropna()`) and open-book (`engine_core.py:479 notnull()`). #1 violation. Add an HONEST disclosure (count + Σpnl of in-window unlinked trades) — never silently zero; NEVER auto-mutate Supabase from a read flow. Plus a documented manual repair query/runbook the founder runs to re-link the 8 rows from 2026-05-11+ (parent_trade_id/symbol-based). Realized/open-book countable values stay byte-identical (guard).
+
+### WS-C — `initial_stop` vs `initial_risk_price` fallback (HIGH risk — Mark-GATED, may DEFER)
+Real data shows manual EP/VCP campaigns where `initial_stop` is the `-1` sentinel or set ABOVE entry (data-entry error) while the genuine stop sits in `initial_risk_price` (e.g. AEHR 54.85, RVMD 127.8). These become DATA_INCOMPLETE → excluded though a real stop exists. **Campaign-math = CLAUDE.md most-protected.** Mark must rule the EXACT policy: (a) is `initial_risk_price`/`stop_loss` a valid fallback for `get_campaign_risk_metrics` when `initial_stop` is sentinel/invalid? (b) or is this strictly a founder data-correction task (no code change)? If a code change is ruled: everything currently countable must stay byte-identical; extensive new tests; the real-data regression (`test_real_data_april_regression.py`) updated only with Mark sign-off. DEFER if any ambiguity (#1: accuracy over confidence).
+
+### Hard constraints
+Strictly read-only WS-A (no Supabase write/snap_save/scheduler-state); admin protection preserved (no secure_runner bypass, no telegram_bot.py wholesale rewrite); #8 ALGO segregation; #1 honesty (never silent-zero, never fabricated); no campaign/R/NAV math change outside an explicit Mark WS-C ruling + guards; preserve 920be95/bcf32f5/Sprint-16/18/19/20; no migration/compose change.
+
+---
+
+## DEC-20260516-019 — Sprint 22: production "0" ROOT CAUSE = tz-aware bounds vs tz-naive trade_date (Mark-gated full sprint)
+
+Date: 2026-05-16
+Status: **decided (founder: "ספרינט Mark-gated מלא"); Sprint 22, full Wave-1/2 rigor, analytics-engine MOST-protected.**
+
+### The proven root cause (supersedes the WS-A "data-delivery" hypothesis as the PRIMARY production defect)
+Same `tests/test_real_data_april_regression.py::_april_df()` fixture through the REAL `analytics_engine.compute_period_analytics`:
+- tz-**naive** bounds (what 100% of the test suite passes): **8 campaigns / +$180.49** ✅
+- tz-**aware** bounds (what PRODUCTION actually passes): **0 campaigns / $0.00** ❌ (silent all-False, no raise)
+
+`report_on_demand.py:96-113` (and `report_scheduler.py:251,363`) build `now = datetime.now(sched.ISRAEL_TZ)` → `last_complete_*_ref` → `_weekly/_monthly_period` ⇒ **tz-aware** `period_start/period_end`. `analytics_engine.py:30` `pd.to_datetime(df["trade_date"])` ⇒ **tz-naive** Series. `_get_closed_campaigns:334` `sells["trade_date"] >= start` and the Sprint-21 WS-B unlinked block `:54-55` compare tz-naive Series vs tz-aware scalar → in this pandas this **silently yields all-False** (in the probe's own pre-filter it RAISED `Invalid comparison between dtype=datetime64[ns] and datetime` — same defect, different surface). Production weekly/monthly reports therefore show "0 קמפיינים" while the engine math is correct. Every "engine PROVEN on real data" claim held ONLY on the tz-naive path — never the production tz-aware path (#1 false-confidence gap; stated plainly).
+
+### Sprint-22 scope (Mark-gated, analytics-engine MOST-protected per CLAUDE.md)
+Single-point tz-normalization at the comparison boundary INSIDE `compute_period_analytics` (normalize BOTH sides to tz-naive: strip tz from `period_start`/`period_end` if present; ensure `trade_date` tz-naive post-coerce) so ALL callers (on-demand + scheduled + probe-via-`_get_closed_campaigns`) are fixed at one site. Mirror the SAME normalization in `period_data_probe.py`'s own pre-pipeline window filter (it filters before delegating). NO R/NAV/campaign/Expectancy math change — pure boundary tz-normalization.
+
+### Hard constraints
+tz-**naive** path (entire suite + the LOCKED `test_real_data_april_regression.py`) byte-identical — normalization is a no-op for naive inputs. NEW regression: tz-**aware** bounds MUST return EXACTLY the tz-naive numbers (April 8/+$180.49/WR .375/PF 2.626/excl 2; weekly 0/excl 3). #1 honesty (fix must not mask/fabricate). #8 ALGO segregation untouched. WS-C stays DEFERRED (not reopened). Preserve 920be95/bcf32f5/Sprint-16..21 + WS-B `unlinked_*` + admin gate + secure_runner; no migration/compose/telegram_bot.py wholesale change. Baseline full suite **1846**.
+
+---
+
+## DEC-20260516-019 UPDATE — PRODUCTION CONFIRMS the tz fix; honest number reconciliation; NEW probe length defect
+
+Date: 2026-05-16 (post-deploy, founder ran the real on-demand reports + probe)
+
+### PRIMARY DEFECT FIXED — confirmed end-to-end in production ✅
+Founder ran the REAL on-demand reports after `./deploy.sh`:
+- **Monthly April-2026:** was "0 קמפיינים" → now **10 campaigns / Win 50.0% / Realized $+336 / Net R +11.01R / Expectancy +1.10R / PF 4.03 / Missing-Stop 0.0%**, plus **10 ALGO closed (observe-only, $+218 unverified, NOT in edge)** — #8 ALGO segregation intact live.
+- **Weekly 03–09/05:** **0 discretionary closed** (HONEST zero — 5 open positions carried through, **3 ALGO closed/excluded −$37 unverified**) — exactly the LOCKED weekly shape (0 countable / 3 ALGO-excluded). This is the system correctly distinguishing an honest "0 discretionary this week" from the OLD silent tz-bug "0".
+
+The silent tz "0 קמפיינים" production blocker is **eliminated**. The live accumulated smoke-test (Sprint 11–22) **closes for the PRIMARY defect**.
+
+### Honest number reconciliation (#1 — NOT hand-waved)
+Production April = **10 / +$336**; the LOCKED `tests/test_real_data_april_regression.py::_april_df()` = **8 / +$180.49**. These intentionally differ — reconciled with evidence, not asserted:
+1. **The locked fixture is a CURATED RCA byte-stability anchor, demonstrably a SUBSET of live April** — concrete evidence: the fixture contains **exactly ONE** ALGO campaign (TSLA), production April closed **TEN** ALGO campaigns. The docstring's "full DB dump" means *sourced from* the dump, not *the entirety of* April.
+2. **The fixture uses a TEST account `{"nav": 7922.19, "risk_pct_input": 0.5}`**, not the production account config. R / Net-R / Expectancy / countability (`is_stat_countable` / `classify_stat_bucket`) are R-threshold-sensitive → a different NAV legitimately yields a different countable set & R-metrics **with zero math change**.
+3. The Sprint-22 fix is **independently proven math-neutral** (tz-aware == tz-naive == the locked 8/+$180.49, byte-identical, on the SAME fixture). So the production delta is **dataset scope + account NAV**, NOT a tz-fix regression or an over-count.
+Exact line-item reconciliation of the live 10/+$336 against raw Supabase rows still requires the read-only probe — see the new defect below.
+
+### NEW defect (separate, now blocking the reconciliation tool) — probe "message too long"
+At 20:22 the founder's `🔬 בדיקת נתוני תקופה (Probe)` failed **twice**: `Telegram API ... Error code: 400 ... message is too long`. The Sprint-21/22 probe builds one Telegram string exceeding the 4096-char limit. Note: it failed on LENGTH, not on `Invalid comparison` → the Sprint-22 tz-mirror in the probe plausibly held, but the probe is **unusable** and is exactly the tool needed for the line-item reconciliation above. Candidate fix (Sprint-23): chunk/trim the probe output to Telegram limits (≤~3900 chars/message, split per window) — pure formatting, READ-ONLY contract unchanged, no math. Scope/priority = founder decision.
+
+### Founder decision (post-reconciliation question): **"עצור — אבדוק ידנית קודם"**
+Founder will MANUALLY reconcile the live April **10 / +$336** against the raw Supabase rows and report back. Therefore:
+- The probe "message too long" fix is **HELD / not started** (no Sprint-23 yet) — pending the founder's manual finding (which may confirm 10/$336 as correct full-dataset, or surface a real over-count to investigate).
+- **No code change** from this turn beyond the already-shipped Sprint-22 fix (`638d845`) + this doc trail. Worktree stays clean; nothing touched on the probe or analytics.
+- Awaiting: founder's manual line-item reconciliation of 10/+$336 (+ the 10 ALGO / $+218 observe-only and weekly 0/3-ALGO). The Sprint 11–22 smoke-test remains **closed for the PRIMARY tz defect**; full sign-off pends the founder's manual number check.
+
+### DEC-20260516-019 RECONCILIATION COMPLETE — production EXACT vs raw Supabase ✅ (smoke-test fully CLOSED)
+Date: 2026-05-16 (founder ran the independent SQL Q1 against raw `trades`; parent reconciled line-by-line)
+
+Founder's raw-row SQL (all campaigns with an April SELL, bucketed) reconciles the production monthly report to the cent — independent of the engine code:
+- **COUNTABLE = 10** campaigns; Σ net_pnl = **+$336.14** (report `$+336`); Σ net_r = **+11.01R** (report `+11.01R`); Expectancy **+1.10R**; PF 447.13/110.99 = **4.03**; Win 5/10 = **50.0%**; Missing-Stop **0%** — every headline value EXACT.
+- **ALGO_OBSERVED = 10** (HOOD×3, JPM×3, PLTR, QQQ, TSLA×2); Σ net_pnl = **+$217.66** (report `$+218`), correctly excluded from edge — #8 segregation verified on real data.
+- **NO over-count, NO regression, NO masking.** The Sprint-22 tz fix is validated end-to-end against raw production data.
+
+**8→10 fully explained (honest):** the LOCKED fixture's 8 + (a) **AEHR_9283303702** — fixture `initial_stop`=68.4 (ABOVE entry 60.3 → invalid → DATA_INCOMPLETE); the LIVE DB now stores `initial_stop`=54.85 (valid) → legitimately countable. The AEHR data was REPAIRED in the DB since the Sprint-21 RCA snapshot — confirmed by the raw SQL value, NOT a fix artifact. (b) **MRVL_9118118916** — a real EP campaign (+$86.31) simply absent from the curated RCA subset. The locked `test_real_data_april_regression.py` stays a valid frozen byte-stability anchor (intentionally NOT live) — still byte-identical.
+
+**Status:** the live accumulated smoke-test (Sprint 11–22) is **fully CLOSED** — primary tz defect fixed AND production numbers independently reconciled exact against raw rows. Remaining OPEN (separate, founder-decided HELD): probe "message too long" (Telegram 400) — formatting-only Sprint-23 candidate; the reconciliation it would have served is now complete via raw SQL, so it is non-blocking.
+
+---
+
+## DEC-20260516-020 — Sprint 23: probe "message too long" (Telegram 400) — formatting/delivery-only fix
+
+Date: 2026-05-16
+Status: **decided (founder: "תקן Probe (Sprint-23)"); Mark-gated-light, proven Wave-1→checkpoint→Wave-2→consolidation rhythm.**
+
+### Root cause (proven from code, not hypothesised)
+`telegram_bot.py:318` does `txt = period_data_probe.build_probe_report()` then `bot.send_message(chat_id, txt, …)` — ONE send of the FULL probe string. `build_probe_report(None)` returns `_RTL + weekly + "\n\n" + _RTL + monthly`; each `_window_block` emits a per-campaign line for EVERY closed campaign (`period_data_probe.py:~265` `f"{cid} · {sym} · {setup} · entry=… initial_stop=… irp=… sl=… risk_valid=… bucket=… נספר=… net=$…"`) + the WS-C candidate block. With ~20 campaigns × 2 windows this exceeds Telegram's 4096-char hard limit → `Bad Request: message is too long` (founder hit it twice 20:22). NOT a logic/data defect; the Sprint-22 tz-mirror in the probe plausibly held (it failed on LENGTH, not `Invalid comparison`).
+
+### Sprint-23 scope (formatting/delivery boundary ONLY)
+Split the probe output into ≤Telegram-limit parts at safe boundaries. An existing proven splitter exists — `telegram_portfolio.py:21 _send_long_message` (3900-char, separator/newline-aware, `reply_markup` on the last part only) — BUT it forces `parse_mode="Markdown"` while the probe is sent PLAIN-TEXT (probe `campaign_id`s contain `_` → Markdown would italicise/400). So a verbatim reuse is unsafe. The fix keeps the SPLIT+multi-send in the CALLER (the probe's binding contract: "delivery is the caller's job; the probe NEVER sends/persists" — AST-proven by `tests/test_sprint21_wave2.py`), preserving `period_data_probe.py` 100% untouched (Sprint-22 tz-mirror + honest empty/fail branch + READ-ONLY/no-secrets AST proof byte-identical). #1: **chunk, never truncate** — the probe's purpose is honest disclosure of every real row; pure trimming that hides rows is a #1 violation.
+
+### Hard constraints
+NO information loss (chunk, not truncate — #1). `period_data_probe.py` byte-identical (no probe change → Sprint-22 tz-mirror + §A1 READ-ONLY + §A3 no-secrets AST test untouched). Plain-text send preserved (NO `parse_mode` change — campaign_id `_` must not Markdown-break). Admin/dev-PIN gate (`telegram_bot.py:147-153`) untouched; no `telegram_bot.py` wholesale rewrite (one additive splitter in the existing dev-menu handler, mirroring `_send_long_message`'s proven shape); no secure_runner bypass; no migration/compose/schema. WS-C stays DEFERRED; #8 untouched. Preserve 920be95/bcf32f5/Sprint-16..22. Baseline full suite **1864**.
+
+### DEC-20260516-020 PRODUCTION-VALIDATED — Sprint-23 loss-free confirmed; WS-C `-1`-sentinel observation logged
+Date: 2026-05-16 (founder deployed + ran the dev-PIN Probe + on-demand reports)
+
+**Sprint-23 PRODUCTION-VALIDATED ✅ (loss-free, independently counted):** the dev-PIN Probe delivered as 3 plain-text RTL messages with NO `message is too long`: (1) weekly (3 ALGO + WS-C) single send (under limit); (2) monthly part-1 = 17 campaigns (AEHR…RVMD_9307120241); (3) monthly part-2 = 3 campaigns (RVMD_9307924911, TSLA×2) + WS-C, RTL-prefixed. Probe header stated "קמפיינים שנסגרו: 20"; 17+3 = **20 exactly** — split at a clean `\n` boundary between RVMD_9307120241 / RVMD_9307924911, ZERO campaign rows cut/lost/duplicated. The Sprint-23 loss-free guarantee held end-to-end in production.
+
+**Reports still reconcile exact:** monthly April = 10 countable / $+336 / +11.01R / PF 4.03 / 10 ALGO $+218 — identical to the DEC-019 raw-Supabase reconciliation; the probe detail shows exactly which 10 are *_MANUAL countable vs 10 ALGO_OBSERVED (10+10 = the 20 closed). Weekly = 0 discretionary / 3 ALGO −$37. Sprint-22 tz fix + Sprint-23 both holding in production.
+
+**#1 honest observation logged to the WS-C backlog (NOT reopened, NOT fixed now):** all 10 excluded ALGO campaigns show `irp=0 · sl=-1`; the probe's WS-C "recoverable-candidate" heuristic counts them (10/10, weekly 3/3) because `sl=-1 ≠ 0`. But `-1` is the ALGO "no manual stop / externally managed" SENTINEL, not a recoverable real stop. The probe is honest ("מועמד בלבד — דורש פסיקת Mark + חוזה-נתונים"), so this is not a current lie — but the eventual WS-C data contract + Mark ruling MUST explicitly exclude the `-1` sentinel from "recoverable", else a WS-C decision would be built on a false premise (a #1 risk). This is a Sprint-21-WS-A heuristic + the DEFERRED WS-C question — NOT a Sprint-23 regression; correctly NOT touched (WS-C stays DEFERRED; the probe is Sprint-23-locked byte-identical). Secondary: the 10 "⚠️ stop לא תקין — תקן entry/stop" lines on ALGO rows are expected/non-actionable (ALGO is intentionally edge-excluded per #8); the wording is mildly misleading for ALGO — pre-existing Sprint-21 behaviour, logged, not a regression.
+
+**Status:** Sprint-23 CLOSED & production-validated. Smoke-test (Sprint 11–23) fully CLOSED. WS-C carried item now annotated with the binding `-1`-sentinel constraint for whenever it is taken up.
+
+---
+
+## DEC-20260516-021 — Sprint 24: Quality Consolidation (behavior-preserving) — make the EXISTING system cleaner / more efficient / more maintainable
+
+Date: 2026-05-16
+Status: **decided (founder: "ישיבת צוות מלאה מפורטת — לא לשדרג ולהוסיף דברים אלא להפוך את הקיים לטוב/יעיל/נוח יותר"). Wave-1 = DOC-ONLY full-team audit; Wave-2 executes ONLY the founder-chosen, Mark-gated subset.**
+
+### Mandate (strict)
+NO new features. NO behavior change. NO math change. Improve EXISTING code only: remove duplication / dead code, improve reuse, efficiency, clarity, maintainability, and operational convenience — exactly the CLAUDE.md "Preferred refactor direction" (gradual extraction + tests per extraction; NEVER a giant rewrite).
+
+### Hard constraints (whole sprint)
+Byte-identical for ALL production-validated & locked paths: the Sprint-22 tz fix, the Sprint-23 probe split (loss-free, production-validated), the LOCKED `tests/test_real_data_april_regression.py`, 920be95/bcf32f5/Sprint-16..23, WS-B `unlinked_*`. No R/NAV/exposure/campaign/Expectancy math change. No Telegram admin/dev-PIN gate removal. No secure_runner bypass. No `telegram_bot.py` wholesale rewrite. No Supabase mutation from read-only flows. WS-C stays DEFERRED (incl. the logged `-1`-sentinel constraint — not addressed here). No migration/compose/schema. Every accepted change is test-backed and proven behavior-preserving. Baseline full suite **1879 passed**.
+
+### Process
+Wave-1 (parallel, DOC-ONLY) full-team audit → checkpoint → founder picks the tier to execute → Wave-2 implements ONLY that subset, Mark-gated, each with a byte-identical proof + tests → consolidation. The audit must produce concrete `file:line` evidence and a per-item risk classification (low / medium / high) — fragile-area items (engine_core, telegram_bot, NAV config) are HIGH and require explicit founder go-ahead before any edit.
+
+### Wave-2b (DEC-20260516-021 Wave-2b — founder-authorized, FINAL wave)
+After Wave-2's honest report (which blocked B1/B3 because the pre-existing Sprint-19 byte-lock `test_sprint19_headline_comparison.py::test_analytics_engine_git_diff_empty` forbade modifying any existing `analytics_engine.py` line), the founder **explicitly authorized landing B1 + B3** by **expanding the Sprint-19 byte-lock allowlist the governed, Mark-gated way** — minimal, intent-preserving, with a dedicated byte-identical proof. Founder direction: this is the **FINAL** wave ("stop here" after).
+
+Shipped (PROVABLE byte-identical NO-OPS, NOT math changes — admissible under Mark Rulings 1/3/4 WITH the named Ruling-3 proof):
+- **B1** — `analytics_engine.py`: the twice-applied `bucket.apply(ec.is_stat_countable)` mask is hoisted ONCE into a local `_cnt`; `countable = campaigns[_cnt]` / `excluded = campaigns[~_cnt]`. `manual` line untouched. `ec.is_stat_countable` is pure/deterministic ⇒ identical boolean Series ⇒ byte-identical partition (index + row order).
+- **B3** — `analytics_engine.py`: the inlined numeric-coerce loop (`:31-33`) extracted into a top-level pure `_coerce_numeric(df, cols)` (mutates in place, returns df), called with the EXACT 5-tuple in the EXACT order. The `:30` `pd.to_datetime` line **stays inlined** (Sprint-22 load-bearing, OUT of B3 scope). `period_data_probe.py` keeps its own inlined copy (NOT rewired); `engine_core.py:478` untouched.
+
+Lock-expansion (governed, intent-preserving): NO existing Sprint-20/21/22 clause (`_TOL_REFLOW`/`_ALLOWED`/`_FORBIDDEN_KPI`/`_SPRINT22_AUTHORIZED`) modified. ADDED ONLY two CLOSED literal sets — `_SPRINT24_AUTHORIZED_REMOVED` (the exact pre-edit removed lines) and `_SPRINT24_AUTHORIZED` (the exact added lines) — each with a `continue` clause before its assert, derived verbatim from the real `git diff`. `_FORBIDDEN_KPI` deliberately NOT run over the Sprint-24 set (B1 legitimately re-binds `countable`/`excluded` to the SAME value; the dedicated byte-identical proof is strictly stronger). Sprint-24 self-reference hardening: the lock asserts `tests/test_sprint24_b1b3_byte_identical.py` exists AND is collectible AND defines the named proof class ⇒ the allowlist can NEVER exist without its paired proof.
+
+Named Ruling-3 proof: new `tests/test_sprint24_b1b3_byte_identical.py::TestSprint24B1B3ByteIdentical` — B1 partition `.equals()` (index+order, frame spanning countable+ALGO+DATA_INCOMPLETE); B3 full-frame `.equals()` an inlined-loop oracle (all-5 / extra / missing / garbage/NaN/str) + in-place mutation + AST proof the production call passes the exact tuple; LOCKED April regression byte-identical (8 / +$180.49 / WR .375 / PF 2.626 / excl 2) on the reused LOCKED fixture; Sprint-22 tz-aware==tz-naive==8/+$180.49 post-B1/B3. The now-inverted Wave-2 `TestAnalyticsEngineAppendOnly` tests were **repurposed in place** (premise reversed by the founder) to assert the POST-B1/B3 reality — `test_period_data_probe_byte_locked_untouched` + `test_engine_core_untouched` kept AS-IS; no test deleted (Ruling 6.1).
+
+Verification: full suite `python -m pytest -q -p no:cacheprovider` = **1898 passed, 0 failed** (≥ prior 1890; +8 net new). LOCKED April regression byte-identical; Sprint-22 numbers unchanged; `period_data_probe.py` + `engine_core.py` + `docker-compose.yml` + LOCKED `tests/test_real_data_april_regression.py` git-diff EMPTY; no R/NAV/exposure/campaign/Expectancy/PF/WR value change; no admin/dev-PIN gate / secure_runner / compose / migration / schema change; no `telegram_bot.py` change; WS-C / `-1`-sentinel / ALGO-string UNTOUCHED; no existing Sprint-20/21/22 lock clause modified.
