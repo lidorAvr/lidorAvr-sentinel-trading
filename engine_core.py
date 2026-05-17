@@ -9,6 +9,15 @@ import threading
 import requests
 import random
 from bs4 import BeautifulSoup
+# Phase NAV-Unify (Arch-F1 Decision B, Option β, founder-approved):
+# `get_nav_with_freshness` is now a THIN shape-B adapter over the ONE
+# shared canonical NAV core `account_state._resolve_nav_core()`. The NAV
+# value + freshness classification can never desync from the report
+# pipeline again (the actual money-risk this phase closes). account_state
+# is a clean stdlib-only leaf, so this import is the ACYCLIC direction
+# (account_state does NOT import engine_core). See
+# docs/teams/PHASE_NAVUNIFY_IMPL.md.
+import account_state
 
 ALGO_SYMBOL_LIMITS = {"QQQ": 10.0, "TSLA": 7.0, "JPM": 7.0, "PLTR": 6.0, "HOOD": 6.0}
 ALGO_SYMBOLS = set(ALGO_SYMBOL_LIMITS.keys())
@@ -1530,7 +1539,32 @@ def get_nav_with_freshness() -> dict:
     """
     Read NAV from sentinel_config.json and compute freshness.
 
-    Returns:
+    Phase NAV-Unify (Option β, canonical = `account_state`): a THIN
+    **shape-B adapter** over the ONE shared canonical core
+    `account_state._resolve_nav_core()`. The `nav` / `age_hours` /
+    `is_stale` / `is_critical` / `ok` VALUES now come from the canonical
+    core, so they can never desync from the report pipeline. This
+    function keeps ONLY its own caller-presentation (D5 — preserved):
+    the `$`-amount Hebrew label strings, the `ibkr_sync`/`manual`/
+    `fallback` `source` mapping, and `updated_at` as a parsed `datetime`.
+
+    BYTE-IDENTICAL on the normal broker-fresh/stale/critical path
+    (NAV present & non-zero, parseable in-range timestamp): same shape B,
+    same `$`-labels, `source="ibkr_sync"`, `updated_at` a datetime,
+    identical nav/age/flags.
+
+    The ONLY authorized behavior change (founder-approved, = the
+    canonical account_state semantics) is exactly the D1–D4 edges where
+    the two readers historically disagreed — each enumerated/pinned in
+    tests/test_phase_navunify.py + docs/teams/PHASE_NAVUNIFY_IMPL.md:
+      D1  `nav: 0` → now KEEPS 0.0 (was `or`-chain → total_deposited).
+      D2  exactly 24.0h → stale; exactly 48.0h → critical (strict-`<`).
+      D3  no `nav_updated_at` → is_critical flips True→False (still
+          is_stale=True, source="manual").
+      D4  missing/corrupt config → is_critical flips True→False
+          (ok=False, nav=7500, source="fallback").
+
+    Returns (shape B — unchanged keys):
       {
         "nav":          float,
         "source":       "ibkr_sync" | "manual" | "fallback",
@@ -1542,47 +1576,60 @@ def get_nav_with_freshness() -> dict:
         "ok":           bool,
       }
     """
-    fallback = {
-        "nav": 7500.0, "source": "fallback", "updated_at": None,
-        "age_hours": None, "is_stale": True, "is_critical": True,
-        "freshness_label": "🔴 NAV: fallback — sentinel_config.json לא נמצא",
-        "ok": False,
-    }
+    # Honor engine_core's own `_CONFIG_PATHS` constant (byte-identical to
+    # account_state's in production; this is the knob existing callers/
+    # tests patch) — passed THROUGH into the shared canonical core so the
+    # NAV value + freshness classification are still single-sourced.
+    core = account_state._resolve_nav_core(_paths=_CONFIG_PATHS)
+    nav            = core["nav"]
+    age_hours      = core["age_hours"]
+    is_stale       = core["is_stale"]
+    is_critical    = core["is_critical"]
+    updated_at_str = core["nav_updated_at"]
 
-    cfg_path = next((p for p in _CONFIG_PATHS if os.path.exists(p)), None)
-    if cfg_path is None:
-        return fallback
+    if not core["ok"]:
+        # D4 — missing / corrupt / non-dict config. nav=7500, ok=False,
+        # is_critical now False (canonical). Keep the engine's own
+        # fallback presentation: source="fallback", updated_at=None,
+        # its `$`-amount fallback label string.
+        return {
+            "nav": nav, "source": "fallback", "updated_at": None,
+            "age_hours": None, "is_stale": is_stale,
+            "is_critical": is_critical,
+            "freshness_label":
+                "🔴 NAV: fallback — sentinel_config.json לא נמצא",
+            "ok": False,
+        }
 
-    try:
-        with open(cfg_path, "r") as f:
-            cfg = json.load(f)
-    except Exception:
-        return fallback
-
-    nav = float(cfg.get("nav") or cfg.get("total_deposited") or 7500.0)
-    updated_at_str = cfg.get("nav_updated_at")
-
-    if updated_at_str:
-        try:
-            updated_at = datetime.fromisoformat(updated_at_str)
-            age_hours = (datetime.now() - updated_at).total_seconds() / 3600
-            is_stale = age_hours > NAV_STALE_HOURS
-            is_critical = age_hours > NAV_CRITICAL_HOURS
-            source = "ibkr_sync"
-            if is_critical:
-                label = f"🔴 NAV ${nav:,.0f} — ישן {age_hours:.0f}ש׳ (לא עודכן!)"
-            elif is_stale:
-                label = f"🟡 NAV ${nav:,.0f} — עודכן לפני {age_hours:.0f}ש׳"
-            else:
-                label = f"✅ NAV ${nav:,.0f} — עודכן לפני {age_hours:.1f}ש׳"
-        except ValueError:
-            updated_at, age_hours = None, None
-            is_stale = is_critical = True
-            source = "manual"
-            label = f"⚠️ NAV ${nav:,.0f} — תאריך עדכון לא תקין"
+    if updated_at_str and age_hours is not None:
+        # Normal path: a parseable timestamp ⇒ source="ibkr_sync",
+        # updated_at a real datetime, the engine's $-amount tiered label
+        # (D5, verbatim). Tier from the CANONICAL freshness so the value
+        # and the label can never disagree (D2 strict-`<` applies here —
+        # byte-identical off the exact-integer boundary).
+        updated_at = datetime.fromisoformat(updated_at_str)
+        source = "ibkr_sync"
+        if is_critical:
+            label = f"🔴 NAV ${nav:,.0f} — ישן {age_hours:.0f}ש׳ (לא עודכן!)"
+        elif is_stale:
+            label = f"🟡 NAV ${nav:,.0f} — עודכן לפני {age_hours:.0f}ש׳"
+        else:
+            label = f"✅ NAV ${nav:,.0f} — עודכן לפני {age_hours:.1f}ש׳"
+    elif updated_at_str:
+        # D-edge: a timestamp string is present but UNPARSEABLE. Canonical
+        # core ⇒ freshness="unknown", is_stale=True, is_critical=False
+        # (the D3-class semantics; was is_critical=True pre-unify).
+        # Engine presentation preserved: source="manual", its bad-date
+        # `$`-amount label string.
+        updated_at = None
+        source = "manual"
+        label = f"⚠️ NAV ${nav:,.0f} — תאריך עדכון לא תקין"
     else:
-        updated_at, age_hours = None, None
-        is_stale = is_critical = True
+        # D3 — no `nav_updated_at`. Canonical ⇒ is_stale=True,
+        # is_critical=False (was is_critical=True pre-unify). Engine
+        # presentation preserved: source="manual", its no-timestamp
+        # `$`-amount label string.
+        updated_at = None
         source = "manual"
         label = f"🟠 NAV ${nav:,.0f} — אין timestamp (הוגדר ידנית)"
 
