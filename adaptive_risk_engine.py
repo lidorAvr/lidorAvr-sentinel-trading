@@ -137,6 +137,15 @@ def compute_closed_campaigns(trades_df: pd.DataFrame) -> list[dict]:
     for cid, group in df.groupby("campaign_id"):
         if pd.isna(cid):
             continue
+        # Phase-Engine-P2/P3 F4 (CLOSURE-FIX, founder-gated): drop an
+        # EXACT-`trade_id`-duplicate row BEFORE the side split / pnl sum
+        # (a re-exported / double-synced SELL would otherwise be summed
+        # twice). Guarded: applied ONLY when a `trade_id` column exists
+        # (absent ⇒ no-op, never raises). Provable byte-identical with no
+        # duplicate ids (drop_duplicates on an all-unique key is identity;
+        # the LOCKED April fixture + prod per DEC-019 have unique ids).
+        if "trade_id" in group.columns:
+            group = group.drop_duplicates(subset=["trade_id"], keep="first")
         # Phase-C2 F1: side-first SELL/BUY split (shared classifier in
         # engine_core), mirroring analytics_engine's `side`-string contract
         # (DATA_CONTRACTS.md:48). Quantity is magnitude-only, never the
@@ -147,7 +156,15 @@ def compute_closed_campaigns(trades_df: pd.DataFrame) -> list[dict]:
         buys, sells, buys_qty, sells_qty = ec.split_side_first(group)
         if buys_qty <= 0:
             continue
-        if (buys_qty - sells_qty) / buys_qty > 0.01:
+        # Phase-Engine-P2/P3 F5 (CLOSURE-FIX, founder-gated, Decision i —
+        # relative `>= 0.01`): at EXACTLY 1% residual (e.g. 99/100 sold,
+        # `(100-99)/100 == 0.01`) the campaign still has an OPEN share, so
+        # it must NOT be treated as closed. `> 0.01` falsely closed it;
+        # `>= 0.01` keeps the exact-1%-residual campaign OPEN. Byte-
+        # identical for residual 0 (full close — LOCKED April), residual
+        # strictly > 1% (already open), and residual strictly < 1%
+        # (already closed) — ONLY the exact-1% boundary changes.
+        if (buys_qty - sells_qty) / buys_qty >= 0.01:
             continue
         if sells.empty:
             continue

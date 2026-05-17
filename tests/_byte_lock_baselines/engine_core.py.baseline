@@ -515,6 +515,8 @@ def get_open_positions_campaign(df):
         if valid_df.empty: return {"ok": True, "error": None, "data": pd.DataFrame()}
         for cid, group in valid_df.groupby("campaign_id"):
             group = group.sort_values(["trade_date", "trade_id"])
+            # Phase-Engine-P2/P3 F4 (CLOSURE-FIX, founder-gated): drop an EXACT-trade_id-duplicate row (a re-exported/double-synced SELL would otherwise inflate net_qty / realized_pnl). Guarded: only when a trade_id column exists (absent => no-op, never raises). Provable byte-identical with no duplicate ids (drop_duplicates on an all-unique key is identity; LOCKED April + prod per DEC-019 have unique ids); behavior changes ONLY on the duplicated-row input.
+            if "trade_id" in group.columns: group = group.drop_duplicates(subset=["trade_id"], keep="first")
             buys, _c2_sells, _c2_buys_qty, _c2_sells_qty = split_side_first(group)
             net_qty = _c2_buys_qty - _c2_sells_qty
             if net_qty <= 0.001: continue

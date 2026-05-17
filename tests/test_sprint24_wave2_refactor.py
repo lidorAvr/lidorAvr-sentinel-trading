@@ -85,6 +85,30 @@ class TestAnalyticsEngineAppendOnly:
         'return df',
     })
 
+    # ── Phase-Engine-P2/P3 F4 (DEC-019 follow-up, founder-gated CLOSURE-
+    # FIX) — governed Sprint-24-style allowlist expansion. F4 adds an
+    # EXACT-`trade_id` dedup (`keep="first"`, guarded on the column's
+    # presence) to `_aggregate_campaigns` BEFORE the buys/sells/net_pnl
+    # aggregation. The delta is PURELY ADDITIVE: zero analytics_engine
+    # lines are removed/modified (so `_F4_REMOVED` is the empty set —
+    # asserted closed below), and the only NON-comment added lines are the
+    # two below (the 10 explanatory `#` lines already pass the existing
+    # comment branch of `test_every_added_line_is_comment_or_authorized_
+    # b1b3` UNCHANGED). These are derived VERBATIM from the real
+    # `git diff -- analytics_engine.py`. Byte-identity (drop_duplicates on
+    # an all-unique `trade_id` key is identity; the LOCKED April fixture +
+    # prod per DEC-019 have no dup ids) is PROVEN — strictly stronger than
+    # this token allowlist — by the NAMED paired proof
+    # tests/test_phase_engine_p2p3.py (existence+collectibility bound by
+    # the Sprint-25-F4 self-reference hardening below). No existing
+    # Sprint-20/21/22/24 clause is modified — this only ADDS the closed
+    # `_F4_*` sets + their `continue` clauses.
+    _F4_REMOVED = frozenset()  # F4 is strictly append-only on analytics_engine
+    _F4_ADDED = frozenset({
+        'if "trade_id" in grp.columns:',
+        'grp = grp.drop_duplicates(subset=["trade_id"], keep="first")',
+    })
+
     def test_only_authorized_existing_lines_removed_or_modified(self):
         """Post-Wave-2b: any removed/modified analytics_engine.py line is in
         the founder-authorized B1+B3 set (A1/A3 stayed purely additive).
@@ -96,10 +120,14 @@ class TestAnalyticsEngineAppendOnly:
         test_b1_b3_helpers_introduced_and_provable (source inspection)."""
         _added, _removed = self._delta()
         removed = {s.strip() for s in _removed if s.strip()}
-        unexpected = removed - self._B1B3_REMOVED
+        # Phase-Engine-P2/P3 F4: ADDITIVE-only governed expansion — the
+        # F4 closed `_F4_REMOVED` set is EMPTY (F4 removes/modifies NO
+        # analytics_engine line); unioning it changes nothing but records
+        # the governed authorization explicitly alongside B1/B3.
+        unexpected = removed - self._B1B3_REMOVED - self._F4_REMOVED
         assert unexpected == set(), (
             "analytics_engine.py removed a line outside the founder-"
-            f"authorized B1/B3 set: {sorted(unexpected)}")
+            f"authorized B1/B3 + F4 set: {sorted(unexpected)}")
 
     def test_every_added_line_is_comment_or_authorized_b1b3(self):
         """Post-Wave-2b: every added line is either an A1/A3 `#` comment
@@ -107,12 +135,17 @@ class TestAnalyticsEngineAppendOnly:
         (Sprint-25 A1: commit-agnostic baseline source)."""
         _added, _removed = self._delta()
         added = [a for a in _added if a.strip()]
+        # Phase-Engine-P2/P3 F4: an added line is now also admissible if
+        # it is a member of the founder-authorized closed `_F4_ADDED`
+        # set (the F4 dedup guard + drop_duplicates call). The 10 F4
+        # explanatory `#` lines already pass the UNCHANGED comment branch.
         bad = [a for a in added
                if not a.strip().startswith("#")
-               and a.strip() not in self._B1B3_ADDED]
+               and a.strip() not in self._B1B3_ADDED
+               and a.strip() not in self._F4_ADDED]
         assert bad == [], (
             "analytics_engine.py added a line that is neither an A1/A3 "
-            f"comment nor an authorized B1/B3 line: {bad}")
+            f"comment nor an authorized B1/B3/F4 line: {bad}")
 
     def test_b1_b3_helpers_introduced_and_provable(self):
         """Post-Wave-2b (premise reversed by the founder): the B1 mask is
@@ -145,6 +178,45 @@ class TestAnalyticsEngineAppendOnly:
             _REPO, "tests", "test_sprint24_b1b3_byte_identical.py")
         assert os.path.isfile(proof)
         assert "class TestSprint24B1B3ByteIdentical" in open(proof).read()
+
+    def test_f4_dedup_introduced_and_paired_proof_bound(self):
+        """Phase-Engine-P2/P3 F4 self-reference hardening (replicating the
+        Sprint-24 B1/B3 precedent above): the closed `_F4_*` allowlist sets
+        can NEVER exist without their paired NAMED Ruling-3 byte-identical
+        proof tests/test_phase_engine_p2p3.py existing AND collectible AND
+        defining the named proof class — so a future edit cannot keep the
+        F4 allowlist while deleting/gutting the proof to "go green". Also
+        binds the actual F4 dedup into `_aggregate_campaigns` (guarded on
+        the column's presence, keep="first") and asserts `_F4_REMOVED` is
+        the empty set (F4 is strictly append-only on analytics_engine)."""
+        src = open(os.path.join(_REPO, "analytics_engine.py")).read()
+        # The F4 guarded dedup is present in _aggregate_campaigns.
+        assert 'if "trade_id" in grp.columns:' in src
+        assert ('grp = grp.drop_duplicates(subset=["trade_id"], '
+                'keep="first")') in src
+        # Governed-expansion shape: F4 removed/modified NOTHING.
+        assert self._F4_REMOVED == frozenset()
+        assert self._F4_ADDED == frozenset({
+            'if "trade_id" in grp.columns:',
+            'grp = grp.drop_duplicates(subset=["trade_id"], keep="first")',
+        })
+        # NAMED Ruling-3 paired proof present, defines the named class,
+        # AND is collectible (cannot keep the allowlist while gutting it).
+        proof = os.path.join(
+            _REPO, "tests", "test_phase_engine_p2p3.py")
+        assert os.path.isfile(proof), (
+            "Phase-Engine-P2/P3 F4 allowlist requires its paired byte-"
+            "identical proof tests/test_phase_engine_p2p3.py to exist")
+        psrc = open(proof).read()
+        assert "class TestPhaseEngineP2P3" in psrc, (
+            "F4 proof file must define the named byte-identical proof")
+        _collect = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+             "--collect-only", "tests/test_phase_engine_p2p3.py"],
+            cwd=_REPO, capture_output=True, text=True)
+        assert _collect.returncode == 0, (
+            "Phase-Engine-P2/P3 F4 byte-identical proof must be "
+            f"collectible:\n{_collect.stdout}\n{_collect.stderr}")
 
     def test_period_data_probe_byte_locked_untouched(self):
         # Sprint-25 A1: commit-agnostic SHA256 vs committed baseline

@@ -408,6 +408,18 @@ def _aggregate_campaigns(closed: pd.DataFrame, target_risk_usd: float) -> pd.Dat
     """Aggregate per-campaign metrics: net_pnl, net_r, days_held, setup_type, symbol."""
     records = []
     for cid, grp in closed.groupby("campaign_id"):
+        # Phase-Engine-P2/P3 F4 (CLOSURE-FIX, founder-gated): drop an
+        # EXACT-`trade_id`-duplicate row (a re-exported / double-synced
+        # SELL would otherwise have its `pnl_usd` summed twice → realized
+        # PnL/R doubled). Guarded: applied ONLY when a `trade_id` column
+        # exists (absent ⇒ no-op, never raises). Provable byte-identical
+        # when there are no duplicate `trade_id`s — `drop_duplicates` on an
+        # all-unique key returns the SAME rows in the SAME order (the
+        # LOCKED April fixture + current prod per DEC-019 have no dup ids,
+        # so 8/+$180.49/WR.375/PF2.626/excl2 is unchanged). Behavior
+        # changes ONLY on the duplicated-row input — the authorized point.
+        if "trade_id" in grp.columns:
+            grp = grp.drop_duplicates(subset=["trade_id"], keep="first")
         # A3 (DEC-20260516-021 Tier-A, comment-only): `buys` is
         # explicitly `.sort_values("trade_date")` here, so EVERY
         # `buys.iloc[0]` below (the `fb` first-BUY at :400 and the

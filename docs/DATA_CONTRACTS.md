@@ -118,6 +118,39 @@ Rules:
 
 The `adaptive_risk_engine.compute_closed_campaigns(df)` function attaches `stat_bucket` to each campaign dict. All downstream stats must read from that field.
 
+**F6 — two intentional Profit-Factor conventions; do NOT "unify" one side (Sprint-25 audit).**
+There are deliberately **two** PF conventions in the codebase and they must stay separate:
+
+- `analytics_engine` profit-factor uses **raw `math.inf`** for a countable set with wins
+  and zero losses (`gross_profit / 0 → math.inf`). DEC-20260516-021 lists this `math.inf`
+  branch as **intentional / DO-NOT-TOUCH**. It is clamped everywhere checked
+  (`compute_trader_development_score`, verdict, renderer); the residual risk is only future
+  serialization / period-delta math, not a current headline.
+- The **`99.0` sentinel** lives **only** in the dashboard `_bucket_stats` (a display cap),
+  NOT in `analytics_engine`.
+
+A future edit must NOT "unify" these — replacing the `analytics_engine` `math.inf` with the
+dashboard `99.0` (or vice-versa) would change the locked April PF `2.6262` path / the
+serialized PF and is a reconciliation trap. The divergence is by design; document, do not fix.
+
+**F4 — exact-`trade_id` dedup before per-campaign aggregation (Phase-Engine-P2/P3).**
+`_aggregate_campaigns` (analytics_engine), `compute_closed_campaigns` (adaptive_risk_engine)
+and `get_open_positions_campaign` (engine_core) drop EXACT-`trade_id`-duplicate rows
+(`keep="first"`, guarded on the column's presence — absent ⇒ no-op) BEFORE the side
+split / `pnl_usd` sum, so a re-exported / double-synced SELL is not counted twice. On
+inputs with no duplicate `trade_id` (the LOCKED April fixture + current prod per DEC-019)
+this is a provable identity (drop_duplicates on an all-unique key returns the same rows in
+the same order). Behavior changes ONLY on the duplicated-row input.
+
+**F9 — out-of-order rows floor `days_held=1`, inflating `avg_r_per_day` / dev-score (display/score only).**
+`_aggregate_campaigns` computes `days_held = max(1, (last_sell - entry).days)`. If a SELL
+row's date precedes its BUY (out-of-order export), the difference is ≤ 0 and `days_held`
+floors to **1**, so `avg_r_per_day = (net_r / days_held).mean()` and the trader-development
+"execution efficiency" / Minervini R-per-day reward a data-ordering artifact. **R itself is
+correct** — only `avg_r_per_day` and the dev-score are affected, and the `max(1, ...)`
+div-by-zero guard is itself correct. The LOCKED fixture has ordered rows so it is
+byte-identical. Documented (not money-affecting); no code change.
+
 ## Initial risk contract
 
 For discretionary trades such as EP/VCP:
@@ -125,6 +158,14 @@ For discretionary trades such as EP/VCP:
 - initial risk should usually be based on first-day buy price/quantity and initial stop
 - partial sells should not rewrite the original campaign risk
 - R calculations must be based on the correct original risk basis
+
+**F7 — the 1R denominator is deliberately cent-rounded (Sprint-25 audit, DO NOT "clean up").**
+`engine_core.compute_original_campaign_risk` returns `round(max(0.0, risk*qty+fees), 2)`,
+and that cent-rounded value is the **denominator** of every `net_r = net_pnl / orig_risk`
+(`analytics_engine`). So every R carries a deliberate sub-cent basis rounding (e.g. raw
+`4.6533 → 4.66`). This is **intentional and load-bearing**: the LOCKED April regression
+(PF `2.6262`, WR `.375`, 8 / +$180.49) was computed *with* this rounding. Removing the
+`round(..., 2)` would shift every R and BREAK the locked fixture — do NOT "clean it up".
 
 For ALGO trades:
 
