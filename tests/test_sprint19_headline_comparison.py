@@ -39,6 +39,11 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+# Sprint-25 A1 — commit-state-AGNOSTIC byte-lock baseline (replaces the
+# old `git diff -- analytics_engine.py` working-tree-vs-index source that
+# was vacuously empty in CI). See tests/_byte_lock_baseline.py.
+from tests._byte_lock_baseline import baseline_line_delta
+
 for _mod in ("telebot", "telebot.types", "supabase", "dotenv"):
     sys.modules.setdefault(_mod, MagicMock())
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test-token")
@@ -167,14 +172,19 @@ class TestRealizedByteIdentical:
         partition/frame `.equals()` identity proofs). The lock can NEVER admit
         a Sprint-24 line without that paired byte-identical proof file
         existing AND collectible (asserted below). All Sprint-20/21/22 clauses
-        are UNCHANGED — Wave-2b only ADDS the two closed Sprint-24 sets."""
-        out = subprocess.run(
-            ["git", "diff", "--", "analytics_engine.py"],
-            cwd=_REPO, capture_output=True, text=True)
-        added = [ln[1:] for ln in out.stdout.splitlines()
-                 if ln.startswith("+") and not ln.startswith("+++")]
-        removed = [ln[1:] for ln in out.stdout.splitlines()
-                   if ln.startswith("-") and not ln.startswith("---")]
+        are UNCHANGED — Wave-2b only ADDS the two closed Sprint-24 sets.
+
+        Sprint-25 A1 (Ops F1 / Testing P0-1): the diff SOURCE is now the
+        committed in-repo baseline (`tests/_byte_lock_baselines/
+        analytics_engine.py.baseline`) vs the current ON-DISK file, NOT
+        `git diff` (working-tree vs index, which was EMPTY on every clean
+        CI checkout → this whole allowlist was vacuously satisfied where
+        merges gate). The verdict is now IDENTICAL dirty / committed-clean
+        / fresh CI checkout and FAILS on an unauthorized change to the
+        *committed* analytics_engine.py. The authorized-allowlist semantics
+        below are byte-for-byte unchanged — only the diff source moved to a
+        commit-agnostic baseline (no widening)."""
+        added, removed = baseline_line_delta("analytics_engine.py")
         # Tolerated "modified" lines — ALL are byte-identical-content brace
         # reflows where ONLY a trailing `}` moved so an authorized additive
         # block could be appended; nothing edge/countable is removed/modified:
@@ -263,15 +273,67 @@ class TestRealizedByteIdentical:
         # tests/test_sprint22_tz_regression.py).
         with open(os.path.join(_REPO, "analytics_engine.py")) as _f:
             _ae_src = _f.read().splitlines()
-        _i_help = next(i for i, l in enumerate(_ae_src)
-                       if l.startswith("def _to_naive("))
-        _j_help = next(i for i in range(_i_help + 1, len(_ae_src))
-                       if _ae_src[i].startswith("def _get_closed_campaigns("))
-        _i_blk = next(i for i, l in enumerate(_ae_src)
-                      if "Sprint-22 (DEC-20260516-019" in l)
-        _j_blk = next(i for i in range(_i_blk + 1, len(_ae_src))
-                      if 'df["trade_date"] = df["trade_date"].dt.tz_localize'
-                      in _ae_src[i])
+
+        # Sprint-25 A1 (Testing P0-2) — anchor-order hardening. The
+        # Sprint-22 authorized region is DERIVED between four source
+        # anchors. The OLD `next(...)` form (a) raised a bare,
+        # message-less `StopIteration` (ERRORing the lock instead of
+        # failing it with a clear message) if a legitimate helper reorder
+        # moved `_to_naive` AFTER `_get_closed_campaigns` or moved the
+        # Sprint-22 block comment, and (b) the `_to_naive` docstring at
+        # L366 ALSO contains "Sprint-22 (DEC-20260516-019" — only source
+        # ORDER kept the first match correct. Harden FAIL-CLOSED: locate
+        # every anchor explicitly, ASSERT each exists and that the
+        # documented ordering (`_to_naive` def < `_get_closed_campaigns`
+        # def; the Sprint-22 *block* sentinel sits AFTER the `_to_naive`
+        # def so its docstring mention can never be picked) actually
+        # holds. A reorder now produces an explicit, actionable failure —
+        # never a silent StopIteration and never a silently-widened span.
+        def _first_idx(pred, lo=0, what=""):
+            for _k in range(lo, len(_ae_src)):
+                if pred(_ae_src[_k]):
+                    return _k
+            raise AssertionError(
+                "Sprint-22 byte-lock anchor not found (fail-closed, "
+                f"Sprint-25 A1 P0-2): {what}. analytics_engine.py was "
+                "restructured — the governed Mark-gated baseline ritual "
+                "must re-derive the authorized region; the lock refuses "
+                "to silently widen or StopIteration-error.")
+
+        _i_help = _first_idx(lambda l: l.startswith("def _to_naive("),
+                             what="`def _to_naive(`")
+        _j_help = _first_idx(
+            lambda l: l.startswith("def _get_closed_campaigns("),
+            lo=_i_help + 1, what="`def _get_closed_campaigns(` after _to_naive")
+        # The Sprint-22 block sentinel ("Sprint-22 (DEC-20260516-019") and
+        # its tz_localize boundary BOTH live inside `compute_period_
+        # analytics`, which precedes the `_to_naive` def. A SECOND
+        # occurrence of the sentinel is inside the `_to_naive` *docstring*
+        # (~L366, AFTER `_i_help`). `_first_idx` (from index 0) finds the
+        # FIRST hit = the in-function block — but ONLY if the documented
+        # ordering holds. Assert it FAIL-CLOSED: the helper defs are
+        # ordered, AND the first sentinel + its tz_localize boundary fully
+        # precede the `_to_naive` def, so the docstring mention can NEVER
+        # be mis-anchored and the span can never silently widen into the
+        # helper defs.
+        _i_blk = _first_idx(lambda l: "Sprint-22 (DEC-20260516-019" in l,
+                            what="Sprint-22 block sentinel")
+        _j_blk = _first_idx(
+            lambda l: 'df["trade_date"] = df["trade_date"].dt.tz_localize'
+            in l, lo=_i_blk + 1,
+            what="tz_localize boundary line after the Sprint-22 sentinel")
+        assert _i_help < _j_help, (
+            "Sprint-25 A1 P0-2 fail-closed: `_to_naive` must be defined "
+            "before `_get_closed_campaigns` for the derived authorized "
+            "helper span to be valid; a reorder requires the governed "
+            "baseline-regeneration ritual, not a silent re-derivation")
+        assert _i_blk < _j_blk < _i_help, (
+            "Sprint-25 A1 P0-2 fail-closed: the Sprint-22 in-function "
+            "block sentinel + its tz_localize boundary must BOTH precede "
+            "the `_to_naive` def (so the helper's docstring sentinel "
+            "mention at ~L366 can never be the first match / the span can "
+            "never widen into the helper defs); source restructured — "
+            "governed baseline-regeneration ritual required")
         _SPRINT22_AUTHORIZED = {
             ln.strip() for ln in
             _ae_src[_i_help:_j_help] + _ae_src[_i_blk:_j_blk + 1]
@@ -329,6 +391,51 @@ class TestRealizedByteIdentical:
         _proof_src = open(_proof_path).read()
         assert "class TestSprint24B1B3ByteIdentical" in _proof_src, (
             "Sprint-24 proof file must define the named byte-identical proof")
+        # Sprint-25 A1 (Testing P1-3) — bind the proof BODY, not just the
+        # class NAME. The OLD check was a substring match on the class
+        # name + collectibility, so the `.equals()`/regression oracle
+        # bodies could be gutted to `assert True` while the lock stayed
+        # green ("strictly stronger than the token proxy" claim hollow).
+        # Parse the proof AST and assert the load-bearing oracle methods
+        # exist AND that their bodies still contain the binding
+        # `.equals()` / locked-headline assertions — an oracle hollowed
+        # to `assert True` (or with its `.equals()` removed) now FAILS
+        # this lock.
+        import ast as _ast
+        _ptree = _ast.parse(_proof_src)
+        _pcls = next((n for n in _ast.walk(_ptree)
+                      if isinstance(n, _ast.ClassDef)
+                      and n.name == "TestSprint24B1B3ByteIdentical"), None)
+        assert _pcls is not None, (
+            "Sprint-24 proof class must be AST-parseable")
+        _pmethods = {m.name: m for m in _pcls.body
+                     if isinstance(m, _ast.FunctionDef)}
+        # The four load-bearing oracles + the substring each MUST still
+        # contain in its source (the actual byte-identity / locked-number
+        # assertion — not a gutted `assert True`).
+        _REQUIRED_ORACLE_BODY = {
+            "test_b1_mask_once_partition_equals_twice_applied":
+                ("new_countable.equals(old_countable)",
+                 "new_excluded.equals(old_excluded)"),
+            "test_b3_coerce_numeric_full_frame_equals_inlined":
+                ("helper_out.equals(oracle_out)",),
+            "test_locked_april_regression_byte_identical_post_b1b3":
+                ('a["campaigns_closed"] == 8', "180.49"),
+            "test_sprint22_tz_aware_equals_tz_naive_post_b1b3":
+                ("aware[k] == naive[k]",),
+        }
+        for _mname, _needles in _REQUIRED_ORACLE_BODY.items():
+            assert _mname in _pmethods, (
+                f"Sprint-24 proof must define oracle {_mname!r} "
+                "(Sprint-25 A1 P1-3 — proof-body binding)")
+            _mbody = _ast.get_source_segment(_proof_src, _pmethods[_mname])
+            assert _mbody is not None
+            for _needle in _needles:
+                assert _needle in _mbody, (
+                    f"Sprint-24 oracle {_mname!r} no longer contains its "
+                    f"binding assertion {_needle!r} — proof body gutted "
+                    "(Sprint-25 A1 P1-3 fail-closed). A hollowed "
+                    "`assert True` oracle can NOT keep this lock green.")
         _proof_collect = subprocess.run(
             [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
              "--collect-only",

@@ -37,6 +37,17 @@ Common fields observed in the system:
 
 Do not assume every field is always populated. Existing code often handles missing values.
 
+**`pnl_usd` is the authoritative broker-side NET realized PnL (commission
+already deducted).** The DEC-019/-020 raw-Supabase reconciliation
+(to the cent: April +$336.14 / +11.01R / PF 4.03) proved production
+`pnl_usd` is net of commission. The realized-PnL path
+(`analytics_engine._aggregate_campaigns` → `sells["pnl_usd"].sum()`) reads
+ONLY `pnl_usd`; `commission` is **informational/audit-only and MUST NOT be
+subtracted again** anywhere in the realized-PnL / R / Net-R / Expectancy
+math — doing so would double-count commission. (Sprint-25 A2/Data-F6:
+this clarifies a documentation gap; no code change — `commission` is
+listed above but was never read by the realized path, by design.)
+
 ## Side and quantity rules
 
 Current logic assumes:
@@ -60,6 +71,25 @@ One campaign can include:
 - management notes
 
 Campaign-level calculations should not treat every row as a separate independent trade.
+
+**Period-boundary / closed-campaign window rule (validated invariant —
+do not "fix" without a regression proof).** For a reporting window
+`[period_start, period_end)`, a campaign counts as **closed for that
+period** if it has **ANY SELL whose `trade_date` falls in
+`[period_start, period_end)`** — NOT only if its *last* SELL falls in the
+window. This is `analytics_engine._get_closed_campaigns`'s real,
+DEC-019/-020-reconciled behaviour (the April `8 / +$180.49 / WR .375 /
+PF 2.626 / excl 2` ground truth depends on exactly this any-in-window-SELL
+semantics). The in-code `_get_closed_campaigns` docstring historically
+said "whose last SELL" — that wording is INACCURATE; the Sprint-24 in-code
+CORRECTNESS NOTE and this contract clause are authoritative. A campaign
+with a partial SELL inside the window and its final SELL *after*
+`period_end` IS counted as closed for the period. Changing this to
+match the stale "last SELL" docstring would silently alter the validated
+campaign set — a forbidden campaign-aggregation change without tests.
+(Sprint-25 A2/Data-F7: doc-only — pins a validated invariant against
+future regression; the LOCKED April regression already pins it
+numerically.)
 
 ## stat_bucket contract
 

@@ -39,6 +39,11 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+# Sprint-25 A1 — commit-state-AGNOSTIC byte-lock baseline (replaces the
+# old `git diff -- period_data_probe.py` working-tree-vs-index source,
+# EMPTY/vacuous on every clean CI checkout). See tests/_byte_lock_baseline.py.
+from tests._byte_lock_baseline import assert_byte_identical
+
 # ── Mock heavy deps before importing telegram_bot (mirrors the proven
 #    tests/test_developer_menu.py bootstrap) ────────────────────────────────
 for _mod in ("telebot", "telebot.types", "supabase", "dotenv",
@@ -266,15 +271,15 @@ class TestOverLimitSplit:
 
 class TestProbeByteIdentical:
     def test_period_data_probe_git_diff_empty(self):
-        r = subprocess.run(
-            ["git", "diff", "--quiet", "--", "period_data_probe.py"],
-            cwd=_REPO_ROOT, capture_output=True)
-        assert r.returncode == 0, (
-            "period_data_probe.py MUST be byte-identical (Mark Ruling 2 / "
-            "Wave-2 gate #1); git diff is non-empty:\n"
-            + subprocess.run(
-                ["git", "diff", "--", "period_data_probe.py"],
-                cwd=_REPO_ROOT, capture_output=True, text=True).stdout)
+        # Sprint-25 A1 (Ops F1 / Testing P0-1): commit-state-AGNOSTIC
+        # SHA256 of the current ON-DISK period_data_probe.py vs its
+        # committed authorized baseline (tests/_byte_lock_baselines/
+        # period_data_probe.py.baseline). The OLD `git diff --quiet`
+        # (working-tree vs index) was EMPTY on every clean CI checkout →
+        # this guard passed VACUOUSLY exactly where merges gate. The
+        # verdict is now identical dirty / committed-clean / fresh CI and
+        # FAILS on an unauthorized change to the *committed* file.
+        assert_byte_identical("period_data_probe.py")
 
     def test_probe_still_send_free_no_bot_attr(self):
         """The probe gained NO send/bot surface — its binding contract

@@ -43,6 +43,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import analytics_engine as ae
 import engine_core as ec
+# Sprint-25 A1 — commit-state-AGNOSTIC integrity guard on the LOCKED
+# fixture (Testing P0-1: the single most-trusted money oracle was "LOCKED"
+# by NARRATIVE ONLY — no hash/AST guard — yet its `_april_df`/`_weekly_df`
+# fixtures feed THIS proof + the Sprint-22 tz proof by import).
+from tests._byte_lock_baseline import assert_byte_identical
 # Reuse the LOCKED real-data fixture VERBATIM (same path/values as
 # tests/test_real_data_april_regression.py — never re-typed here).
 from tests.test_real_data_april_regression import (
@@ -65,6 +70,19 @@ def _inlined_coerce(df, cols):
 
 
 class TestSprint24B1B3ByteIdentical:
+    # ── Sprint-25 A1 — the LOCKED fixture now has a REAL integrity guard ─────
+    def test_locked_april_fixture_integrity_commit_agnostic(self):
+        """Testing P0-1 closure: `tests/test_real_data_april_regression.py`
+        was "LOCKED" by narrative ONLY — no hash/AST guard — while its
+        `_april_df`/`_weekly_df`/`_ACCT` fixtures feed THIS proof + the
+        Sprint-22 tz proof by import. A SHA256-vs-committed-baseline guard
+        (commit-state-agnostic: identical dirty / clean / CI) now FAILS if
+        the founder-verified April ground truth (8 / +$180.49 / WR .375 /
+        PF 2.626 / excl 2) is silently edited in the committed fixture.
+        The fixture VALUES themselves are byte-identical (this only ADDS
+        an external snapshot artifact — Sprint-25 hard constraint)."""
+        assert_byte_identical("tests/test_real_data_april_regression.py")
+
     # ── B1 — mask-once partition is byte-identical ──────────────────────────
     def test_b1_mask_once_partition_equals_twice_applied(self):
         # campaigns-like frame spanning countable + ALGO + DATA_INCOMPLETE,

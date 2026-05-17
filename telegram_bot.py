@@ -404,8 +404,12 @@ def handle_all_messages(message):
     # JWT role word). NO write/snap_save/state-mutation (AST-proven). Admin-
     # gated by construction: this branch is in the developer-menu region,
     # reachable ONLY inside an authenticated dev-PIN session (the EXISTING
-    # gate at telegram_bot.py:147-153 — unchanged, not bypassed). Mirrors the
-    # synchronous `🏥 בריאות מערכת` handler exactly.
+    # gate at telegram_bot.py:241-247 — the `🛠️ מפתח` menu-open
+    # `dev_pin_is_configured()`/`dev_pin_session_active(chat_id)` check;
+    # Sprint-25 A2/S-4 corrected anchor — the old "147-153" cite was
+    # WRONG, those lines are the `_send_probe_chunks` message-split loop,
+    # not a gate; unchanged, not bypassed). Mirrors the synchronous
+    # `🏥 בריאות מערכת` handler exactly.
     if text == "🔬 בדיקת נתוני תקופה (Probe)":
         try:
             import period_data_probe
@@ -559,8 +563,16 @@ def handle_all_messages(message):
         handle_clean_entry(chat_id)
         return
 
-    if text in ["❓ פקודות מערכת", "/help"]:
-        return bot.send_message(chat_id, "🛡️ *מערכת הפיקוד (Sentinel Command)*\n\n/trade SYMBOL - צלילת עומק לפוזיציה\n/next - סריקת יומן\n/portfolio - חדר מצב\n/clean - מטאטא ארכיון (מוגן 30 יום)", parse_mode="Markdown")
+    # Sprint-25 A2 (Arch F5) — removed a provably-UNREACHABLE duplicate
+    # `/help` block here. The earlier handler at the top of this dispatcher
+    # `if text in ["❓ עזרה", "❓ פקודות מערכת", "/help"]:` UNCONDITIONALLY
+    # `return bot.send_message(...)` for ALL THREE of those literals; its
+    # literal set is a strict SUPERSET of this block's `["❓ פקודות מערכת",
+    # "/help"]`, and `text` is assigned exactly once at handler entry and
+    # NEVER reassigned in between → control flow could never reach this
+    # branch (it always returned earlier). It rendered a second, stale
+    # help string that can never ship. Pure dead-code removal: no
+    # behavior change (the live `/help` is the earlier block).
 
     if text == "🌡️ משטר שוק וסיכונים":
         handle_market_regime(chat_id)
@@ -856,7 +868,6 @@ def _handle_addon_command(chat_id: int, text: str):
         except: pass
 
         # Store plan for confirmation step
-        import json as _json
         user_state[chat_id] = {
             "action":   "addon_pending",
             "symbol":   symbol,

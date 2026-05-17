@@ -29,6 +29,13 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import report_scheduler as rs
 
+# Sprint-25 A1 — commit-state-AGNOSTIC byte-lock baseline (replaces the
+# old `git diff -- <file>` working-tree-vs-index source that was
+# vacuously empty on every clean CI checkout). See
+# tests/_byte_lock_baseline.py for the mechanism + WHY it is commit-agnostic.
+from tests._byte_lock_baseline import (
+    baseline_line_delta, assert_byte_identical)
+
 _REPO = os.path.dirname(os.path.dirname(__file__))
 
 
@@ -44,10 +51,17 @@ class TestAnalyticsEngineAppendOnly:
     Byte-identity of B1/B3 is proven (strictly stronger than a token
     proxy) by tests/test_sprint24_b1b3_byte_identical.py."""
 
-    def _diff(self):
-        return subprocess.run(
-            ["git", "diff", "--", "analytics_engine.py"],
-            cwd=_REPO, capture_output=True, text=True).stdout
+    def _delta(self):
+        """Sprint-25 A1: commit-state-AGNOSTIC (added, removed) line lists
+        — committed baseline vs current ON-DISK analytics_engine.py, NOT
+        `git diff` (working-tree vs index, EMPTY on every clean CI
+        checkout → these B1/B3 guards were vacuously satisfied exactly
+        where merges gate). Identical verdict dirty / clean / CI; an
+        unauthorized committed edit now produces a non-authorized line and
+        FAILS. The B1/B3 allowlist sets below are unchanged — they
+        constrain WHAT a future governed baseline-regeneration may differ
+        by (semantics preserved, not widened)."""
+        return baseline_line_delta("analytics_engine.py")
 
     # The EXACT `.strip()`-ed B1/B3 diff lines (verbatim from `git diff`).
     _B1B3_REMOVED = frozenset({
@@ -74,14 +88,14 @@ class TestAnalyticsEngineAppendOnly:
     def test_only_authorized_existing_lines_removed_or_modified(self):
         """Post-Wave-2b: any removed/modified analytics_engine.py line is in
         the founder-authorized B1+B3 set (A1/A3 stayed purely additive).
-        Commit-state-AGNOSTIC: once the change is committed (CI checks out
-        the committed state) `git diff` is empty → vacuously satisfied; on a
-        dirty tree any removal must still be authorized. That B1/B3 ARE
-        present is proven commit-agnostically by
+        Commit-state-AGNOSTIC (Sprint-25 A1): the diff is committed
+        baseline vs current ON-DISK file (NOT `git diff` working-tree-vs-
+        index, which was EMPTY in CI → vacuous). Identical verdict dirty /
+        clean / CI; an unauthorized committed removal now FAILS here. That
+        B1/B3 ARE present is also proven commit-agnostically by
         test_b1_b3_helpers_introduced_and_provable (source inspection)."""
-        removed = {ln[1:].strip() for ln in self._diff().splitlines()
-                   if ln.startswith("-") and not ln.startswith("---")
-                   and ln[1:].strip()}
+        _added, _removed = self._delta()
+        removed = {s.strip() for s in _removed if s.strip()}
         unexpected = removed - self._B1B3_REMOVED
         assert unexpected == set(), (
             "analytics_engine.py removed a line outside the founder-"
@@ -89,10 +103,10 @@ class TestAnalyticsEngineAppendOnly:
 
     def test_every_added_line_is_comment_or_authorized_b1b3(self):
         """Post-Wave-2b: every added line is either an A1/A3 `#` comment
-        or a member of the founder-authorized B1+B3 added set."""
-        added = [ln[1:] for ln in self._diff().splitlines()
-                 if ln.startswith("+") and not ln.startswith("+++")
-                 and ln[1:].strip()]
+        or a member of the founder-authorized B1+B3 added set
+        (Sprint-25 A1: commit-agnostic baseline source)."""
+        _added, _removed = self._delta()
+        added = [a for a in _added if a.strip()]
         bad = [a for a in added
                if not a.strip().startswith("#")
                and a.strip() not in self._B1B3_ADDED]
@@ -133,19 +147,16 @@ class TestAnalyticsEngineAppendOnly:
         assert "class TestSprint24B1B3ByteIdentical" in open(proof).read()
 
     def test_period_data_probe_byte_locked_untouched(self):
-        out = subprocess.run(
-            ["git", "diff", "--", "period_data_probe.py"],
-            cwd=_REPO, capture_output=True, text=True).stdout
-        assert out == "", "period_data_probe.py must be byte-identical"
+        # Sprint-25 A1: commit-agnostic SHA256 vs committed baseline
+        # (NOT `git diff`, which was empty/vacuous on a clean CI checkout).
+        assert_byte_identical("period_data_probe.py")
         # probe keeps its OWN inlined coerce (B3 SKIPPED, not rewired)
         psrc = open(os.path.join(_REPO, "period_data_probe.py")).read()
         assert "_coerce_numeric" not in psrc
 
     def test_engine_core_untouched(self):
-        out = subprocess.run(
-            ["git", "diff", "--", "engine_core.py"],
-            cwd=_REPO, capture_output=True, text=True).stdout
-        assert out == "", "engine_core.py must be untouched"
+        # Sprint-25 A1: commit-agnostic SHA256 vs committed baseline.
+        assert_byte_identical("engine_core.py")
 
 
 # ── B2 — lazy Supabase client singleton + unchanged-fetch contract ──

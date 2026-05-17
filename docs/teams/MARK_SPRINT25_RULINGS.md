@@ -44,8 +44,12 @@ objectively verifiable on the **committed, clean** tree (not a dirty worktree �
 2. **Fallback / stale / cached honesty (CLAUDE.md, DATA_CONTRACTS §"Core principle").**
    No user-facing path presents fallback/cached/default/estimated/incomplete data as
    exact truth. Every risk-sensitive report that *can* use a fallback discloses it.
-3. **Admin gate + secure_runner intact.** `telegram_bot.py:147-153` admin/dev-PIN
-   gate present; `docker-compose.yml` Telegram service = `python3
+3. **Admin gate + secure_runner intact.** `telegram_bot.py:241-247` admin/dev-PIN
+   gate present (the `🛠️ מפתח` menu-open
+   `dev_pin_is_configured()`/`dev_pin_session_active(chat_id)` check —
+   Sprint-25 A2/S-4 corrected anchor: the prior "147-153" cite was WRONG;
+   those lines are the `_send_probe_chunks` message-split loop, not a
+   gate); `docker-compose.yml` Telegram service = `python3
    telegram_bot_secure_runner.py`; anti-spam/rate-limit/cooldown present.
 4. **Secrets hygiene.** No token/credential/account number/PIN committed; tokens never
    appear in logs or returned dicts (`ibkr_sync_runner` rule).

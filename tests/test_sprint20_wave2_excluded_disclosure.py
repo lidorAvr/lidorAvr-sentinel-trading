@@ -432,10 +432,27 @@ class TestOnDemandNoSnapSave:
         def _boom_state(*a, **k):
             raise AssertionError("on-demand MUST NOT _save_state")
 
+        # Sprint-25 A3 (Ops F4) — stub real chart generation. Without
+        # this, run_on_demand → render_weekly renders a REAL Plotly
+        # figure → Kaleido `to_image` spawns an event-loop `calc_fig`
+        # coroutine that is never awaited; it is GC'd LATER and pytest's
+        # unraisable hook then blames whatever test happens to be running
+        # during that GC (order/timing dependent — the proven latent
+        # flake: `-W error::pytest.PytestUnraisableExceptionWarning` → 1
+        # failed). Every OTHER render-invoking test in THIS file already
+        # stubs charts via `rr._no_charts()` (the `_capture_ctx` helper +
+        # the rendered-HTML test); this on-demand test was the lone
+        # omission. Stub it the SAME way → the Kaleido coroutine is never
+        # created → deterministic suite. ROOT-CAUSE fix at the source, NOT
+        # a global `-W ignore` that would merely hide it.
         with patch.object(rss, "_BASE_DIR", str(tmp_path)), \
              patch.object(rss, "save", _boom_save), \
              patch.object(sched, "_mark_ran", _boom_mark), \
              patch.object(sched, "_save_state", _boom_state), \
+             patch.object(rr, "_generate_weekly_charts",
+                          lambda *a, **k: rr._no_charts()), \
+             patch.object(rr, "_generate_monthly_charts",
+                          lambda *a, **k: rr._no_charts()), \
              patch.object(sched, "_fetch_trades_df",
                           lambda *a, **k: _mixed_df()), \
              patch("account_state.load", lambda: _ACCOUNT), \

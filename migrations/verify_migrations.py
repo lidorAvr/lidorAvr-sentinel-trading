@@ -19,7 +19,9 @@ runtime; this script gives operators a clean pre-deploy check.
 Each migration in this directory describes a table or columns it adds.
 For now we hard-code the post-conditions in MIGRATIONS below. If we add
 many more migrations, switch to a per-migration manifest file — but with
-only two migrations today, that's over-engineering.
+the five migrations today (001…005), that's still over-engineering.
+(Sprint-25 A2/Data-F3: corrected the stale "only two migrations"
+docstring — the runtime check already verifies all five, 001…005.)
 """
 from __future__ import annotations
 import os
