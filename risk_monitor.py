@@ -7,6 +7,13 @@ import xml.etree.ElementTree as ET
 import engine_core as ec
 import adaptive_risk_engine as are
 import state_io
+# Phase Arch-F1 (Sprint-25 F1): single shared sentinel_config.json reader.
+# risk_monitor previously kept a byte-identical local get_account_settings
+# copy with a bare `except:`. De-duplicated onto bot_helpers' reader
+# (`except Exception:`); corrupt-config behavior is byte-identical (a
+# JSONDecodeError is an Exception, caught by both) — pure parity-preserving
+# polish per Decision A = Honest. See docs/teams/PHASE_ARCHF1_IMPL.md.
+from bot_helpers import get_account_settings
 
 _HEARTBEAT_DIR = "/app/state"
 
@@ -146,11 +153,6 @@ def get_ibkr_nav():
                 if ending_val: return float(ending_val)
         return None
     except: return None
-
-def get_account_settings():
-    try:
-        with open("sentinel_config.json", "r") as f: return json.load(f)
-    except: return {"total_deposited": 7500.0, "risk_pct_input": 0.5}
 
 def build_position_alert_key(pos, engine_data):
     # Exclude 'trigger' — it oscillates intra-day (e.g. MA10 vs trend-follow text) and

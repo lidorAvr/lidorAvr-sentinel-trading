@@ -66,6 +66,22 @@ Rules:
 - All services that need NAV must use `account_state.load()`, not read sentinel_config.json directly.
 - Never raise from `load()` — callers must not need try/except.
 
+> **Known NAV-contract divergence (Phase Arch-F1 / Sprint-25 F1 — DEFERRED, founder-gated).**
+> The report pipeline resolves NAV via `account_state.load()` (shape A:
+> `nav_source` ∈ broker/deposited/fallback, `is_critical = freshness=="critical"`,
+> honest fallback dict, `ok=False` only on fallback). The bot
+> (`bot_helpers.get_nav_and_risk`) and risk-monitor (`risk_monitor.py:607-609`
+> acc_size/target-risk block, math byte-unchanged) resolve NAV via
+> `engine_core.get_nav_with_freshness()` — a DIFFERENT contract: different
+> shape (`source`/`updated_at` vs `nav_source`/`nav_updated_at`), a different
+> fallback (`is_critical=True`, different Hebrew label, `ok=False` on
+> fallback). Both feed the SAME risk math. Unifying the two NAV contracts is
+> behavior-bearing (it changes which fallback/freshness a path sees — money
+> affecting) and is **OUT of Arch-F1 — a deferred, founder-gated decision**,
+> not done here. Arch-F1 only de-duplicated the `sentinel_config.json`
+> *reader* (`risk_monitor` now imports `bot_helpers.get_account_settings`).
+> `engine_core.py` / `account_state.py` are byte-unchanged.
+
 ---
 
 ### `analytics_engine.py`

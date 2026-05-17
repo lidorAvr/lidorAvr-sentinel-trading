@@ -184,6 +184,23 @@ Rules:
 3. Do not silently mix host paths and container paths.
 4. If modifying config paths, update Docker Compose, docs, and tests together.
 
+> **Divergence flag (Phase Arch-F1 / Sprint-25 F1 — DEFERRED, founder-gated).**
+> Rule 1 ("one clear source of truth") is NOT yet fully met. Two
+> blessed NAV contracts coexist behind the SAME risk math:
+> `account_state.load()` (report pipeline — shape A, honest fallback,
+> `ok=False` only on fallback) and `engine_core.get_nav_with_freshness()`
+> (bot + risk-monitor `:607-609` — different shape `source`/`updated_at`,
+> different fallback `is_critical=True`/different label/`ok=False`). A future
+> edit to one fallback silently desyncs Telegram risk sizing, the
+> risk-monitor Sizing-Leak threshold, and the weekly/monthly report
+> target-risk. Unifying them is money-affecting (changes which
+> fallback/freshness a path sees) → **OUT of Arch-F1, a deferred
+> founder-gated decision**. Arch-F1 only de-duplicated the
+> `sentinel_config.json` *reader* (one shared
+> `bot_helpers.get_account_settings`, bare-`except:` removed); the
+> `risk_monitor.py:607-609` math + `engine_core.py` + `account_state.py` are
+> byte-unchanged.
+
 Known deployment detail:
 
 - Docker services mount the repo into `/app`.
