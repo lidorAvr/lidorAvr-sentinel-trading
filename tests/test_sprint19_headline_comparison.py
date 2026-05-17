@@ -149,7 +149,25 @@ class TestRealizedByteIdentical:
         path untouched) is preserved by asserting every ADDED line is confined
         to the additive Sprint-20 split (no countable/edge/verdict line
         touched). The dedicated countable-byte-identical proof lives in
-        tests/test_sprint20_wave2_excluded_disclosure.py."""
+        tests/test_sprint20_wave2_excluded_disclosure.py.
+
+        Sprint-24 Wave-2b (DEC-20260516-021): the founder, after Wave-2's
+        honest report, explicitly authorized landing B1 (the twice-applied
+        `bucket.apply(ec.is_stat_countable)` mask hoisted ONCE into a local
+        `_cnt`, reused by `countable`/`excluded`) and B3 (the inlined
+        numeric-coerce loop extracted into the pure top-level `_coerce_numeric`
+        helper, called with the EXACT same tuple in the EXACT same order) as
+        PROVABLE byte-identical no-op refactors — NOT math changes. The
+        Sprint-19 "ZERO analytics edits" narrative is thereby SUPERSEDED for
+        these TWO founder-authorized no-ops ONLY: they are admitted via the
+        closed-literal `_SPRINT24_AUTHORIZED_REMOVED` / `_SPRINT24_AUTHORIZED`
+        sets below and PROVEN byte-identical by
+        tests/test_sprint24_b1b3_byte_identical.py (LOCKED April regression
+        byte-identical + Sprint-22 tz-aware==tz-naive + the dedicated B1/B3
+        partition/frame `.equals()` identity proofs). The lock can NEVER admit
+        a Sprint-24 line without that paired byte-identical proof file
+        existing AND collectible (asserted below). All Sprint-20/21/22 clauses
+        are UNCHANGED — Wave-2b only ADDS the two closed Sprint-24 sets."""
         out = subprocess.run(
             ["git", "diff", "--", "analytics_engine.py"],
             cwd=_REPO, capture_output=True, text=True)
@@ -175,11 +193,29 @@ class TestRealizedByteIdentical:
             'return {**_empty(), "target_risk_usd": t_risk}',
             '"excluded_pnl_algo":     excluded_pnl_algo}',
         )
+        # Sprint-24 Wave-2b (DEC-20260516-021) — founder-authorized PROVABLE
+        # byte-identical no-ops. CLOSED literal set of the EXACT `.strip()`-ed
+        # pre-edit lines B1 (mask hoisted once) + B3 (`_coerce_numeric`
+        # extraction) remove/modify, derived VERBATIM from the real
+        # `git diff -- analytics_engine.py` output (not guessed). These are
+        # the ONLY non-additive removals admitted; their byte-identity is
+        # PROVEN (strictly stronger than this token guard) by
+        # tests/test_sprint24_b1b3_byte_identical.py.
+        _SPRINT24_AUTHORIZED_REMOVED = frozenset({
+            'for col in ("price", "quantity", "stop_loss", '
+            '"initial_stop", "pnl_usd"):',
+            'if col in df.columns:',
+            'df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)',
+            'countable = campaigns[bucket.apply(ec.is_stat_countable)]',
+            'excluded  = campaigns[~bucket.apply(ec.is_stat_countable)]',
+        })
         for ln in removed:
             s = ln.strip()
             if not s:
                 continue
             if s in _TOL_REFLOW:
+                continue
+            if s in _SPRINT24_AUTHORIZED_REMOVED:
                 continue
             assert ("excluded_pnl" in s and "excluded_pnl_" not in s), (
                 "analytics_engine.py REMOVED/MODIFIED a non-additive line — "
@@ -259,6 +295,48 @@ class TestRealizedByteIdentical:
         assert not _viol, (
             "Sprint-22 authorized region must not assign any KPI/countable "
             f"value (self-reference hardening): {_viol}")
+        # Sprint-24 Wave-2b (DEC-20260516-021) — founder-authorized PROVABLE
+        # byte-identical no-ops. CLOSED literal set of the EXACT `.strip()`-ed
+        # lines B1 + B3 ADD, derived VERBATIM from the real `git diff` output
+        # (NOT derived/open like Sprint-22 — a fixed, auditable allowlist).
+        # B1 re-binds `countable`/`excluded` to the SAME value via the hoisted
+        # `_cnt`; we deliberately do NOT run `_FORBIDDEN_KPI` over this set
+        # because the dedicated full-frame/partition `.equals()` identity proof
+        # in tests/test_sprint24_b1b3_byte_identical.py is STRICTLY STRONGER
+        # than the token proxy and is the real guarantee.
+        _SPRINT24_AUTHORIZED = frozenset({
+            'df = _coerce_numeric(df, ("price", "quantity", "stop_loss", '
+            '"initial_stop", "pnl_usd"))',
+            '_cnt = bucket.apply(ec.is_stat_countable)',
+            'countable = campaigns[_cnt]',
+            'excluded  = campaigns[~_cnt]',
+            'def _coerce_numeric(df, cols):',
+            'for col in cols:',
+            'if col in df.columns:',
+            'df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)',
+            'return df',
+        })
+        # Sprint-24 self-reference hardening: the closed `_SPRINT24_*` sets can
+        # NEVER exist without their paired NAMED Ruling-3 byte-identical proof.
+        # Assert the proof file exists AND is collectible AND defines the named
+        # proof class (so a future edit cannot keep the allowlist while
+        # deleting/gutting the proof to "go green").
+        _proof_path = os.path.join(
+            _REPO, "tests", "test_sprint24_b1b3_byte_identical.py")
+        assert os.path.isfile(_proof_path), (
+            "Sprint-24 B1/B3 allowlist requires its paired byte-identical "
+            "proof tests/test_sprint24_b1b3_byte_identical.py to exist")
+        _proof_src = open(_proof_path).read()
+        assert "class TestSprint24B1B3ByteIdentical" in _proof_src, (
+            "Sprint-24 proof file must define the named byte-identical proof")
+        _proof_collect = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+             "--collect-only",
+             "tests/test_sprint24_b1b3_byte_identical.py"],
+            cwd=_REPO, capture_output=True, text=True)
+        assert _proof_collect.returncode == 0, (
+            "Sprint-24 byte-identical proof must be collectible:\n"
+            f"{_proof_collect.stdout}\n{_proof_collect.stderr}")
         for ln in added:
             s = ln.strip()
             if not s or s == "}":
@@ -272,10 +350,13 @@ class TestRealizedByteIdentical:
                 continue
             if s in _SPRINT22_AUTHORIZED:
                 continue
+            if s in _SPRINT24_AUTHORIZED:
+                continue
             assert any(tok in s for tok in _ALLOWED), (
                 f"analytics_engine.py added a NON-additive line outside the "
                 f"Sprint-20 excluded_* / Sprint-21 unlinked_* / Sprint-22 "
-                f"tz-normalization authorized regions: {ln!r}")
+                f"tz-normalization / Sprint-24 B1+B3 authorized regions: "
+                f"{ln!r}")
 
     def test_realized_ctx_identical_with_and_without_new_paths(self):
         """_base_ctx realized keys + verdict/verdict_class byte-identical

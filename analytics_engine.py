@@ -28,9 +28,7 @@ def compute_period_analytics(
 
         df = df_trades.copy()
         df["trade_date"] = pd.to_datetime(df["trade_date"], errors="coerce")
-        for col in ("price", "quantity", "stop_loss", "initial_stop", "pnl_usd"):
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+        df = _coerce_numeric(df, ("price", "quantity", "stop_loss", "initial_stop", "pnl_usd"))
 
         # ── Sprint-22 (DEC-20260516-019 / MARK_SPRINT22_RULINGS.md
         # §1.2/§1.3 / SPRINT22_DESIGN §1.2) — SINGLE-POINT tz-normalization.
@@ -118,9 +116,10 @@ def compute_period_analytics(
         #     stop is precisely what that metric exists to surface. Only
         #     ALGO (externally managed, no manual stop) is excluded there.
         bucket    = campaigns["stat_bucket"]
-        countable = campaigns[bucket.apply(ec.is_stat_countable)]
+        _cnt = bucket.apply(ec.is_stat_countable)
+        countable = campaigns[_cnt]
         manual    = campaigns[bucket != ec.STAT_BUCKET_ALGO]
-        excluded  = campaigns[~bucket.apply(ec.is_stat_countable)]
+        excluded  = campaigns[~_cnt]
 
         excluded_count = int(len(excluded))
         excluded_pnl   = float(excluded["net_pnl"].sum()) if not excluded.empty else 0.0
@@ -353,6 +352,15 @@ def compute_verdict(analytics: dict, period_word: str = "שבוע") -> tuple:
 
 
 # ── Internals ──────────────────────────────────────────────────────────────────
+
+def _coerce_numeric(df, cols):
+    # B3 (DEC-20260516-021 Wave-2b) — provable byte-identical extraction of the
+    # inlined numeric-coerce loop; mutates `df` in place and returns it.
+    for col in cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+    return df
+
 
 def _to_naive(ts):
     """Sprint-22 (DEC-20260516-019 / MARK_SPRINT22_RULINGS.md §1.1) —

@@ -1,18 +1,18 @@
-"""Sprint-24 Wave-2 byte-identical proofs (DEC-20260516-021).
+"""Sprint-24 Wave-2 + Wave-2b byte-identical proofs (DEC-20260516-021).
 
 Scope SHIPPED (see docs/teams/SPRINT24_WAVE2_IMPL.md):
-  * A1/A3 — analytics_engine.py: ADDITIVE comment-only clarity. The
-    pre-existing Sprint-19/20/21/22 lock
-    `test_sprint19_headline_comparison.py::test_analytics_engine_git_diff_empty`
-    makes analytics_engine.py STRICTLY append-only with a fixed
-    allowlist — it forbids modifying ANY existing line (incl. a
-    docstring/inline-comment edit), so A1/A3 are delivered as purely
-    ADDITIVE `#` comment blocks and B1/B3 (which would remove/modify
-    executable lines) are BLOCKED by that lock and NOT shipped.
+  * A1/A3 — analytics_engine.py: ADDITIVE comment-only clarity.
   * B2 — report_scheduler.py: lazy module-singleton Supabase client;
     `_fetch_trades_df` issues the SAME table/select/filter/order chain
     and keeps the missing-creds → None and failure → None contracts.
-  * B3/B4 — SKIPPED (see impl doc). Probe keeps its own inlined copy.
+  * Wave-2b (founder-authorized post-Wave-2): B1 (the twice-applied
+    `bucket.apply(ec.is_stat_countable)` mask hoisted ONCE into `_cnt`)
+    and B3 (`_coerce_numeric` extraction) are now SHIPPED as PROVABLE
+    byte-identical no-ops, admitted via the governed Sprint-19 byte-lock
+    allowlist expansion and proven by
+    tests/test_sprint24_b1b3_byte_identical.py.
+  * B4 — SKIPPED (see impl doc). period_data_probe.py keeps its OWN
+    inlined coerce copy (NOT rewired to the analytics helper).
 
 These tests are NAMED Ruling-3 identity proofs. No behavior/math change
 is asserted — only that the shipped path is provably equivalent.
@@ -35,41 +35,100 @@ _REPO = os.path.dirname(os.path.dirname(__file__))
 # ── A1/A3 + B1/B3 — analytics_engine.py stayed STRICTLY append-only ──
 
 class TestAnalyticsEngineAppendOnly:
-    """The Sprint-19/20/21/22 lock forbids modifying any existing line.
-    Prove our analytics_engine.py diff adds ONLY `#` comment lines and
-    removes/modifies NOTHING (so A1/A3 are safe and B1/B3 stayed OUT)."""
+    """Wave-2b (DEC-20260516-021): the founder, after Wave-2's honest
+    report, explicitly authorized landing B1 + B3 as PROVABLE byte-
+    identical no-ops via a governed Sprint-19 byte-lock allowlist
+    expansion. So analytics_engine.py is NO LONGER strictly append-only:
+    its diff is EXACTLY the A1/A3 additive `#` comments PLUS the B1
+    mask-once hoist + B3 `_coerce_numeric` extraction — and NOTHING else.
+    Byte-identity of B1/B3 is proven (strictly stronger than a token
+    proxy) by tests/test_sprint24_b1b3_byte_identical.py."""
 
     def _diff(self):
         return subprocess.run(
             ["git", "diff", "--", "analytics_engine.py"],
             cwd=_REPO, capture_output=True, text=True).stdout
 
-    def test_no_existing_line_removed_or_modified(self):
-        removed = [ln[1:] for ln in self._diff().splitlines()
-                   if ln.startswith("-") and not ln.startswith("---")
-                   and ln[1:].strip()]
-        assert removed == [], (
-            "analytics_engine.py modified/removed an existing line — "
-            f"would break the Sprint-19 additive lock: {removed}")
+    # The EXACT `.strip()`-ed B1/B3 diff lines (verbatim from `git diff`).
+    _B1B3_REMOVED = frozenset({
+        'for col in ("price", "quantity", "stop_loss", '
+        '"initial_stop", "pnl_usd"):',
+        'if col in df.columns:',
+        'df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)',
+        'countable = campaigns[bucket.apply(ec.is_stat_countable)]',
+        'excluded  = campaigns[~bucket.apply(ec.is_stat_countable)]',
+    })
+    _B1B3_ADDED = frozenset({
+        'df = _coerce_numeric(df, ("price", "quantity", "stop_loss", '
+        '"initial_stop", "pnl_usd"))',
+        '_cnt = bucket.apply(ec.is_stat_countable)',
+        'countable = campaigns[_cnt]',
+        'excluded  = campaigns[~_cnt]',
+        'def _coerce_numeric(df, cols):',
+        'for col in cols:',
+        'if col in df.columns:',
+        'df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)',
+        'return df',
+    })
 
-    def test_every_added_line_is_a_comment(self):
+    def test_only_authorized_existing_lines_removed_or_modified(self):
+        """Post-Wave-2b: the ONLY removed/modified lines are the founder-
+        authorized B1+B3 set (A1/A3 stayed purely additive)."""
+        removed = {ln[1:].strip() for ln in self._diff().splitlines()
+                   if ln.startswith("-") and not ln.startswith("---")
+                   and ln[1:].strip()}
+        unexpected = removed - self._B1B3_REMOVED
+        assert unexpected == set(), (
+            "analytics_engine.py removed a line outside the founder-"
+            f"authorized B1/B3 set: {sorted(unexpected)}")
+        assert removed == self._B1B3_REMOVED, (
+            "expected EXACTLY the B1/B3 removals — missing: "
+            f"{sorted(self._B1B3_REMOVED - removed)}")
+
+    def test_every_added_line_is_comment_or_authorized_b1b3(self):
+        """Post-Wave-2b: every added line is either an A1/A3 `#` comment
+        or a member of the founder-authorized B1+B3 added set."""
         added = [ln[1:] for ln in self._diff().splitlines()
                  if ln.startswith("+") and not ln.startswith("+++")
                  and ln[1:].strip()]
-        non_comment = [a for a in added if not a.strip().startswith("#")]
-        assert non_comment == [], (
-            "analytics_engine.py added a non-comment line — B1/B3 must "
-            f"stay OUT (blocked by the additive lock): {non_comment}")
+        bad = [a for a in added
+               if not a.strip().startswith("#")
+               and a.strip() not in self._B1B3_ADDED]
+        assert bad == [], (
+            "analytics_engine.py added a line that is neither an A1/A3 "
+            f"comment nor an authorized B1/B3 line: {bad}")
 
-    def test_b1_b3_helpers_not_introduced(self):
+    def test_b1_b3_helpers_introduced_and_provable(self):
+        """Post-Wave-2b (premise reversed by the founder): the B1 mask is
+        hoisted ONCE via a single `_cnt`, the B3 `_coerce_numeric` helper
+        exists, the OLD twice-applied/inlined forms are GONE, and the
+        named byte-identical proof file is present & collectible."""
         src = open(os.path.join(_REPO, "analytics_engine.py")).read()
-        # B1 mask-once var and B3 helper were reverted (lock-blocked).
-        assert "def _coerce_numeric(" not in src
-        # original twice-applied mask + inlined coerce loop intact
-        assert "countable = campaigns[bucket.apply(ec.is_stat_countable)]" in src
-        assert "excluded  = campaigns[~bucket.apply(ec.is_stat_countable)]" in src
+        # B3 helper exists; B1 single-mask local exists.
+        assert "def _coerce_numeric(df, cols):" in src
+        assert "_cnt = bucket.apply(ec.is_stat_countable)" in src
+        assert "countable = campaigns[_cnt]" in src
+        assert "excluded  = campaigns[~_cnt]" in src
+        assert ('df = _coerce_numeric(df, ("price", "quantity", '
+                '"stop_loss", "initial_stop", "pnl_usd"))') in src
+        # The OLD twice-applied mask + inlined loop are GONE.
+        assert ("countable = campaigns[bucket.apply("
+                "ec.is_stat_countable)]") not in src
+        assert ("excluded  = campaigns[~bucket.apply("
+                "ec.is_stat_countable)]") not in src
         assert ('for col in ("price", "quantity", "stop_loss", '
-                '"initial_stop", "pnl_usd"):') in src
+                '"initial_stop", "pnl_usd"):') not in src
+        # The line :30 to_datetime stays INLINED (Sprint-22 load-bearing,
+        # explicitly OUT of B3 scope — not folded into the helper).
+        assert ('df["trade_date"] = pd.to_datetime(df["trade_date"], '
+                'errors="coerce")') in src
+        # Mask hoisted ONCE: exactly one bucket.apply(is_stat_countable).
+        assert src.count("bucket.apply(ec.is_stat_countable)") == 1
+        # NAMED Ruling-3 proof present & collectible.
+        proof = os.path.join(
+            _REPO, "tests", "test_sprint24_b1b3_byte_identical.py")
+        assert os.path.isfile(proof)
+        assert "class TestSprint24B1B3ByteIdentical" in open(proof).read()
 
     def test_period_data_probe_byte_locked_untouched(self):
         out = subprocess.run(

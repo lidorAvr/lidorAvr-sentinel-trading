@@ -28,8 +28,17 @@ Consequence (stated plainly, #1):
 
 **Independently verified:** `period_data_probe.py`, `engine_core.py`, `docker-compose.yml`, the LOCKED `tests/test_real_data_april_regression.py`, `telegram_bot.py` — ALL git-diff EMPTY. `analytics_engine.py` diff = 100% additive `#` comments (zero executable line changed → Sprint-19 lock honored, Sprint-22 numbers + Sprint-23 loss-free intact). +11 tests (`tests/test_sprint24_wave2_refactor.py`), none deleted/modified. Tier-C + every OUT-OF-SCOPE item + WS-C/`-1`-sentinel + ALGO wording untouched.
 
-## Parent recommendation
-**Accept the shipped subset (A1/A2/A3/B2); do NOT relax the Sprint-19 byte-lock for B1/B3.** Rationale: B1/B3 are marginal DRY with no real efficiency gain; the lock is the mechanism that has kept the founder-verified Sprint-22 campaign math byte-identical. Trading that protection for one fewer `.apply()` over ~30 rows is a bad trade. The founder's "more efficient" goal is substantively met by B2 (the Supabase client is no longer rebuilt on every report). The pre-existing lock is doing exactly its job.
+## Parent recommendation (Wave-2)
+Recommended accepting the shipped subset and NOT relaxing the lock for marginal DRY. **Founder overrode (DEC-021 Wave-2b): explicitly authorized landing B1+B3 via a governed, Mark-gated lock-allowlist expansion + a dedicated byte-identical proof.** Executed as Wave-2b (the FINAL wave — founder directed "stop here" after).
+
+## Wave-2b — B1+B3 landed (founder-authorized, parent-verified)
+The Sprint-19 lock is `git diff -- analytics_engine.py` (working-tree vs index) rejecting any non-allowlisted line. Governed expansion delivered:
+- **B1** — `bucket.apply(ec.is_stat_countable)` hoisted ONCE into `_cnt`, reused by `countable`/`excluded` (`manual` + `:30` `pd.to_datetime` UNTOUCHED). Provable no-op (`is_stat_countable` pure → identical Series → identical partition).
+- **B3** — the inlined numeric-coerce loop (`:31-33`) extracted into the pure top-level `_coerce_numeric(df, cols)`, called with the EXACT 5-tuple in order; in-place mutate + return → algebraically identical. `period_data_probe.py` keeps its OWN inlined copy (0-diff); `engine_core.py:478` untouched.
+- **Lock expansion** — `test_analytics_engine_git_diff_empty`: ADDED only the docstring DEC-021 record + two CLOSED-literal frozensets (`_SPRINT24_AUTHORIZED_REMOVED` 5 lines / `_SPRINT24_AUTHORIZED` 9 lines) + `continue` clauses + a self-reference hardening that binds the allowlist to the paired proof file existing AND collectible. **NO existing Sprint-20/21/22 clause modified** (independently verified; only one cosmetic assert message extended).
+- **Named Ruling-3 proof** — `tests/test_sprint24_b1b3_byte_identical.py::TestSprint24B1B3ByteIdentical` (9 tests): B1 partition `.equals()` (index+order); B3 full-frame `.equals()` oracle + AST exact-tuple/sole-caller proof; LOCKED April 8/+$180.49/WR.375/PF2.626/excl2 (reusing the LOCKED fixture verbatim); Sprint-22 tz-aware==tz-naive==8/+$180.49.
+
+**Independently verified (Wave-2 + 2b):** `period_data_probe.py`, `engine_core.py`, `docker-compose.yml`, the LOCKED `tests/test_real_data_april_regression.py`, `telegram_bot.py` — ALL git-diff EMPTY. `analytics_engine.py` diff = EXACTLY A1/A3 additive `#` comments + the B1 hoist + the B3 helper/call — nothing else; zero math/value change. Suite **1879 → 1898 passed, 0 failed** (Wave-2 +11, Wave-2b +8 net: 9 new proof tests, 3 Wave-2 tests repurposed in place, none deleted). Tier-C + every OUT-OF-SCOPE + WS-C/`-1`-sentinel + ALGO wording untouched.
 
 ## Carried
 🟢 Smoke-test (Sprint 11–23) CLOSED. Note for any future analytics refactor: it MUST be additive (the Sprint-19 byte-lock is permanent unless deliberately, Mark-gated, reclassified). WS-C (DEFERRED; `-1`-sentinel constraint logged). NULL-`campaign_id` repair runbook. Per-user Phase-B. ALGO Oversight Gate.

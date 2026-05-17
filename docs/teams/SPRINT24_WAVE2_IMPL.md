@@ -190,3 +190,102 @@ removed/modified lines** (proven by `TestAnalyticsEngineAppendOnly`).
   untouched; WS-C / `-1`-sentinel / ALGO "תקן entry/stop" UNCHANGED.
 - Full suite `python -m pytest -q -p no:cacheprovider`: **1890 passed**
   (1879 baseline + 11 new), 0 failed.
+
+---
+
+## Wave-2b (DEC-20260516-021 Wave-2b — founder-authorized; FINAL wave)
+
+After Wave-2's honest report, the founder **explicitly authorized
+(DEC-20260516-021 Wave-2b)** landing **B1 + B3** by **expanding the
+Sprint-19 byte-lock allowlist the governed, Mark-gated way** — minimal,
+intent-preserving, with a dedicated byte-identical proof. Founder said
+"stop here" after → this is the FINAL wave. B1/B3 are PROVABLE
+byte-identical NO-OPS (not math changes) → admissible under Mark
+Rulings 1/3/4 WITH the named Ruling-3 proof. The Wave-2 §"CRITICAL
+CONSTRAINT" rationale for blocking B1/B3 is **superseded for these two
+founder-authorized no-ops ONLY**; everything else in this doc stands.
+
+### B1 — SHIPPED (mask hoisted once)
+- `analytics_engine.py:120-124`: `_cnt = bucket.apply(ec.is_stat_countable)`
+  computed ONCE; `countable = campaigns[_cnt]`; `excluded  = campaigns[~_cnt]`.
+  The `manual = campaigns[bucket != ec.STAT_BUCKET_ALGO]` line is UNTOUCHED.
+  `ec.is_stat_countable` is pure/deterministic ⇒ identical boolean Series ⇒
+  byte-identical `countable`/`excluded` partition (index + row order).
+
+### B3 — SHIPPED (`_coerce_numeric` extraction)
+- New top-level pure `def _coerce_numeric(df, cols):` (mutates in place,
+  returns `df`) in the Internals section before `_to_naive`. The inlined
+  `:31-33` loop replaced by ONE call passing the EXACT tuple verbatim in
+  EXACT order: `df = _coerce_numeric(df, ("price", "quantity",
+  "stop_loss", "initial_stop", "pnl_usd"))`. **`:30` `pd.to_datetime`
+  stays INLINED** (Sprint-22 load-bearing — OUT of B3 scope, NOT folded).
+  `period_data_probe.py` keeps its OWN inlined copy (NOT rewired);
+  `engine_core.py:478` (different column set) untouched.
+
+### Lock expansion done (minimal, intent-preserving)
+`tests/test_sprint19_headline_comparison.py::test_analytics_engine_git_diff_empty`:
+NO existing Sprint-20/21/22 clause modified. ADDED ONLY two **closed
+literal** frozensets, each with a `continue` clause before its assert,
+derived VERBATIM from the real `git diff -- analytics_engine.py`:
+- `_SPRINT24_AUTHORIZED_REMOVED` — the 5 exact `.strip()`-ed pre-edit
+  lines B1/B3 remove (the 3 inlined-coerce-loop lines + the 2
+  twice-applied `countable`/`excluded` lines), skipped in the `removed`
+  loop before its assert.
+- `_SPRINT24_AUTHORIZED` — the 9 exact `.strip()`-ed lines B1/B3 add
+  (`df = _coerce_numeric(...)`, `_cnt =`, `countable = campaigns[_cnt]`,
+  `excluded  = campaigns[~_cnt]`, `def _coerce_numeric(df, cols):`,
+  `for col in cols:`, `if col in df.columns:`, the `pd.to_numeric...`
+  body line, `return df`), skipped in the `added` loop before its
+  final assert.
+`_FORBIDDEN_KPI` deliberately NOT run over the Sprint-24 set (B1
+legitimately re-binds `countable`/`excluded` to the SAME value; the
+dedicated `.equals()` byte-identical proof is strictly stronger).
+Sprint-24 self-reference hardening: the lock asserts
+`tests/test_sprint24_b1b3_byte_identical.py` exists AND is collectible
+AND defines `class TestSprint24B1B3ByteIdentical` ⇒ the
+`_SPRINT24_AUTHORIZED*` allowlist can NEVER exist without its paired
+proof. The `test_analytics_engine_git_diff_empty` docstring records
+DEC-20260516-021 Wave-2b (the Sprint-19 "zero analytics edits"
+narrative is superseded for these two authorized no-ops only).
+
+### Named Ruling-3 proof
+`tests/test_sprint24_b1b3_byte_identical.py::TestSprint24B1B3ByteIdentical`
+(9 tests): B1 partition `.equals()` (index+order; frame spanning
+countable+ALGO+DATA_INCOMPLETE); B3 full-frame `.equals()` an
+inlined-loop oracle over all-5 / extra / missing / garbage·NaN·str
+inputs + in-place mutation + AST proof the single production call
+passes the exact ordered tuple; LOCKED April regression byte-identical
+(8 / +$180.49 / WR .375 / PF 2.626 / excl 2) reusing the LOCKED
+`tests/test_real_data_april_regression.py` fixture verbatim; Sprint-22
+tz-aware==tz-naive==8/+$180.49 post-B1/B3.
+
+### Now-inverted Wave-2 test — repurposed (NOT deleted; Ruling 6.1)
+`tests/test_sprint24_wave2_refactor.py::TestAnalyticsEngineAppendOnly`
+premise was reversed by the founder. The three append-only tests were
+**repurposed in place** to assert the POST-B1/B3 reality
+(`test_only_authorized_existing_lines_removed_or_modified`,
+`test_every_added_line_is_comment_or_authorized_b1b3`,
+`test_b1_b3_helpers_introduced_and_provable`). The earlier
+`test_no_existing_line_removed_or_modified` /
+`test_every_added_line_is_a_comment` / `test_b1_b3_helpers_not_introduced`
+descriptions in this doc's A1/A3/B1/B3 sections refer to their
+pre-Wave-2b form. `test_period_data_probe_byte_locked_untouched` +
+`test_engine_core_untouched` kept AS-IS. No test deleted.
+
+### Wave-2b confirmations
+- LOCKED `tests/test_real_data_april_regression.py` **byte-identical**
+  (git-diff EMPTY; 8 / +$180.49 / WR .375 / PF 2.626 / excl 2).
+- Sprint-22 tz numbers unchanged (`test_sprint22_tz_regression.py`
+  18 passed; tz-aware==tz-naive==8/+$180.49 re-asserted in the proof).
+- `period_data_probe.py` + `engine_core.py` + `docker-compose.yml` +
+  LOCKED `tests/test_real_data_april_regression.py` git-diff **EMPTY**.
+- `analytics_engine.py` diff = ONLY the B1 hoist + B3 helper/call
+  (plus the already-committed A1/A3 `#` comments unchanged).
+- No R/NAV/exposure/campaign/Expectancy/PF/WR value change; no
+  feature/flag/admin·dev-PIN gate/secure_runner/compose/migration/
+  schema change; no `telegram_bot.py` change; WS-C / `-1`-sentinel /
+  ALGO "תקן entry/stop" UNCHANGED; no existing Sprint-20/21/22 lock
+  clause modified.
+- Full suite `python -m pytest -q -p no:cacheprovider`: **1898 passed**
+  (1890 prior + 8 net new; 9 new proof tests; the 3 inverted Wave-2
+  tests repurposed in place, none added/deleted), 0 failed.
