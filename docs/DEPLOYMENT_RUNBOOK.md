@@ -28,19 +28,30 @@ grep -q '^DEV_PIN=' .env && echo "DEV_PIN ok" || { echo "STOP: set DEV_PIN in .e
 python3 -c "import json,sys;d=json.load(open('sentinel_config.json'));sys.exit(0 if d.get('nav') else 1)" && echo "nav ok" || echo "WARN: check sentinel_config.json nav"
 # 1. snapshot current prod ref for rollback
 git rev-parse HEAD > /tmp/sentinel_prev_ref.txt && cat /tmp/sentinel_prev_ref.txt
-# 2. bring the merged code
-git fetch origin && git checkout main && git pull --ff-only origin main
-# 3. recreate the two services (mounted volume picks up code; build is safe — no dep change)
-docker compose build sentinel-bot telegram-bot
-docker compose up -d --force-recreate sentinel-bot telegram-bot
+# 2. bring the code. Production tracks `claude/review-system-audit-FBZ2h`
+#    (NOT main) — deploy = fast-forward THAT branch (no branch switch; avoids
+#    clobbering the live, runtime-updated sentinel_config.json). One-time:
+#    `git config core.fileMode false` (neutralises the deploy_watcher.sh exec-bit
+#    friction). If instead deploying via main, merge the PR first.
+git config core.fileMode false
+git fetch origin && git pull --ff-only origin claude/review-system-audit-FBZ2h
+# 3. recreate. CRITICAL: the `.:/app` volume updates the FILES, but a
+#    long-running Python process does NOT reload modules — it keeps executing
+#    the OLD code until the container is recreated. The changes span
+#    reporting-service (B1, report pipeline) + risk-monitor (Arch-F1, C2,
+#    NAV-Unify) too — recreate ALL affected services, not just the bots:
+docker compose build
+docker compose up -d --force-recreate sentinel-bot telegram-bot reporting-service risk-monitor dashboard
+# (or simply: docker compose up -d --force-recreate   # whole stack — safest)
 # 4. health
 docker compose ps
-docker compose logs --tail=80 sentinel-bot telegram-bot
+docker compose logs --tail=80 sentinel-bot telegram-bot reporting-service risk-monitor
 ```
 
 ## 3. Post-deploy verification (within ~30–60 min)
 
-- `docker compose ps` → both `sentinel-bot` + `telegram-bot` healthy (healthcheck: `/app/state/sentinel_bot_last_cycle` fresh < 1980s).
+- `docker compose ps` → **all** of `sentinel-bot` / `telegram-bot` / `reporting-service` / `risk-monitor` / `dashboard` show a fresh `CREATED` time and become `(healthy)` (sentinel-bot healthcheck: `/app/state/sentinel_bot_last_cycle` fresh < 1980s). Any service still showing the OLD uptime was NOT recreated → its behavior changes are NOT live.
+- Run the post-deploy NAV check (proves the new code is the running code): `python3 -c "import account_state as a;c=a._resolve_nav_core();print(c['nav'],c['freshness'],c['ok'])"` — must NOT raise `AttributeError`.
 - Dev menu: tapping a dev button **requires an active PIN session** (C1) — confirm it prompts/denies without a session and works WITH one.
 - A scheduled/on-demand report renders; the Telegram summary shows a NAV freshness/source line and (if a price was non-live) the `⚠️ מחיר לא חי` disclosure (B1).
 - No new error spam in `risk_monitor` logs (Arch-F1/NAV-Unify edges).
