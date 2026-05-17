@@ -194,10 +194,16 @@ def _require_active_dev_session(chat_id) -> bool:
         # S-1/S-3: no active (or expired) PIN session — refuse and route
         # back to PIN entry, mirroring the menu-open gate's behaviour.
         user_state[chat_id] = {"action": "awaiting_dev_pin"}
+        # Sprint-27 W3 (UX P1-2) — humanized wording ONLY. The fail-closed
+        # security behavior is UNCHANGED (still routes back to PIN entry, still
+        # returns False, no TTL/compare touched): warmer + still 100% honest —
+        # it states plainly the session is not active (no false reassurance)
+        # and frames the re-entry as a quick resume, not a rejection.
         bot.send_message(
             chat_id,
-            f"{RTL}🔐 *פעולת מפתח דורשת PIN פעיל*\n"
-            f"{RTL}הפגישה אינה פעילה או פגה. הזן את ה-PIN:",
+            f"{RTL}🔐 *צריך PIN פעיל לפעולת מפתח*\n"
+            f"{RTL}הפגישה שלך פגה (תוקף 30 דק' לאבטחתך) — לא בוצעה שום פעולה.\n"
+            f"{RTL}הזן את ה-PIN ונמשיך מכאן:",
             parse_mode="Markdown",
         )
         return False
@@ -868,9 +874,16 @@ def _handle_addon_command(chat_id: int, text: str):
         }
         add_type = add_type_map.get(type_arg, addon_eng.ADDON_TACTICAL)
 
-        # Load open position for symbol
-        res = supabase.table("trades").select("*").execute()
-        df  = pd.DataFrame(res.data)
+        # Load open position for symbol.
+        # Sprint-27 W4c (Arch S26-R1): route the lone residual raw
+        # `supabase.table("trades").select("*")` read through the repository
+        # layer (`supabase_repository.get_all_trades`, which issues the
+        # byte-identical query). Read-only, byte-identical result — the repo
+        # returns `... .data or []`, so non-empty rows are passed through
+        # unchanged and an empty/None result yields an empty DataFrame exactly
+        # as `pd.DataFrame(res.data)` did. C1 `_require_active_dev_session`
+        # guard + admin gate + B3 plan/confirm logic UNCHANGED.
+        df  = pd.DataFrame(repo.get_all_trades(supabase))
         pos_res = ec.get_open_positions_campaign(df)
         if not pos_res["ok"] or pos_res["data"].empty:
             try: bot.delete_message(chat_id, loading.message_id)

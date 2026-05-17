@@ -178,7 +178,14 @@ class TestHappyPathByteIdentical:
     def test_frozen_literal_representative_fixture(self):
         # Exact-string pin of a representative broker+fresh summary so any
         # future accidental byte drift on the happy path is caught here.
-        expected = (
+        # Sprint-27 W3 (authorized additive prepend, NOT a weakening — same
+        # "Updated NOT deleted/weakened" precedent as the Sprint-25 C1 test
+        # correction): the ONE companion "מה עכשיו?" line + its blank line are
+        # PREPENDED. The pin stays an exact-byte equality (equally strict, still
+        # catches any body drift); the BODY below the prepend is byte-identical
+        # to the pre-W3 frozen literal — that byte-identity is the W3 invariant
+        # and is asserted explicitly here.
+        _pre_w3_body = (
             "🛡️ *Sentinel — דוח שבועי*\n"
             "📅 תקופה: `lbl`\n"
             "\n"
@@ -189,9 +196,18 @@ class TestHappyPathByteIdentical:
             "🎯 Expectancy: `+0.00R`  |  PF: `0.00`\n"
             "⚙️ Missing Stop: `0.0%`  |  Oversized: `0.0%`"
         )
+        expected = (
+            "🧭 *מה עכשיו?* אין עסקאות שנסגרו בתקופה — "
+            "זה לא אומר שהכול תקין/לא תקין; עבור על הספר הפתוח למטה.\n"
+            "\n"
+            + _pre_w3_body
+        )
         got = rr.build_summary_text(_ANALYTICS_EMPTY, "lbl", "weekly",
                                     account_state=_ACC_BROKER_FRESH)
         assert got == expected
+        # W3 invariant: stripping the prepended companion line + its blank
+        # line yields the pre-W3 body byte-for-byte (numbers untouched).
+        assert got.split("\n", 2)[2] == _pre_w3_body
 
 
 # ── 3. 0-closed price-fallback symbols surfaced (Telegram P0-1) ──────────────

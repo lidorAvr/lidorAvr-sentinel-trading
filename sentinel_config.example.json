@@ -1,0 +1,7 @@
+{
+  "_comment": "EXAMPLE / SCHEMA ONLY — copy to sentinel_config.json on the host and fill real values. sentinel_config.json is GITIGNORED (Sprint-27 W2, Ops O1): it holds the LIVE IBKR-synced NAV and must NEVER be git-tracked, so a rollback (git checkout/reset) can never overwrite the live NAV. Keys + semantics per account_state.py.",
+  "nav": 0.0,
+  "total_deposited": 7500.0,
+  "risk_pct_input": 0.5,
+  "nav_updated_at": "2026-01-01T00:00:00"
+}

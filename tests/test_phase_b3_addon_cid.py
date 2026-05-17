@@ -278,10 +278,23 @@ class TestRaceRefusedHardened:
         assert 7777 not in state
 
         # An explicit Hebrew refusal message was sent, telling the user the
-        # position changed and to re-run /addon.
+        # position changed and to re-run /addon. Sprint-27 W3 (UX P1-3,
+        # authorized humanization — "Updated NOT weakened"): the wording is
+        # warmer ("עצרתי", "התחלפה", "להגן על הכסף שלך") but the assertion is
+        # kept EQUALLY strict — it must still say the position changed AND
+        # point to re-running /addon AND remain 100% honest (no false
+        # reassurance: NOT the success string, and it explicitly states
+        # nothing was written).
         msgs = [c.args[1] for c in fake_bot.send_message.call_args_list]
-        assert any(("השתנתה" in m and "addon" in m) for m in msgs), msgs
-        # NOT the pre-B3 success message.
+        _refusal = [m for m in msgs
+                    if "התחלפה" in m and "addon" in m and SYM in m]
+        assert _refusal, msgs
+        _r = _refusal[0]
+        # Honest + protective framing, no false reassurance.
+        assert "לא כתבתי כלום" in _r, _r          # zero-write stated plainly
+        assert "להגן על הכסף שלך" in _r, _r        # framed as protection
+        assert "הרץ" in _r and "addon" in _r, _r   # actionable next step
+        # NOT the pre-B3 success message — a refusal must never read as "done".
         assert not any("Add-On אושר" in m for m in msgs), msgs
 
 

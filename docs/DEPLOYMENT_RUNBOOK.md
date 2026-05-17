@@ -70,13 +70,31 @@ docker compose logs --tail=80 sentinel-bot telegram-bot reporting-service risk-m
 
 **Byte-identical (no change):** the LOCKED April regression (8/+$180.49/WR .375/PF 2.6262/excl 2), Sprint-22 tz numbers, Sprint-23 probe loss-free, every report-pipeline number on the normal broker-fresh path.
 
+## 4b. ONE-TIME host migration — untrack the live NAV config (Sprint-27 W2 / Ops O1) — DO THIS BEFORE the pull that lands the untrack commit
+
+`sentinel_config.json` was git-tracked while holding the LIVE IBKR NAV. Sprint-27 untracks it in the repo (now `.gitignore`d) + adds `sentinel_config.example.json`. On the host, the FIRST pull that includes the untrack commit must NOT delete/clobber the live file. Run on the host, ONCE, before that pull:
+
+```bash
+cd ~/sentinel_trading
+cp -a sentinel_config.json /tmp/nav_live.bak           # 1. backup the LIVE NAV
+python3 -c "import json;print('backup nav=',json.load(open('/tmp/nav_live.bak')).get('nav'))"
+git rm --cached sentinel_config.json                   # 2. untrack locally too (keeps the file)
+git pull --ff-only origin claude/review-system-audit-FBZ2h   # 3. now the untrack commit applies cleanly; the file is untracked+gitignored → never touched
+python3 -c "import json;print('live nav after pull=',json.load(open('sentinel_config.json')).get('nav'))"   # 4. MUST equal the backup; if missing: cp /tmp/nav_live.bak sentinel_config.json
+docker compose up -d --force-recreate                  # 5. then the normal recreate-all
+```
+
+From here on `sentinel_config.json` is host-managed (like `.env`). **NEVER run `git reset --hard` or `git checkout .` on the prod host** — they ignore `.gitignore` for the working tree only for *tracked* files, but a hard reset to an old ref + a stale tracked copy elsewhere can still surprise; treat the live NAV as sacred and always `cp` it aside before any history operation.
+
 ## 5. Rollback (from docs/SAFE_CHANGE_PROTOCOL.md)
 
 ```bash
+cp -a sentinel_config.json /tmp/nav_live.bak           # ALWAYS back up the live NAV first
 docker compose stop telegram-bot sentinel-bot
-git checkout "$(cat /tmp/sentinel_prev_ref.txt)"   # the pre-deploy ref
+git checkout "$(cat /tmp/sentinel_prev_ref.txt)"       # the pre-deploy ref (post-W2 this no longer touches sentinel_config.json — it is untracked)
+python3 -c "import json;print(json.load(open('sentinel_config.json')).get('nav'))" || cp /tmp/nav_live.bak sentinel_config.json
 docker compose up -d --force-recreate sentinel-bot telegram-bot
 docker compose logs --tail=80 telegram-bot
 ```
 
-Report numbers are byte-identical pre/post, so rollback never changes report output. The byte-lock baselines + governed allowlists are test-only (no runtime effect).
+⚠️ Do NOT use `git reset --hard`/`git checkout .` on the prod host. Post-W2 `sentinel_config.json` is untracked so a normal `git checkout <ref>` no longer reverts the live NAV — but always keep the `/tmp/nav_live.bak` safety copy. Report numbers are byte-identical pre/post, so rollback never changes report output. The byte-lock baselines + governed allowlists are test-only (no runtime effect).

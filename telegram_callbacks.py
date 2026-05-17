@@ -324,11 +324,18 @@ def handle_queries(call):
                         # as the existing cancel/decline path does.
                         if chat_id in user_state:
                             del user_state[chat_id]
+                        # Sprint-27 W3 (UX P1-3) — humanized wording ONLY. The
+                        # zero-write protective behavior is UNCHANGED (no
+                        # Supabase write, pending cleared, return). Reframed as
+                        # the system protecting the money (not a rejection) and
+                        # says explicitly WHAT changed — still 100% honest, no
+                        # false reassurance.
                         bot.send_message(
                             chat_id,
-                            f"{RTL}❌ *ביטול: הפוזיציה השתנתה — {sym}*\n"
-                            f"{RTL}הפוזיציה הפתוחה עבור הסמל השתנתה מאז שתכננת את החיזוק.\n"
-                            f"{RTL}הרץ ‎/addon‎ מחדש.",
+                            f"{RTL}🛡️ *עצרתי את החיזוק — {sym}*\n"
+                            f"{RTL}הפוזיציה הפתוחה ב-{sym} התחלפה מאז שתכננת "
+                            f"(קמפיין אחר) — לא כתבתי כלום, כדי להגן על הכסף שלך.\n"
+                            f"{RTL}הרץ ‎/addon‎ מחדש על המצב הנוכחי.",
                             reply_markup=get_main_menu(),
                             parse_mode="Markdown",
                         )

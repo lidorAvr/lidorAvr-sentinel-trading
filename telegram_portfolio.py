@@ -242,7 +242,15 @@ def handle_portfolio_room(chat_id):
         if open_pos.empty:
             try: bot.delete_message(chat_id, loading_msg.message_id)
             except Exception: pass
-            return bot.send_message(chat_id, "✅ אין פוזיציות פתוחות במערכת.")
+            # Sprint-27 W3 (UX P0-2) — an empty open-book is ambiguous: it can
+            # mean no positions OR upstream data did not load. Disambiguate so
+            # silence is never read as "all-clear". PURE presentation; the
+            # already-asserted `open_pos.empty` is the only signal used.
+            return bot.send_message(
+                chat_id,
+                f"{RTL}📭 *אין פוזיציות פתוחות כרגע.*\n"
+                f"{RTL}_זה לא אומר שהכול תקין/לא תקין — רק שאין כעת מה לנהל. "
+                f"אם פתחת עסקה ולא מופיעה, בדוק סנכרון נתונים._")
 
         account_settings = get_account_settings()
         acc_size, target_risk_usd, nav_stale_label = get_nav_and_risk(account_settings)
@@ -254,6 +262,14 @@ def handle_portfolio_room(chat_id):
         total_locked_profit = total_giveback_risk = 0
         algo_count = 0
         active_symbols = []
+        # Sprint-27 W3 (UX P0-1) — symbols whose ALREADY-computed engine
+        # `status` is a critical/decision state (the EXACT string the position
+        # card prints in "סטטוס שוק"; the same set risk_monitor.CRITICAL_STATUSES
+        # uses). Collected during the existing loop — NO new computation, NO new
+        # data source — so the ONE companion "מה עכשיו?" line can lead the
+        # surface (today the lede is buried under position cards).
+        _WHATNOW_CRITICAL = ("🚨 קריטי", "🔴 Broken", "🚨 חריגת סיכון אלגו")
+        decision_syms = []
         open_r_vals = []  # running R for each open position → fed into adaptive risk
         # Sprint-12 / Mark §3 — symbols whose current price fell back to entry
         # because ec.get_live_price() returned None (per-figure, binary on the
@@ -339,6 +355,12 @@ def handle_portfolio_room(chat_id):
                 sizing_str = e_data.get('sizing_status', "✅ תקין")
                 score, stage = e_data['score'], e_data['stage']
                 suggested_stop, feats = e_data['suggested_stop'], e_data.get('features', {})
+
+            # Sprint-27 W3 — record (do NOT alter) the symbol if its
+            # already-computed `status` is a decision state. Read-only on the
+            # value the card prints below; no number/flow changed.
+            if status in _WHATNOW_CRITICAL:
+                decision_syms.append(sym)
 
             total_open_pnl += open_pnl_usd
             total_realized_camp += realized_pnl
@@ -506,6 +528,28 @@ def handle_portfolio_room(chat_id):
                 f"\n\n{RTL}{tf.PRICE_FALLBACK_LABEL}"
                 f"\n{RTL}_חל על: {_fb_list}_"
             )
+
+        # Sprint-27 W3 (UX P0-1) — the ONE companion "מה עכשיו?" line,
+        # PREPENDED above the existing header. Composed ONLY from signals the
+        # surface ALREADY computed in the loop above: the decision-state
+        # symbols (already-computed engine `status`), the position count, and
+        # the existing NAV-stale / price-fallback honesty flags. NO new
+        # computation, NO new data source, NO number changed — the entire
+        # `msg` body built above stays byte-identical; this line is prepended.
+        _pos_n = len(active_symbols)
+        if decision_syms:
+            _wn_body = (f"{len(decision_syms)} פוז' דורשות החלטה: "
+                        f"{', '.join(decision_syms)} — ראה כרטיסים למטה.")
+        else:
+            _wn_body = (f"{_pos_n} פוז' במעקב, אין מצב קריטי — "
+                        f"עבור על הכרטיסים, אין פעולה דחופה.")
+        if nav_stale_label:
+            # NAV that scales R/exposure is not live → lead with that honesty
+            # (accuracy > confidence). Uses ONLY the existing nav_stale_label
+            # flag the footer already prints; no new field, no math.
+            _wn_body = ("שים לב — NAV לא חי (ראה הערה למטה), קרא R/חשיפה "
+                        "כהערכה. " + _wn_body)
+        msg = f"{RTL}🧭 *מה עכשיו?* {_wn_body}\n\n" + msg
 
         try: bot.delete_message(chat_id, loading_msg.message_id)
         except Exception: pass

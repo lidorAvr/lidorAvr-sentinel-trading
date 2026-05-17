@@ -436,20 +436,34 @@ def _daily_digest_text(rows: list, date_str: str) -> str:
         ec.POSITION_STATE_WORKING:           "עקוב",
         ec.POSITION_STATE_PROVING:           "בדוק follow-through",
     }
+    # Sprint-27 W3 (UX P0-1) — derive `urgent` FIRST (same classification the
+    # body uses below, byte-identical set) so the ONE companion "מה עכשיו?"
+    # line can lead the digest. PURE presentation: it summarizes the
+    # ALREADY-computed per-row `state` into one actionable Hebrew sentence;
+    # NO new computation, NO new data source, NO number touched. The Sprint-26
+    # UX review (P0-1): the digest opens with a divider then a flat bullet
+    # list — the human must reconstruct "do I need to act?" himself.
+    urgent = [r["sym"] for r in rows
+              if r["state"] in (ec.POSITION_STATE_BROKEN,
+                                ec.POSITION_STATE_RUNNER,
+                                ec.POSITION_STATE_PROFIT_PROTECTION)]
+    if urgent:
+        _whatnow = (f"{RTL_M}🧭 *מה עכשיו?* {len(urgent)} פוז' דורשות החלטה: "
+                    f"{', '.join(urgent)} — ראה פירוט למטה.")
+    else:
+        _whatnow = (f"{RTL_M}🧭 *מה עכשיו?* {len(rows)} פוז' תחת מעקב, "
+                    f"אין פעולה דחופה — עקוב לפי הפירוט.")
     lines = [
         f"{RTL_M}📋 *Sentinel — סיכום יומי | {date_str}*",
+        _whatnow,
         f"{RTL_M}───────────────────",
     ]
-    urgent = []
     for r in rows:
         emoji = _state_emoji.get(r["state"], "⚪")
         action = _action_map.get(r["state"], "עקוב")
         tag = " `[ALGO]`" if r["is_algo"] else ""
         r_str = f"`{r['open_r']:+.1f}R`"
         lines.append(f"{RTL_M}• *{r['sym']}*{tag} {emoji} {r_str} — {action}")
-        if r["state"] in (ec.POSITION_STATE_BROKEN, ec.POSITION_STATE_RUNNER,
-                          ec.POSITION_STATE_PROFIT_PROTECTION):
-            urgent.append(r["sym"])
     if urgent:
         lines.append(f"{RTL_M}───────────────────")
         lines.append(f"{RTL_M}⚡ *נדרשת החלטה:* {', '.join(urgent)}")

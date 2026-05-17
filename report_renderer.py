@@ -188,6 +188,81 @@ def _nav_disclosure_lines(account_state: Optional[dict]) -> list:
     ]
 
 
+# ── Sprint-27 W3 (UX P0-1 — companion "voice") — the ONE "מה עכשיו?" line.
+# PURE presentation. It composes a single Hebrew verdict+next-step line ONLY
+# from signals the surface has ALREADY computed (the existing `verdict` text
+# + its `verdict_class`, whether realized campaigns closed, and whether the
+# NAV that scaled the KPIs is broker-fresh). It performs NO new computation,
+# reads NO new data source, and changes NO KPI/number. It is PREPENDED to the
+# summary body; the existing body (every existing number + existing line)
+# stays byte-identical. The Sprint-26 UX review (P0-1): every primary surface
+# front-loads layout/raw-data and makes the human reconstruct "am I OK, and
+# what should I do?" himself — a companion leads with that one sentence.
+_WHATNOW_PREFIX = "🧭 *מה עכשיו?* "
+# verdict_class → the warm, honest one-action read. The verdict_class values
+# are the EXISTING `analytics_engine.compute_verdict` outputs
+# ("strong"/"mixed"/"defensive"/"neutral"); no class invented, no math.
+# {p} = the existing period noun ("שבוע"/"חודש") derived ONLY from the
+# `build_summary_text` `period_type` param already in scope — no new input.
+_WHATNOW_BY_CLASS = {
+    "strong":    "{p} חזק — המשמעת עבדה. אין פעולה דרושה; שמור על השיטה.",
+    "mixed":     "תוצאה מעורבת — אין דרישה דחופה; עבור על הקמפיינים בדוח.",
+    "defensive": "{p} הגנתי — עדיפות לצמצום סיכון; בדוק את הפוזיציות הפתוחות.",
+    "neutral":   "אין עסקאות שנסגרו בתקופה — זה לא אומר שהכול תקין/לא תקין; "
+                 "עבור על הספר הפתוח למטה.",
+}
+# When the NAV that scaled every KPI is NOT broker-fresh, the honest "what
+# now" leads with that (accuracy > confidence — CLAUDE.md): the verdict
+# itself is computed off an estimated/stale NAV, so the first action is to
+# treat the numbers as approximate. Reuses ONLY the broker-fresh signal the
+# B1 `_nav_disclosure_lines` gate already derives — no new field, no math.
+_WHATNOW_NAV_NOT_FRESH = (
+    "המספרים מבוססים על NAV לא-חי (ראה הבהרת NAV למטה) — קרא אותם כהערכה, "
+    "לא כאמת מדויקת."
+)
+
+
+def _account_state_broker_fresh(account_state: Optional[dict]) -> bool:
+    """True ⇔ a FRESH BROKER NAV that loaded ok — the exact same gate the B1
+    `_nav_disclosure_lines` uses (single source of the broker-fresh signal;
+    NO new field, NO math). `None`/non-dict ⇒ True (legacy callers ⇒ the
+    companion line stays NAV-silent, byte-identical to pre-W3)."""
+    acc = account_state if isinstance(account_state, dict) else None
+    if not acc:
+        return True
+    return (
+        str(acc.get("nav_source", "") or "") == "broker"
+        and str(acc.get("freshness", "") or "") == "fresh"
+        and not bool(acc.get("is_stale", False))
+        and bool(acc.get("ok", True))
+    )
+
+
+def whatnow_line(verdict_class: str,
+                 account_state: Optional[dict] = None,
+                 period_type: str = "weekly") -> str:
+    """Sprint-27 W3 — the single "מה עכשיו?" verdict+next-step line for the
+    weekly/monthly Telegram summary.
+
+    PURE presentation: `verdict_class` is the value the surface ALREADY got
+    from `analytics_engine.compute_verdict`; `account_state` is the SAME dict
+    `build_summary_text` already received for the B1 disclosure;
+    `period_type` is the SAME param `build_summary_text` already takes (only
+    selects the existing period noun, like `compute_verdict`'s `period_word`).
+    No new computation, no new data source, no KPI/number touched. Returns ONE
+    line (the `_WHATNOW_PREFIX` + the warm, 100%-honest read). When the NAV
+    that scaled the KPIs is not broker-fresh the read leads with that caveat
+    so silence about data quality is never read as confidence.
+    """
+    p = "חודש" if period_type == "monthly" else "שבוע"
+    body = _WHATNOW_BY_CLASS.get(
+        str(verdict_class or "").strip(), _WHATNOW_BY_CLASS["mixed"])
+    body = body.format(p=p)
+    if not _account_state_broker_fresh(account_state):
+        body = _WHATNOW_NAV_NOT_FRESH + " " + body
+    return _WHATNOW_PREFIX + body
+
+
 def compute_period_average(snapshots: Optional[list],
                            n: int = _PERIOD_AVG_MIN_N) -> dict:
     """Sprint-19 §2b — realized "מול ממוצע", PURE presentation helper.
@@ -419,8 +494,16 @@ def build_summary_text(
     `open_book`/`mark_delta` default None ⇒ byte-identical for existing callers.
     """
     from analytics_engine import compute_verdict
-    verdict, _ = compute_verdict(
+    verdict, verdict_class = compute_verdict(
         analytics, period_word="חודש" if period_type == "monthly" else "שבוע")
+    # Sprint-27 W3 — the ONE companion "מה עכשיו?" line, PREPENDED at the very
+    # top of the body. It is composed ONLY from `verdict_class` (already
+    # returned above by the EXISTING compute_verdict) + the `account_state`
+    # broker-fresh signal the B1 disclosure already derives — no new
+    # computation, no new data source, no KPI/number change. The existing body
+    # built below is UNCHANGED (every existing number + existing line stays
+    # byte-identical); the helper line is prepended as `_whatnow[0]`.
+    _whatnow = [whatnow_line(verdict_class, account_state, period_type), ""]
     pf     = analytics.get("profit_factor", 0)
     pf_str = f"{pf:.2f}" if pf < 90 else "∞"
     type_heb = "שבועי" if period_type == "weekly" else "חודשי"
@@ -436,7 +519,9 @@ def build_summary_text(
     # live book.
     if campaigns_closed == 0 and open_book is not None:
         import report_open_book as rob
-        head = [
+        # Sprint-27 W3 — companion line prepended; the pre-W3 body
+        # (header → empty-state → disclosures) below is byte-identical.
+        head = list(_whatnow) + [
             f"🛡️ *Sentinel — דוח {type_heb}*",
             f"📅 תקופה: `{period_label}`",
             f"",
@@ -492,7 +577,9 @@ def build_summary_text(
             head.append(fmt_heat_thermometer(risk_rec, include_legend=True))
         return "\n".join(head)
 
-    lines = [
+    # Sprint-27 W3 — companion line prepended; the pre-W3 realized body
+    # (header → verdict → KPI rows → disclosures) below is byte-identical.
+    lines = list(_whatnow) + [
         f"🛡️ *Sentinel — דוח {type_heb}*",
         f"📅 תקופה: `{period_label}`",
         f"",

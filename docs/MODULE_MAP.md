@@ -118,7 +118,15 @@ Responsibilities:
 - `mark_adherence(rec_pct, actual_pct, followed, reason)` → updates risk_recommendations.json.
 - `compute_adherence_stats()` → adherence statistics.
 
-RISK_LADDER: `[0.35, 0.50, 0.75, 1.00, 1.25, 1.50, 2.00, 2.50]`
+RISK_LADDER: `[0.25, 0.40, 0.60, 0.85, 1.15, 1.50, 2.00]`
+<!-- Sprint-27 W4a: corrected to the DEPLOYED, authoritative ladder
+     adaptive_risk_engine.py:20 RISK_LADDER (mirrored user_context.py:218,
+     pinned by tests/test_user_context.py). The prior [0.35…2.50] 8-step
+     value was stale doc-drift — the code deliberately removes the
+     non-monotonic 2.50 outlier (uniform step cadence). Code is
+     authoritative for behaviour; changing the ladder itself is a
+     money-methodology decision (founder-gated), out of this DOC-only fix. -->
+
 
 Direction logic:
 - heat ≥ 60% and loss_streak < 3 → `up` (+1 step)

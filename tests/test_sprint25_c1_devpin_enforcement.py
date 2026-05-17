@@ -223,6 +223,21 @@ class TestC1NoSessionRefuses:
 class TestC1ValidSessionUnchanged:
     """S-1: WITH a valid active session ⇒ unchanged behaviour (proceeds)."""
 
+    @pytest.fixture(autouse=True)
+    def _configured_dev_pin(self):
+        # Sprint-27 W4b — self-containment: these tests REQUIRE a configured
+        # DEV_PIN (dev_pin_is_configured() True) for the "valid session
+        # proceeds" path. They were green ONLY because CI's tests.yml sets
+        # DEV_PIN=0000 → a latent CI-lie if that env line were ever removed.
+        # Pin it locally (symmetric to TestC1FailClosedWhenUnset setting it
+        # "") and restore, so "green" can never depend on an unrelated env
+        # line. Test-only; assertions unchanged.
+        import telegram_devops as devops
+        _orig = devops._DEV_PIN
+        devops._DEV_PIN = "0000"
+        yield
+        devops._DEV_PIN = _orig
+
     def test_git_pull_proceeds_with_session(self, tb):
         _grant_session(tb)
         fake = types.SimpleNamespace(stdout="ok", stderr="", returncode=0)

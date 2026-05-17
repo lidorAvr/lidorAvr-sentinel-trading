@@ -11,6 +11,8 @@ import json
 import xml.etree.ElementTree as ET
 import engine_core as ec
 import adaptive_risk_engine as are
+import account_state as acc_state  # Sprint-27 W1: canonical NAV single-source (closes the dashboard fallback-as-truth gap; mirrors Telegram B1)
+from dashboard_nav import nav_sidebar_render as _nav_sidebar_render  # Sprint-27 W1: pure B1-style sidebar NAV honesty helper
 import telegram_formatters as tf  # Sprint-15: import-pure helpers (no telebot/supabase/engine import inside tf)
 import state_io
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -101,10 +103,19 @@ st.sidebar.markdown("---")
 
 st.sidebar.subheader("💼 Account Settings")
 
-# קריאת הנתונים מקובץ ההגדרות העדכני
-saved_nav = float(settings.get("nav", settings.get("total_deposited", 7500.0)))
+# Sprint-27 W1 — read NAV via the CANONICAL single source
+# (`account_state.load()`), closing the divergence Data D-F1 flagged between
+# this sidebar's own bare-`except` reader and the canonical resolver. The
+# value is the same canonical NAV (D1: explicit-0 kept); only the *render*
+# now tells the truth about freshness/source/fallback.
+_acc = acc_state.load()
+saved_nav = float(_acc["nav"])
 
-st.sidebar.success(f"🏦 Live IBKR NAV: **${saved_nav:,.2f}**")
+_nav_kind, _nav_text = _nav_sidebar_render(_acc)
+if _nav_kind == "success":
+    st.sidebar.success(_nav_text)        # broker+fresh — unchanged green box
+else:
+    st.sidebar.warning(_nav_text)        # stale / fallback / unknown — honest
 
 current_acc_size = saved_nav
 total_deposited = st.sidebar.number_input("Base Capital (All-Time):", value=float(settings.get("total_deposited", 7500.0)), step=500.0)
