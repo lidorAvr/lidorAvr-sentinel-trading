@@ -470,6 +470,41 @@ def evaluate_position_engine(symbol, entry_price, entry_date_str, current_stop, 
         return {"ok": True, "error": None, "data": {"status": status, "sizing_status": sizing_status, "issues": issues, "action": action, "trigger": trigger, "suggested_stop": suggested_stop, "score": score, "stage": stage, "features": features, "management_mode": mgmt_mode, "risk_basis": risk_basis, "risk_visibility_score": risk_vis}}
     except Exception as e: return {"ok": False, "error": str(e), "data": None}
 
+def split_side_first(group):
+    """Phase-C2 shared side-first SELL/BUY classifier (pure).
+
+    Single source of truth for the side split, mirroring the CORRECT
+    `analytics_engine.py:399/417` contract (DATA_CONTRACTS.md:48): a row is
+    a SELL iff `str(side).upper() == "SELL"`, a BUY iff `== "BUY"`. The
+    `quantity` column is treated ONLY as a magnitude (`.abs()`) and is
+    NEVER the side oracle. This closes engine F1/F2: a broker export that
+    stores a SELL with a POSITIVE `quantity` is now classified by its
+    `side` string (as analytics already does), so a fully-closed campaign
+    no longer (a) silently never closes in `adaptive_risk_engine` nor
+    (b) phantom-opens in `get_open_positions_campaign`.
+
+    Returns `(buys, sells, buys_qty, sells_qty)` where `buys`/`sells` are
+    the row subsets and `*_qty` are non-negative magnitude sums. Pure: no
+    I/O, `group` is never mutated (the side mask and `.abs()` magnitude
+    are computed without writing back to the frame).
+
+    On the currently-correct conventions this is a provable NO-OP:
+      * negative-qty SELL: `side=="SELL"` selects exactly the same rows the
+        old `quantity < 0` mask did; `quantity.abs()` equals the old
+        `.abs()` magnitude → identical `sells`/`sells_qty`.
+      * normal positive-qty BUY: `side=="BUY"` selects the same rows the
+        old `quantity > 0` mask did; magnitude unchanged → identical
+        `buys`/`buys_qty`.
+    Behavior differs ONLY on the previously-mishandled positive-qty SELL
+    (the authorized closure-fix point).
+    """
+    side_u = group["side"].astype(str).str.upper().str.strip()
+    buys = group[side_u.eq("BUY")]
+    sells = group[side_u.eq("SELL")]
+    buys_qty = float(buys["quantity"].abs().sum())
+    sells_qty = float(sells["quantity"].abs().sum())
+    return buys, sells, buys_qty, sells_qty
+
 def get_open_positions_campaign(df):
     try:
         open_positions = []
@@ -480,11 +515,11 @@ def get_open_positions_campaign(df):
         if valid_df.empty: return {"ok": True, "error": None, "data": pd.DataFrame()}
         for cid, group in valid_df.groupby("campaign_id"):
             group = group.sort_values(["trade_date", "trade_id"])
-            net_qty = group["quantity"].sum()
+            buys, _c2_sells, _c2_buys_qty, _c2_sells_qty = split_side_first(group)
+            net_qty = _c2_buys_qty - _c2_sells_qty
             if net_qty <= 0.001: continue
             sym = group.iloc[0]["symbol"]
             realized_pnl = group[group["side"].str.upper() == "SELL"]["pnl_usd"].sum()
-            buys = group[group["quantity"] > 0]
             if buys.empty: continue
             
             first_date = buys["trade_date"].min()

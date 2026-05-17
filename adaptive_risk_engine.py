@@ -137,10 +137,14 @@ def compute_closed_campaigns(trades_df: pd.DataFrame) -> list[dict]:
     for cid, group in df.groupby("campaign_id"):
         if pd.isna(cid):
             continue
-        buys = group[group["quantity"] > 0]
-        sells = group[group["quantity"] < 0]
-        buys_qty = buys["quantity"].sum()
-        sells_qty = sells["quantity"].abs().sum()
+        # Phase-C2 F1: side-first SELL/BUY split (shared classifier in
+        # engine_core), mirroring analytics_engine's `side`-string contract
+        # (DATA_CONTRACTS.md:48). Quantity is magnitude-only, never the
+        # side oracle. Provable no-op on the currently-correct negative-qty
+        # SELL / positive-qty BUY convention (the LOCKED April fixture);
+        # behavior changes ONLY on the previously-mishandled positive-qty
+        # SELL export — the authorized closure-fix point.
+        buys, sells, buys_qty, sells_qty = ec.split_side_first(group)
         if buys_qty <= 0:
             continue
         if (buys_qty - sells_qty) / buys_qty > 0.01:
