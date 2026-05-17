@@ -36,3 +36,20 @@ Dashboard app-auth (Security S-12); NULL-pnl disclosure counter (Data F5); migra
 
 ## Parent recommendation
 **Tier-A in full** (pure polish, zero behavior risk, and A1 closes the single biggest production-trust gap — it is exactly "make the current code production-closed" with no additions). Then, of the CLOSURE-FIXes, the two most production-critical given CLAUDE.md hard constraints are **C1 (dev-PIN — real-money safety)** and **B1 (fallback-as-truth — decision honesty)**. B2/B3/C2 are strong but second-order. Founder chooses scope; no code until then.
+
+## Founder decision & Wave-2 execution (DELIVERED, Mark-gated)
+Founder chose **Tier-A + C1 + B1**. Executed in sequential Mark-gated waves; each independently parent-verified, full CI-equivalent re-verified **post-commit on the clean tree** (the Sprint-24 CI-miss lesson, now standard):
+
+| Wave | Commit | Result |
+|---|---|---|
+| **2A — Tier-A polish** | `b7fb1bf` | A1: byte-lock family now **commit-state-agnostic & actually enforcing** (committed in-repo baseline snapshot; RED-on-violation proven; April fixture now really guarded; secure_runner test repo-anchored). A2: dead `/help`+import removed (proven unreachable), gate-anchor + docstrings corrected. A3: `_ssock`/`calc_fig` flake root-fixed. Production files byte-identical. 1912 passed/0-fail. |
+| **2B — C1 dev-PIN** | `f95998e` | Shared fail-CLOSED `_require_active_dev_session` re-asserted at every privileged dev handler (git pull/IBKR/XML→Supabase+NAV/config/logs/on-demand) + `handle_document_upload`; unconfigured `DEV_PIN` now DENIES. Authorized-admin flow byte-identical. 1944 passed/0-fail. |
+| **2C — B1 fallback honesty** | `9d7a1e3` | Additive NAV source/freshness/fallback line in `build_summary_text` (covers PDF-degraded + on-demand); 0-closed price-fallback `⚠️ מחיר לא חי` surfaced (fabricated $0 no longer reads as a real "Cached" quote). Broker+fresh happy-path **byte-identical** (proven). Zero `analytics_engine.py`/KPI change. 1961 passed/0-fail. |
+
+**Suite:** 1898 → **1961 passed, 0 failed** (+63 named tests, none deleted/weakened). CI-equivalent (`--cov-fail-under=67`) green post-commit on the clean tree for every wave; coverage 72.23%. All carried locked paths byte-identical; Sprint-22/23/24 + Wave-2A baselines intact; no addition; WS-C/`-1`-sentinel/ALGO-string untouched.
+
+## Remaining backlog (NOT in the chosen scope — founder follow-up)
+- **C2 (Engine F1+F2) — top remaining production-closure item:** SELL/BUY classifier divergence (analytics `side`-string vs adaptive/engine_core `sign(quantity)`); on the DATA_CONTRACTS positive-qty SELL export, campaigns silently never close → wrong heat/streak/WR + drawdown-autocut can raise risk into a drawdown + phantom open positions. Latent money-affecting; fragile-area; provably byte-identical vs LOCKED April. **Recommend prioritising next.**
+- **B2** primary weekly/monthly summary length guard (DEC-020 defect class). **B3** Add-On `campaign_id` pending-state write-race. **Arch F1** triple-divergent NAV→target-risk resolution. Engine P2/P3 (dup-trade, partial-fill rounding, PF inf-vs-99).
+- **OUT (additions / deferred, unchanged):** dashboard app-auth; NULL-pnl disclosure counter; migration HTML-tag cleanup; WS-C / `-1`-sentinel.
+- **Pre-existing (not a regression):** `test_sprint17_wave2` `telegram_menus` `sys.modules`-pollution ordering artifact — reproduces on a clean tree via `git stash`, absent in full collection order (full suite 0-fail). Logged for a future test-isolation pass.
