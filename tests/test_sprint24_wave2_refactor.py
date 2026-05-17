@@ -72,8 +72,13 @@ class TestAnalyticsEngineAppendOnly:
     })
 
     def test_only_authorized_existing_lines_removed_or_modified(self):
-        """Post-Wave-2b: the ONLY removed/modified lines are the founder-
-        authorized B1+B3 set (A1/A3 stayed purely additive)."""
+        """Post-Wave-2b: any removed/modified analytics_engine.py line is in
+        the founder-authorized B1+B3 set (A1/A3 stayed purely additive).
+        Commit-state-AGNOSTIC: once the change is committed (CI checks out
+        the committed state) `git diff` is empty → vacuously satisfied; on a
+        dirty tree any removal must still be authorized. That B1/B3 ARE
+        present is proven commit-agnostically by
+        test_b1_b3_helpers_introduced_and_provable (source inspection)."""
         removed = {ln[1:].strip() for ln in self._diff().splitlines()
                    if ln.startswith("-") and not ln.startswith("---")
                    and ln[1:].strip()}
@@ -81,9 +86,6 @@ class TestAnalyticsEngineAppendOnly:
         assert unexpected == set(), (
             "analytics_engine.py removed a line outside the founder-"
             f"authorized B1/B3 set: {sorted(unexpected)}")
-        assert removed == self._B1B3_REMOVED, (
-            "expected EXACTLY the B1/B3 removals — missing: "
-            f"{sorted(self._B1B3_REMOVED - removed)}")
 
     def test_every_added_line_is_comment_or_authorized_b1b3(self):
         """Post-Wave-2b: every added line is either an A1/A3 `#` comment
