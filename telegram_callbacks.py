@@ -303,7 +303,39 @@ def handle_queries(call):
             ts_str  = datetime.now().strftime("%Y-%m-%d %H:%M")
             note    = f"Add-On אושר: כניסה ${entry} | סטופ ${stop} | כמות {qty} ({ts_str})"
             try:
-                cid = repo.get_open_campaign_for_symbol(supabase, sym)
+                # Phase B3 — guard the Add-On Supabase write against a
+                # plan→confirm campaign re-resolution race. The /addon plan
+                # persisted the campaign_id of the exact open-position row the
+                # user reviewed (telegram_bot.py addon_pending state). Three
+                # cases:
+                #   (2a) stored cid present: re-resolve to detect the race.
+                #        resolved == planned  -> proceed exactly as pre-B3.
+                #        resolved != planned  -> HARDENED: refuse, zero write.
+                #   (2c) stored cid absent/None (legacy/older in-flight
+                #        pending): fall back to re-resolution and proceed
+                #        exactly as pre-B3 (byte-identical legacy path).
+                planned_cid = pending.get("campaign_id")
+                resolved_cid = repo.get_open_campaign_for_symbol(supabase, sym)
+                if planned_cid is not None:
+                    if resolved_cid != planned_cid:
+                        # HARDENED race refusal: the open position for this
+                        # symbol changed since the user planned the add-on.
+                        # No Supabase write of any kind; clear pending exactly
+                        # as the existing cancel/decline path does.
+                        if chat_id in user_state:
+                            del user_state[chat_id]
+                        bot.send_message(
+                            chat_id,
+                            f"{RTL}❌ *ביטול: הפוזיציה השתנתה — {sym}*\n"
+                            f"{RTL}הפוזיציה הפתוחה עבור הסמל השתנתה מאז שתכננת את החיזוק.\n"
+                            f"{RTL}הרץ ‎/addon‎ מחדש.",
+                            reply_markup=get_main_menu(),
+                            parse_mode="Markdown",
+                        )
+                        return
+                    cid = planned_cid
+                else:
+                    cid = resolved_cid
                 if cid:
                     repo.update_management_notes(supabase, cid, note)
                     # Mark addon fields (requires migration 001_addon_phase2.sql)

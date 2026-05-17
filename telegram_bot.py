@@ -958,14 +958,26 @@ def _handle_addon_command(chat_id: int, text: str):
         try: bot.delete_message(chat_id, loading.message_id)
         except: pass
 
-        # Store plan for confirmation step
+        # Store plan for confirmation step.
+        # Phase B3: persist the planned campaign_id — the campaign_id of the
+        # exact open-position row this /addon was planned against (same `row`
+        # used above for entry/stop/qty). At confirm we verify the open
+        # campaign for the symbol has not changed since the plan, so the
+        # Add-On write can never silently land on a different campaign's
+        # Supabase rows than the one the user reviewed. If for some reason the
+        # planned row has no resolvable campaign_id, store None so confirm
+        # falls back to the legacy (pre-B3) re-resolution behavior.
+        _planned_cid = row.get("campaign_id")
+        if pd.isna(_planned_cid):
+            _planned_cid = None
         user_state[chat_id] = {
-            "action":   "addon_pending",
-            "symbol":   symbol,
-            "entry":    add_entry,
-            "stop":     add_stop,
-            "qty":      plan.get("proposed_qty", qty_arg),
-            "add_type": type_arg,
+            "action":      "addon_pending",
+            "symbol":      symbol,
+            "entry":       add_entry,
+            "stop":        add_stop,
+            "qty":         plan.get("proposed_qty", qty_arg),
+            "add_type":    type_arg,
+            "campaign_id": _planned_cid,
         }
 
         markup = telebot.types.InlineKeyboardMarkup(row_width=2)
