@@ -279,15 +279,34 @@ class TestWSAAdminGate:
                                 "telegram_bot.py"), encoding="utf-8").read()
         # exactly one additive handler branch
         assert src.count('if text == "🔬 בדיקת נתוני תקופה (Probe)":') == 1
-        # placed AFTER the health handler (same dev-menu region, behind the
-        # existing dev_pin gate — gate code itself unchanged)
+        # placed AFTER the health handler (same dev-menu region).
         i_health = src.index('if text == "🏥 בריאות מערכת":')
         i_probe = src.index('if text == "🔬 בדיקת נתוני תקופה (Probe)":')
-        i_gate = src.index("dev_pin_is_configured() and not "
-                           "dev_pin_session_active(chat_id)")
+        # Sprint-25 C1 (Security S-1/S-2/S-3) UPDATED the dev-PIN gate from
+        # the OLD single fail-OPEN expression
+        # `dev_pin_is_configured() and not dev_pin_session_active(chat_id)`
+        # (which this test previously asserted verbatim) to a fail-CLOSED
+        # form: an unconfigured DEV_PIN now DENIES the menu, and EVERY
+        # privileged dev handler re-asserts the session via the shared
+        # `_require_active_dev_session` guard. The old insecure substring is
+        # intentionally gone; assert the corrected, stronger contract.
+        i_gate = src.index("dev_pin_is_configured")
         assert i_gate < i_health < i_probe
-        # the existing gate is reused verbatim, not duplicated/weakened
+        # The menu-open gate is now fail-CLOSED on an unconfigured PIN.
+        assert "if not dev_pin_is_configured():" in src
+        # The shared privileged-action guard exists and is invoked for the
+        # probe handler (no `text ==`-only dispatch without a session).
+        assert src.count("def _require_active_dev_session") == 1
+        guard_uses = src.count("_require_active_dev_session(chat_id)")
+        assert guard_uses >= 9, (
+            f"expected the C1 guard at every privileged dev handler, "
+            f"found {guard_uses} call sites")
+        probe_block = src[i_probe:i_probe + 200]
+        assert "_require_active_dev_session(chat_id)" in probe_block, (
+            "the Probe handler must re-assert an active dev-PIN session")
+        # the gate helpers are still imported, never redefined/weakened here
         assert src.count("def dev_pin_is_configured") == 0  # imported, not redef
+        assert src.count("def dev_pin_session_active") == 0  # imported, not redef
 
 
 # ── WS-B: disclosure iff unlinked>0 + verbatim wording (items 7,12) ─────────

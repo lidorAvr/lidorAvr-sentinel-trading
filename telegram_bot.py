@@ -152,10 +152,70 @@ def _send_probe_chunks(chat_id, text):
     return last
 
 
+def _require_active_dev_session(chat_id) -> bool:
+    """Sprint-25 C1 (Security S-1/S-2/S-3) — fail-CLOSED privileged-action gate.
+
+    The dev menu is a *persistent* ReplyKeyboardMarkup of literal Hebrew
+    strings. Before C1 the ONLY dev-PIN check was on the `🛠️ מפתח`
+    menu-OPEN button (the gate at telegram_bot.py — the
+    `dev_pin_is_configured()`/`dev_pin_session_active(chat_id)` check).
+    Every privileged dev handler then dispatched purely on `text ==
+    "<button>"` with NO session re-check, so the admin could type/tap a
+    button (or use a still-visible keyboard from an EXPIRED session) and
+    reach `git pull` (subprocess), IBKR sync, the XML upload→Supabase
+    insert + NAV overwrite, config/log dump, or on-demand reports with
+    NO active 30-minute PIN session (S-1). With `DEV_PIN` unset,
+    `dev_pin_is_configured()` is False and the old menu-open gate
+    short-circuited OPEN (S-2, fail-open); the XML write path inherited
+    this (S-3).
+
+    This shared guard, called at the TOP of every privileged dev handler,
+    re-asserts an active PIN session and is **fail-CLOSED**: an
+    unconfigured (empty/unset) `DEV_PIN` DENIES every privileged action.
+    It performs the action ONLY when a valid, non-expired session exists.
+    On refusal it replies in the existing Hebrew refusal style and
+    returns False — the caller must `return` without performing the
+    action. It does NOT weaken the constant-time PIN compare or the
+    session expiry (telegram_devops); it only ENFORCES them at the
+    privileged call sites. It does NOT change the outer admin (chat-id)
+    gate in telegram_bot_secure_runner.py, which stays the outer check.
+    """
+    if not dev_pin_is_configured():
+        # S-2: an unconfigured dev-PIN must DENY (never open) — production
+        # with no DEV_PIN is now safe-by-default.
+        bot.send_message(
+            chat_id,
+            f"{RTL}⛔ *גישת מפתח חסומה — DEV_PIN לא מוגדר*\n"
+            f"{RTL}פעולות מפתח מושבתות עד שמוגדר PIN.",
+            reply_markup=get_main_menu(), parse_mode="Markdown",
+        )
+        return False
+    if not dev_pin_session_active(chat_id):
+        # S-1/S-3: no active (or expired) PIN session — refuse and route
+        # back to PIN entry, mirroring the menu-open gate's behaviour.
+        user_state[chat_id] = {"action": "awaiting_dev_pin"}
+        bot.send_message(
+            chat_id,
+            f"{RTL}🔐 *פעולת מפתח דורשת PIN פעיל*\n"
+            f"{RTL}הפגישה אינה פעילה או פגה. הזן את ה-PIN:",
+            parse_mode="Markdown",
+        )
+        return False
+    return True
+
+
 @bot.message_handler(content_types=['document'])
 def handle_document_upload(message):
     chat_id = message.chat.id
     if user_state.get(chat_id, {}).get('action') != 'awaiting_ibkr_xml':
+        return
+    # Sprint-25 C1 (Security S-3): the XML upload writes sentinel_config.json
+    # NAV + inserts trades into Supabase. Re-assert an active dev-PIN session
+    # at the actual write entry (defence-in-depth: even though arming
+    # `awaiting_ibkr_xml` now requires the gated XML handler, a stale/expired
+    # session must not be able to complete a real-money NAV/Supabase write).
+    if not _require_active_dev_session(chat_id):
+        del user_state[chat_id]
         return
     del user_state[chat_id]
     _process_uploaded_ibkr_xml(chat_id, message)
@@ -239,7 +299,20 @@ def handle_all_messages(message):
         return
 
     if text == "🛠️ מפתח":
-        if dev_pin_is_configured() and not dev_pin_session_active(chat_id):
+        if not dev_pin_is_configured():
+            # Sprint-25 C1 (Security S-2) — fail-CLOSED: an unconfigured
+            # (unset/empty) DEV_PIN must DENY the dev menu, never open it.
+            # Before C1 this branch fell through to `else` and opened the
+            # menu with ZERO PIN. CI sets DEV_PIN=0000 so configured
+            # paths/tests are unaffected; production with no DEV_PIN is
+            # now safe-by-default.
+            bot.send_message(
+                chat_id,
+                f"{RTL}⛔ *תפריט מפתח חסום — DEV_PIN לא מוגדר*\n"
+                f"{RTL}פעולות מפתח מושבתות עד שמוגדר PIN.",
+                reply_markup=get_main_menu(), parse_mode="Markdown",
+            )
+        elif not dev_pin_session_active(chat_id):
             user_state[chat_id] = {"action": "awaiting_dev_pin"}
             bot.send_message(chat_id, f"{RTL}🔐 *תפריט מפתח — דרוש PIN*\nהזן את ה-PIN:", parse_mode="Markdown")
         else:
@@ -249,6 +322,8 @@ def handle_all_messages(message):
     # ── Developer menu handlers ────────────────────────────────────────────────
 
     if text == "📡 IBKR Sync ידני":
+        if not _require_active_dev_session(chat_id):
+            return
         allowed, reason, state_dict = _dev_sync_check()
         if not allowed:
             bot.send_message(chat_id, f"{RTL}⛔ *Sync נחסם:*\n{RTL}{reason}",
@@ -266,6 +341,8 @@ def handle_all_messages(message):
         return
 
     if text == "📤 העלה דוח XML":
+        if not _require_active_dev_session(chat_id):
+            return
         user_state[chat_id] = {'action': 'awaiting_ibkr_xml'}
         bot.send_message(
             chat_id,
@@ -277,6 +354,8 @@ def handle_all_messages(message):
         return
 
     if text == "📊 תוצאת Sync אחרון":
+        if not _require_active_dev_session(chat_id):
+            return
         try:
             if not os.path.exists(MANUAL_RESULT_FILE):
                 bot.send_message(chat_id, f"{RTL}⚪ אין תוצאת סנכרון ידני שמורה.",
@@ -303,6 +382,8 @@ def handle_all_messages(message):
         return
 
     if text == "📋 לוגים":
+        if not _require_active_dev_session(chat_id):
+            return
         # Inline keyboard to choose service
         kb = types.InlineKeyboardMarkup(row_width=1)
         for name in _DEV_LOG_FILES:
@@ -312,6 +393,8 @@ def handle_all_messages(message):
         return
 
     if text == "🔄 Git Pull + Deploy":
+        if not _require_active_dev_session(chat_id):
+            return
         bot.send_message(chat_id, f"{RTL}🔄 *Git Pull — מריץ...*",
                          reply_markup=get_developer_menu(), parse_mode="Markdown")
         _bot_log(f"Git pull triggered by {chat_id}")
@@ -364,6 +447,8 @@ def handle_all_messages(message):
         return
 
     if text == "⚙️ הצג Config":
+        if not _require_active_dev_session(chat_id):
+            return
         try:
             cfg_paths = ["/app/sentinel_config.json", "sentinel_config.json"]
             cfg = None
@@ -394,6 +479,8 @@ def handle_all_messages(message):
         return
 
     if text == "🏥 בריאות מערכת":
+        if not _require_active_dev_session(chat_id):
+            return
         return bot.send_message(chat_id, _build_health_report(),
                                 reply_markup=get_developer_menu())
 
@@ -411,6 +498,8 @@ def handle_all_messages(message):
     # not a gate; unchanged, not bypassed). Mirrors the synchronous
     # `🏥 בריאות מערכת` handler exactly.
     if text == "🔬 בדיקת נתוני תקופה (Probe)":
+        if not _require_active_dev_session(chat_id):
+            return
         try:
             import period_data_probe
             txt = period_data_probe.build_probe_report()
@@ -427,6 +516,8 @@ def handle_all_messages(message):
     # never touch the scheduler period-dedup (report_on_demand is read-only
     # w.r.t. that state). Admin-gated by this dev-menu/PIN path already.
     if text in ("📈 דוח שבועי עכשיו", "📆 דוח חודשי עכשיו"):
+        if not _require_active_dev_session(chat_id):
+            return
         period_type = "weekly" if text == "📈 דוח שבועי עכשיו" else "monthly"
         kind_he = "שבועי" if period_type == "weekly" else "חודשי"
         bot.send_message(
