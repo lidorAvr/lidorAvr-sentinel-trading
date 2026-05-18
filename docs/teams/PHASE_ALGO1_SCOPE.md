@@ -1,0 +1,25 @@
+# Phase ALGO-1 — SCOPE / איפיון (R-ALGO-2 + R-ALGO-3)
+
+**Status:** SCOPE — founder-approved scope (R-ALGO-2 + R-ALGO-3). Governed, Mark-gated, parent-verified, CI-equivalent post-commit on the clean tree. DOC-anchored here; code follows in a build pass (do NOT commit until parent verifies). Live baseline: HEAD `168aaa2`, suite **2088 passed / 0 / cov 72.02%**. Source: `docs/teams/ALGO_INVESTIGATION_1.md`.
+
+## Binding governance (unchanged)
+NO byte-locked file modified: `analytics_engine.py`, `engine_core.py`, `period_data_probe.py`, LOCKED `tests/test_real_data_april_regression.py`, all `tests/_byte_lock_baselines/*`. The `engine_core.py:1205 get_sample_size_context` helper is **CALLED, never modified** — `engine_core.py` must stay git-diff EMPTY. LOCKED April (8/+$180.49/WR.375/PF2.6262/excl2) + Sprint-22/23/24 + C1/C2/B3/Arch-F1/NAV-Unify/Sprint-27 W1/W3 invariants intact. ALGO stays observe-only (this touches a DISPLAY/recon read + a label — no ALGO exit management, DEC-20260511-001 #8 holds). Build → parent independent verify → exact CI command post-commit clean tree → push.
+
+## W-A2 — R-ALGO-2: fix the silent recon money-truth bug (CLOSURE-FIX, founder-approved)
+**Defect (confirmed, investigation #1):** `telegram_portfolio.py:473` reads `c.get("net_pnl", 0)` from `are.compute_closed_campaigns(df)`, but that function emits the realized-PnL key as **`total_pnl_usd`** (`adaptive_risk_engine.py:205`), never `net_pnl`. ⇒ חדר-מצב's `_db_net_pnl` is **always `0.0`** — silently drops ALL realized closed-campaign PnL, so the חדר-מצב reconciliation number (~$190.29) diverges from the dashboard's correct one (~$510.51, `dashboard.py:424` `camp_df['pnl_usd'].sum()`).
+**Fix:** read the CORRECT key the producer actually emits (verify the exact key name + semantics in `compute_closed_campaigns`'s return at `adaptive_risk_engine.py:~205` before editing — must be the realized closed-campaign PnL, the same quantity the dashboard sums). `telegram_portfolio.py`/`adaptive_risk_engine.py` are NOT byte-locked. **Authorized behavior change:** the חדר-מצב recon number moves from the wrong (silently-0-omitting) value to the correct value that **matches the dashboard**. Nothing else in חדר-מצב changes.
+**Proof obligation:** a named parity test — for a representative closed-campaign fixture, חדר-מצב `_db_net_pnl` now **equals** the dashboard's realized oracle (`camp_df['pnl_usd'].sum()` equivalent), and the pre-fix `net_pnl`-key read was provably always `0.0`. LOCKED April + Sprint-22/23/24 byte-identical (this path is not on the locked compute_period_analytics fixture). No other recon/portfolio number changes.
+
+## W-A3 — R-ALGO-3: L50 sample-size honesty (HONESTY-FIX / B1 class)
+**Defect (confirmed):** `telegram_formatters.py:204` hardcodes `L50(50)` and `:435` shows no N even when the real sample is <50 (e.g. 9 campaigns shown as "L50"). The honest helper `engine_core.py:1205 get_sample_size_context` exists but is NOT wired in.
+**Fix:** wire the EXISTING `get_sample_size_context` (do NOT modify engine_core.py — call it only) so the label honestly reflects the real sample: <50 ⇒ honest disclosure ("L50 לא זמין — מדגם קטן מדי" / "מדגם נוכחי: N/50", reuse the helper's wording/contract), ≥50 ⇒ **byte-identical** "L50" as today. Presentation-only, ZERO math/KPI change. `telegram_formatters.py` NOT byte-locked.
+**Proof obligation:** named test — sample ≥50 ⇒ output byte-identical to the pre-fix "L50" literal; sample <50 ⇒ the honest sample disclosure present, never a bare misleading "L50"; `engine_core.py` git-diff EMPTY (helper only called).
+
+## Separate acceptance tests
+New `tests/test_phase_algo1_recon_and_sample.py`: (1) R-ALGO-2 parity — חדר-מצב `_db_net_pnl` == dashboard realized oracle on a fixture; pre-fix key always-0 demonstrated; (2) R-ALGO-3 — ≥50 byte-identical, <50 honest disclosure; (3) LOCKED April byte-identical post-fix; (4) ALGO segregation / observe-only unaffected. No existing test deleted/weakened (Mark 6.1).
+
+## Hard constraints (auto-FAIL on breach)
+Byte-locked files + ALL `_byte_lock_baselines/*` + migrations + `docker-compose.yml` + `telegram_bot_secure_runner.py` git-diff EMPTY. `engine_core.py`/`analytics_engine.py`/`period_data_probe.py` 0-diff. Only the two authorized behavior changes (חדר-מצב recon corrected; L50 honest <50) — everything else byte-identical incl. broker-fresh report numbers. No addition, no schema/migration. ALGO observe-only intact. Full suite `python -m pytest -q` ≥ **2088**, 0 failed (new tests only ADD). Then the EXACT CI command (`pytest --tb=short -q --cov=engine_core --cov=adaptive_risk_engine --cov=analytics_engine --cov=addon_risk_engine --cov-report=term --cov-fail-under=67`, CI env) post-commit on the clean tree → 0 failed, cov ≥67.
+
+## Done = deploy-ready
+W-A2 + W-A3 landed, parent-verified, full CI-equivalent post-commit clean-tree 0-failed, LOCKED/Sprint-22/23/24 byte-identical, no byte-locked file touched, `docs/teams/PHASE_ALGO1_IMPL.md` written. Then return to the founder with the deployable result (the recon number will visibly change in חדר-מצב — that is the intended correction).
