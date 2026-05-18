@@ -1,0 +1,4 @@
+Symbol,Direction,Volume,Entry Triggering Candle Open Time,Entry Candle Open Time,Entry Candle Open Time (unix),Entry Price,Trade cost,Exit Triggering Candle Open Time,Exit Candle Open Time,Exit Candle Open Time (unix),Exit Price,Closed?,Entry Reason,Exit Reason,Length (candles),Return %,Max Gain vs Entry %,Max Drawdown %,Max Gain vs Entry After Candles,Max Drawdown vs Entry %,Max Drawdown vs Entry After Candles
+TSLA,long,1,02 Jan 2024 18:30 IST,02 Jan 2024 20:30 IST,1704220200,200.00,0%,04 Jan 2024 18:30 IST,04 Jan 2024 20:30 IST,1704393000,224.00,yes,Romeo,take_profit,10,12.00,13.0,-2.0,6,-1.5,2
+TSLA,long,1,08 Jan 2024 18:30 IST,08 Jan 2024 20:30 IST,1704739800,200.00,0%,09 Jan 2024 18:30 IST,09 Jan 2024 20:30 IST,1704826200,216.00,yes,Juliett,Zulu,7,8.00,9.0,-1.0,4,-0.5,1
+TSLA,long,1,15 Jan 2024 18:30 IST,15 Jan 2024 20:30 IST,1705344600,200.00,0%,18 Jan 2024 18:30 IST,18 Jan 2024 20:30 IST,1705603800,250.00,yes,Foxtrot,take_profit,12,25.00,27.0,-3.0,8,-2.0,3

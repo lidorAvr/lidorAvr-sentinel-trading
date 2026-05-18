@@ -1,6 +1,13 @@
 .env
 last_sync_date.txt
 sentinel_config.json
+
+# ALGO backtest exports — strategy IP, never committed (W2 doctrine); real
+# CSVs live here git-ignored, only the scaffold is tracked.
+data/algo_backtests/*
+!data/algo_backtests/.gitkeep
+!data/algo_backtests/README.md
+
 risk_recommendations.json
 risk_journal.json
 # Sprint 14 (RC-2): anti-spam dedup memory is runtime state, not code.

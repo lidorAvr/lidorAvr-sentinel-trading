@@ -14,6 +14,7 @@ import adaptive_risk_engine as are
 import account_state as acc_state  # Sprint-27 W1: canonical NAV single-source (closes the dashboard fallback-as-truth gap; mirrors Telegram B1)
 from dashboard_nav import nav_sidebar_render as _nav_sidebar_render  # Sprint-27 W1: pure B1-style sidebar NAV honesty helper
 import telegram_formatters as tf  # Sprint-15: import-pure helpers (no telebot/supabase/engine import inside tf)
+import algo_backtest_store as abs_store  # Phase ALGO-BT-1 W-BT4: pure read-only BACKTEST stats (no network/Supabase/write/live-ALGO coupling)
 import state_io
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -1129,6 +1130,54 @@ else:
             fig_bar = px.bar(setup_stats, x='setup_type', y='Net_R', color='Net_R', color_continuous_scale=CMAP_HEATMAP, title="Net R by Strategy")
             fig_bar.update_layout(plot_bgcolor='#0e1117', paper_bgcolor='#0e1117', font=dict(color='white'))
             st.plotly_chart(fig_bar, use_container_width=True)
+
+        # ── Phase ALGO-BT-1 W-BT4 — ADDITIVE read-only BACKTEST panel ────────
+        # Purely additive: renders the externally-managed ALGO bot's
+        # TrendSpider backtest edge-shape stats from the git-ignored in-repo
+        # dir via the pure read-only `algo_backtest_store`. It alters /
+        # reorders / recomputes NO existing dashboard section or number, reads
+        # NO Supabase and NO live-ALGO state, degrades to the honest
+        # empty-state when the dir is empty, and never raises (boundary-safe
+        # loader). Observe-only doctrine (DEC-20260511-001 #8): zero alerts /
+        # zero directives — display-only BACKTEST data, not live, not a
+        # forward promise.
+        st.markdown("---")
+        st.subheader("📊 ALGO — בסיס בקטסט (פיקוח בלבד)")
+        _bt_loaded = abs_store.load_algo_backtests()
+        _bt_stats = abs_store.compute_algo_backtest_stats(_bt_loaded)
+        st.caption(f"⚠️ {abs_store.BACKTEST_LABEL} · {abs_store.OBSERVE_ONLY_LABEL}")
+        _bt_strats = _bt_stats.get("strategies", {})
+        if not _bt_strats:
+            st.info(abs_store.EMPTY_STATE_TEXT)
+        else:
+            _bt_rows = []
+            for _sid in sorted(_bt_strats.keys()):
+                _s = _bt_strats[_sid]
+                _mix = _s["exit_reason_mix"]
+                _bt_rows.append({
+                    "סמל": _s["symbol"],
+                    "אסטרטגיה": _s["strategy_id"],
+                    "N": _s["n"],
+                    "WR %": round(_s["win_rate_pct"], 1),
+                    "ממוצע %": round(_s["avg_return_pct"], 2),
+                    "חציון %": round(_s["median_return_pct"], 2),
+                    "סכום %": round(_s["sum_return_pct"], 2),
+                    "PF": _s["profit_factor_label"],
+                    "תוחלת %": round(_s["expectancy_pct"], 2),
+                    "Max DD %": (round(_s["max_trade_drawdown_pct"], 2)
+                                 if _s["max_trade_drawdown_pct"] is not None else None),
+                    "אורך ממוצע": (round(_s["avg_length_candles"], 1)
+                                   if _s["avg_length_candles"] is not None else None),
+                    "TP": _mix["take_profit"], "SL": _mix["stop_loss"],
+                    "time": _mix["time_stop"], "signal": _mix["signal"],
+                    "רצף W": _s["longest_win_streak"],
+                    "רצף L": _s["longest_loss_streak"],
+                    "טווח": f"{_s['date_span']['first']}→{_s['date_span']['last']}",
+                })
+            st.dataframe(pd.DataFrame(_bt_rows), use_container_width=True, hide_index=True)
+            st.caption(
+                "מקור: ייצוא TrendSpider Strategy Tester (Volume=1, Trade cost=0%) — "
+                "מדדי edge לכל טרייד, לא P&L חשבון, לא נתון חי, לא הבטחה קדימה.")
 
     with tabs[3]:
         st.subheader("Execution Archive (Visual Journal)")
