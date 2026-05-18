@@ -205,7 +205,21 @@ def compute_closed_campaigns(trades_df: pd.DataFrame) -> list[dict]:
             if init_sl > 0 and init_sl < base_price:
                 original_campaign_risk = round((base_price - init_sl) * base_qty, 2)
             else:
-                original_campaign_risk = 0.0
+                # Phase ALGO-3 T-B-1: initial_stop yielded no valid basis
+                # (absent / <=0 / >=base_price). Fall back to the documented
+                # populated `stop_loss` field (DATA_CONTRACTS.md:25) under the
+                # IDENTICAL validity guard so a garbage/invalid stop_loss can
+                # never fabricate a fake risk basis. Precedence-preserving:
+                # never reached when initial_stop is valid => the 9
+                # currently-countable manual campaigns + LOCKED April are
+                # byte-identical. The ALGO -1 sentinel fails the guard (not
+                # >0) and ALGO is bucket/setup-filtered regardless.
+                sl_raw = first_day.iloc[0].get("stop_loss", 0)
+                sl = float(sl_raw) if sl_raw and not pd.isna(sl_raw) else 0.0
+                if sl > 0 and sl < base_price:
+                    original_campaign_risk = round((base_price - sl) * base_qty, 2)
+                else:
+                    original_campaign_risk = 0.0
         except Exception:
             original_campaign_risk = 0.0
 
