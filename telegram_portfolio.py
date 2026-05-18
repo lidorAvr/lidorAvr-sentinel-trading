@@ -470,7 +470,15 @@ def handle_portfolio_room(chat_id):
             _total_deposited = float(account_settings.get("total_deposited", 7500.0))
             _risk_pct_in = float(account_settings.get("risk_pct_input", 0.5))
             _closed_for_rec = are.compute_closed_campaigns(df) if not df.empty else []
-            _db_net_pnl = sum(float(c.get("net_pnl", 0) or 0) for c in _closed_for_rec)
+            # R-ALGO-2 (Phase ALGO-1 W-A2 / CLOSURE-FIX): compute_closed_campaigns
+            # emits realized closed-campaign PnL under "total_pnl_usd"
+            # (adaptive_risk_engine.py:205) — it NEVER emits "net_pnl". The prior
+            # c.get("net_pnl", 0) matched no key ⇒ _db_net_pnl was silently
+            # always 0.0, dropping ALL realized PnL and diverging from the
+            # dashboard oracle camp_df['pnl_usd'].sum() (dashboard.py:424).
+            # Reading the correct producer key makes חדר-מצב's recon realized-PnL
+            # term equal the dashboard's realized quantity. One-site key fix only.
+            _db_net_pnl = sum(float(c.get("total_pnl_usd", 0) or 0) for c in _closed_for_rec)
             _db_equity_expected = _total_deposited + _db_net_pnl + total_open_pnl
             _recon_gap = acc_size - _db_equity_expected
             _recon = tf.classify_broker_reconciliation(

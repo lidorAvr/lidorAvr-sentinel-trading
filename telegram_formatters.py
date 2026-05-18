@@ -40,6 +40,52 @@ def fmt_data_quality_badge(primary: str, risk_badge: str, label: str) -> str:
     return " ".join(parts)
 
 
+# ── R-ALGO-3 (Phase ALGO-1 W-A3 / HONESTY-FIX, presentation-only) ──────────
+# The L50 window brands its score "L50(50)" / "L50" even when the real sample
+# is <50 (e.g. 9 closed campaigns ⇒ "L50(50)" — false confidence feeding a
+# risk-raise read-out). The honest helper engine_core.get_sample_size_context
+# ALREADY exists (engine_core.py:1205) and is reused here VERBATIM (CALLED,
+# never modified — engine_core.py stays 0-diff). CLAUDE.md #1.
+_L50_TARGET_SAMPLE = 50  # the L50 window's nominal size (adaptive_risk_engine [:50])
+
+
+def _l50_true_sample(risk_rec: dict) -> int:
+    """The TRUE L50 sample size actually used (closed campaigns in the L50
+    window), not the hardcoded literal 50. Mirrors the same source the Win-Rate
+    sub-lines already read (l50_stats['n']), falling back to n_used_50/n_trades.
+    """
+    try:
+        l50 = risk_rec.get("l50_stats")
+        if l50 and l50.get("n") is not None:
+            return int(l50["n"])
+    except Exception:
+        pass
+    try:
+        return int(risk_rec.get("n_used_50", risk_rec.get("n_trades", 0)) or 0)
+    except Exception:
+        return 0
+
+
+def _l50_sample_honesty_line(n_l50: int) -> str | None:
+    """When the real L50 sample is <50, return an honest disclosure line using
+    engine_core.get_sample_size_context's OWN wording/contract (no invented
+    UX). When >=50, return None so the existing "L50(50)"/"L50" literal stays
+    BYTE-IDENTICAL (zero math/KPI change). Lazy import keeps this module
+    dependency-light and avoids any import cycle.
+    """
+    if n_l50 >= _L50_TARGET_SAMPLE:
+        return None
+    try:
+        import engine_core as _ec
+        ctx = _ec.get_sample_size_context(n_l50)
+        label = ctx.get("label", "")
+    except Exception:
+        label = ""
+    suffix = f" — {label}" if label else ""
+    return (f"{RTL}  ⚠️ L50 מבוסס מדגם חלקי — "
+            f"מדגם נוכחי: {n_l50}/{_L50_TARGET_SAMPLE}{suffix}")
+
+
 def fmt_algo_risk_note(symbol: str, open_r: float, exposure_pct: float,
                        reason: str, risk_basis: str = "Target",
                        risk_vis: int = 40) -> str:
@@ -202,6 +248,11 @@ def fmt_adaptive_risk_block(risk_rec: dict, settle_info: dict | None = None) -> 
     l50_sc = risk_rec.get("l50_score")
     if s9_sc is not None:
         lines.append(f"{RTL}  ▸ ציון (0-100) לפי טווח: S9(9)=`{s9_sc:.0f}` | M21(21)=`{m21_sc:.0f}` | L50(50)=`{l50_sc:.0f}`")
+        # R-ALGO-3 / W-A3: honest disclosure when the TRUE L50 sample is <50.
+        # >=50 ⇒ helper returns None ⇒ the line above is byte-identical.
+        _l50_honesty = _l50_sample_honesty_line(_l50_true_sample(risk_rec))
+        if _l50_honesty is not None:
+            lines.append(_l50_honesty)
 
     # Win rate per window
     s9_wr  = risk_rec.get("recent_10_wr", 0)  # backward-compat: mapped from S9
@@ -434,6 +485,12 @@ def fmt_heat_thermometer(risk_rec: dict, include_legend: bool = False) -> str:
             f"{RTL}  M21 `[{_score_to_bar(m21_sc, 5)}]` `{m21_sc:.0f}`",
             f"{RTL}  L50 `[{_score_to_bar(l50_sc, 5)}]` `{l50_sc:.0f}`",
         ]
+        # R-ALGO-3 / W-A3: this block previously showed NO N for L50. Append an
+        # honest disclosure when the TRUE L50 sample is <50; >=50 ⇒ helper
+        # returns None ⇒ the three score lines above stay byte-identical.
+        _l50_honesty = _l50_sample_honesty_line(_l50_true_sample(risk_rec))
+        if _l50_honesty is not None:
+            lines.append(_l50_honesty)
 
     s9_wr  = risk_rec.get("recent_10_wr", 0)
     l50_wr = risk_rec.get("all_50_wr", 0)
