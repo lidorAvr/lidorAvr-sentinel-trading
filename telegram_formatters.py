@@ -110,12 +110,20 @@ def _score_line_window_labels(risk_rec: dict) -> tuple:
     return _SCORE_WINDOW_NOMINALS
 
 
-def _l50_sample_honesty_line(n_l50: int) -> str | None:
+def _l50_sample_honesty_line(n_l50: int, stat_base: str | None = None) -> str | None:
     """When the real L50 sample is <50, return an honest disclosure line using
     engine_core.get_sample_size_context's OWN wording/contract (no invented
     UX). When >=50, return None so the existing "L50(50)"/"L50" literal stays
     BYTE-IDENTICAL (zero math/KPI change). Lazy import keeps this module
     dependency-light and avoids any import cycle.
+
+    Phase ALGO-2 T-A1/T-C2: `stat_base` is OPT-IN and defaults to None so the
+    line is BYTE-IDENTICAL for every existing caller. When the SEPARATE
+    longer-rolling manual base actually fed the windows
+    (`stat_base == "longer_manual_rolling"`) the line honestly names the true
+    base so the founder is never told "8-week window" when it is the long
+    base, nor vice-versa. The legacy report-window base ⇒ no extra clause
+    (byte-identical).
     """
     if n_l50 >= _L50_TARGET_SAMPLE:
         return None
@@ -126,7 +134,10 @@ def _l50_sample_honesty_line(n_l50: int) -> str | None:
     except Exception:
         label = ""
     suffix = f" — {label}" if label else ""
-    return (f"{RTL}  ⚠️ L50 מבוסס מדגם חלקי — "
+    base_clause = ""
+    if stat_base == "longer_manual_rolling":
+        base_clause = f"{RTL}  ℹ️ הבסיס: היסטוריית מסחר ידנית מתגלגלת (לא חלון הדיווח)\n"
+    return (f"{base_clause}{RTL}  ⚠️ L50 מבוסס מדגם חלקי — "
             f"מדגם נוכחי: {n_l50}/{_L50_TARGET_SAMPLE}{suffix}")
 
 
@@ -299,7 +310,8 @@ def fmt_adaptive_risk_block(risk_rec: dict, settle_info: dict | None = None) -> 
         lines.append(f"{RTL}  ▸ ציון (0-100) לפי טווח: S9({_wS9})=`{s9_sc:.0f}` | M21({_wM21})=`{m21_sc:.0f}` | L50({_wL50})=`{l50_sc:.0f}`")
         # R-ALGO-3 / W-A3: honest disclosure when the TRUE L50 sample is <50.
         # >=50 ⇒ helper returns None ⇒ the line above is byte-identical.
-        _l50_honesty = _l50_sample_honesty_line(_l50_true_sample(risk_rec))
+        _l50_honesty = _l50_sample_honesty_line(
+            _l50_true_sample(risk_rec), stat_base=risk_rec.get("stat_base"))
         if _l50_honesty is not None:
             lines.append(_l50_honesty)
 
@@ -537,7 +549,8 @@ def fmt_heat_thermometer(risk_rec: dict, include_legend: bool = False) -> str:
         # R-ALGO-3 / W-A3: this block previously showed NO N for L50. Append an
         # honest disclosure when the TRUE L50 sample is <50; >=50 ⇒ helper
         # returns None ⇒ the three score lines above stay byte-identical.
-        _l50_honesty = _l50_sample_honesty_line(_l50_true_sample(risk_rec))
+        _l50_honesty = _l50_sample_honesty_line(
+            _l50_true_sample(risk_rec), stat_base=risk_rec.get("stat_base"))
         if _l50_honesty is not None:
             lines.append(_l50_honesty)
 

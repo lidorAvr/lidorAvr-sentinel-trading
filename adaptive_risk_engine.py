@@ -27,6 +27,20 @@ RISK_LADDER = [0.25, 0.40, 0.60, 0.85, 1.15, 1.50, 2.00]  # uniform step cadence
 DRAWDOWN_TRIGGER_PCT  = -8.0   # 30-day PnL ≤ -8% of NAV → cut
 DRAWDOWN_CUT_TO_PCT   = 0.40   # nearest RISK_LADDER step below Jordan's 0.50 target
 DRAWDOWN_WINDOW_DAYS  = 30     # rolling window for the PnL aggregation
+
+# ── Phase ALGO-2 — risk-RAISE 4-gate doctrine constants (T-C1) ──────────────
+# Mark/founder doctrine (⟨memo⟩, ALGO_TEAM_CHARTER §3): a step-up may fire ONLY
+# on a CLEAN + SUFFICIENT + POSITIVE-EXPECTANCY + DRAWDOWN-CONTROLLED base.
+# These are *risk-narrowing* (they only ever BLOCK a raise, never enable one,
+# never weaken a cut). The gate is OPT-IN (compute_adaptive_risk's
+# `risk_raise_gate` kwarg defaults to None ⇒ every existing caller/test stays
+# behaviorally byte-identical; only the live report/monitor paths pass it).
+RISK_RAISE_MIN_MANUAL_SAMPLE = 20     # ⟨memo⟩ "at least 20 relevant trades, not 9"
+RISK_RAISE_MIN_EXPECTANCY_R  = 0.30   # ⟨memo⟩ "~0.30R expectancy"
+# Explicit INSUFFICIENT-DATA sentinel for an empty heat window (T-C1). Replaces
+# the silent `n==0 → 50.0` pretend-neutral ONLY when explicitly requested
+# (default keeps 50.0 byte-identical for every existing caller).
+HEAT_INSUFFICIENT_DATA = "insufficient_data"
 RECOMMENDATIONS_LOG_FILE = "risk_recommendations.json"
 RISK_JOURNAL_FILE = "risk_journal.json"
 SENTINEL_CONFIG_FILE = "sentinel_config.json"
@@ -314,7 +328,7 @@ def _window_stats(camps: list) -> dict:
             "payoff": payoff, "pf": pf, "loss_streak": loss_streak, "win_streak": win_streak}
 
 
-def _window_heat_score(stats: dict) -> float:
+def _window_heat_score(stats: dict, *, insufficient_signal: bool = False):
     """
     Map window stats to a 0–100 heat score.
 
@@ -323,9 +337,16 @@ def _window_heat_score(stats: dict) -> float:
       payoff     = +24 at Wizard threshold (≥3.0), graded down to -15 below 0.8
       profit_factor = +12 at PF ≥ 2.5, graded down to -15 below 1.0
       loss_streak = -10/-18 at 2/3+ consecutive losers (Minervini's "cut risk fast")
+
+    Phase ALGO-2 T-C1: `insufficient_signal` is OPT-IN and defaults to False so
+    EVERY existing caller/test is byte-identical (an empty window still yields
+    the neutral 50.0). When the risk-raise gate explicitly asks for it, an
+    empty window returns the HEAT_INSUFFICIENT_DATA sentinel instead of a
+    pretend-neutral 50.0 — so the gate can refuse to raise on no data rather
+    than read a fabricated "neutral" score (D2 fix).
     """
     if stats["n"] == 0:
-        return 50.0
+        return HEAT_INSUFFICIENT_DATA if insufficient_signal else 50.0
     score = stats["wr"] * 100
 
     # Payoff (avg_win / avg_loss). Mark targets ≥ 2.0; "wizards" run ≥ 3.0.
@@ -426,12 +447,103 @@ def _build_what_to_improve(heat_score: float, s9: dict, direction: str,
     return items[:4]
 
 
+# ── Phase ALGO-2 T-C1 — the founder/Mark 4-gate risk-RAISE evaluator ────────
+
+def _window_expectancy_r(camps: list) -> float | None:
+    """Per-trade Expectancy in R for a window of stat-countable manual closed
+    campaigns. R is normalised per-campaign by its OWN original risk
+    (`original_campaign_risk`) so a clean, comparable R distribution drives
+    Gate-3. Returns None when expectancy cannot be honestly computed (no
+    campaign carries a positive original risk) — None ⇒ Gate-3 FAILS
+    (no clean expectancy ⇒ no raise; "clean truth before aggressiveness").
+
+    READ-ONLY / PURE: no Supabase, no file, no mutation. Used ONLY by the
+    opt-in risk-raise gate; the heat math is untouched.
+    """
+    if not camps:
+        return None
+    r_vals = []
+    for c in camps:
+        risk = float(c.get("original_campaign_risk") or 0)
+        if risk <= 0:
+            continue
+        r_vals.append(float(c.get("total_pnl_usd") or 0) / risk)
+    if not r_vals:
+        return None
+    return sum(r_vals) / len(r_vals)
+
+
+def evaluate_risk_raise_gate(
+    *,
+    manual_sample_n: int,
+    expectancy_r: float | None,
+    recon_band: str | None,
+    drawdown_active: bool,
+    loss_streak: int,
+    insufficient_manual_sample: bool = False,
+) -> dict:
+    """The 4-gate (R-ALGO-1 / R-ALGO-6, ⟨memo⟩) — risk-RAISE path ONLY.
+
+    A step-up may fire ONLY if ALL FOUR gates pass:
+      G1 Clean data        — no Critical broker-reconciliation gap.
+      G2 Sufficient sample  — stat-countable MANUAL N ≥ doctrine floor (≥20);
+                              the T-B1 INSUFFICIENT-DATA state ⇒ fail.
+      G3 Positive expectancy — window Expectancy ≥ ~0.30R (None ⇒ fail).
+      G4 Drawdown in control — no active drawdown-cut / loss-streak ≥ 2.
+
+    Returns {"allow_raise": bool, "failed": [ids], "reason": he-string|""}.
+    Strictly risk-NARROWING: it can ONLY ever block a raise. It NEVER touches
+    the cut path, "down", "hold", the RISK_LADDER values, or update_risk_pct —
+    protection is never weakened. Pure: no I/O, no mutation, no message TYPE.
+    """
+    failed = []
+    reasons = []
+
+    # G1 — clean data (broker reconciliation). Reuse the existing classifier's
+    # band string ("Critical Data Gap" / "פער נתונים קריטי") — no new logic.
+    crit = {"Critical Data Gap", "פער נתונים קריטי"}
+    if recon_band is not None and str(recon_band) in crit:
+        failed.append("G1_recon")
+        reasons.append("שער 1 (נתונים נקיים) נכשל — פער נתונים קריטי מול הברוקר")
+
+    # G2 — sufficient stat-countable MANUAL sample (the T-B1 insufficient
+    # state fails outright; otherwise the doctrine floor must be met).
+    if insufficient_manual_sample or manual_sample_n < RISK_RAISE_MIN_MANUAL_SAMPLE:
+        failed.append("G2_sample")
+        reasons.append(
+            f"שער 2 (מדגם מספיק) נכשל — נדרשות ≥{RISK_RAISE_MIN_MANUAL_SAMPLE} "
+            f"עסקאות ידניות נספרות (יש {0 if insufficient_manual_sample else manual_sample_n})")
+
+    # G3 — positive expectancy (≥ ~0.30R). None ⇒ fail (no clean expectancy).
+    if expectancy_r is None or expectancy_r < RISK_RAISE_MIN_EXPECTANCY_R:
+        failed.append("G3_expectancy")
+        _shown = "לא ניתן לחשב" if expectancy_r is None else f"{expectancy_r:.2f}R"
+        reasons.append(
+            f"שער 3 (תוחלת חיובית) נכשל — נדרש ≥{RISK_RAISE_MIN_EXPECTANCY_R:.2f}R "
+            f"(תוחלת נוכחית: {_shown})")
+
+    # G4 — drawdown in control (no active cut, no live loss-streak ≥ 2).
+    if drawdown_active or loss_streak >= 2:
+        failed.append("G4_drawdown")
+        reasons.append("שער 4 (דרודאון בשליטה) נכשל — חיתוך/רצף הפסד פעיל")
+
+    allow = not failed
+    return {
+        "allow_raise": allow,
+        "failed": failed,
+        "reason": "" if allow else " · ".join(reasons),
+    }
+
+
 def compute_adaptive_risk(
     closed_campaigns: list,
     current_risk_pct: float,
     nav: float,
     open_r_list=None,
     open_positions=None,
+    *,
+    stat_base_campaigns: list | None = None,
+    risk_raise_gate: dict | None = None,
 ) -> dict:
     """
     Compute adaptive risk recommendation using multi-window scoring.
@@ -441,6 +553,21 @@ def compute_adaptive_risk(
     nav: current NAV in USD
     open_r_list: legacy list of open R floats (positive-only bonus for backward compat)
     open_positions: list of {"open_r": float, "is_algo": bool} — ALGO counted at 0.25x
+
+    Phase ALGO-2 (T-C2, OPT-IN, default None ⇒ every existing caller/test is
+    behaviorally byte-identical):
+    `stat_base_campaigns` — a SEPARATE, READ-ONLY, longer rolling base of
+        stat-countable MANUAL closed campaigns (newest-first). When supplied
+        AND it yields a non-empty disc set, S9/M21/L50 + Heat + the 4-gate
+        compute off THIS base instead of the 8-week report slab. The
+        per-period REPORT KPIs are computed elsewhere and are NOT touched —
+        this only feeds the heat/risk-raise base (DEC-20260516-020 intact).
+    `risk_raise_gate` (T-C1) — when supplied, the founder/Mark 4-gate is
+        enforced on the risk-RAISE path ONLY. Keys:
+          {"recon_band": str|None, "drawdown_active": bool}
+        A "up" that fails ANY gate is clamped to "hold" with an honest
+        Hebrew reason. Protection (cut / "down" / "hold" / RISK_LADDER /
+        update_risk_pct) is NEVER weakened — strictly risk-narrowing.
     """
     if len(closed_campaigns) < 3:
         return {
@@ -455,9 +582,33 @@ def compute_adaptive_risk(
             return ec.is_stat_countable(bucket)
         return c.get("setup_type", "").upper() != "ALGO"
 
-    disc_camps = [c for c in closed_campaigns if _is_disc(c)]
-    if not disc_camps:
-        disc_camps = closed_campaigns[:50]
+    # Phase ALGO-2 T-C2 (OPT-IN): when a SEPARATE longer stat-base is supplied
+    # AND it has a non-empty disc set, the heat windows / 4-gate compute off
+    # THAT base. Default (None) ⇒ the disc set is built from `closed_campaigns`
+    # exactly as before — byte-identical for every existing caller. The
+    # per-period report KPIs are produced elsewhere and are unaffected.
+    _base = closed_campaigns
+    _stat_base_used = "report_window"
+    if stat_base_campaigns:
+        _sb_disc = [c for c in stat_base_campaigns if _is_disc(c)]
+        if _sb_disc:
+            _base = stat_base_campaigns
+            _stat_base_used = "longer_manual_rolling"
+
+    disc_camps = [c for c in _base if _is_disc(c)]
+
+    # Phase ALGO-2 T-B1 (D1 fix): the empty-fallback must NEVER admit ALGO
+    # into the disc-only heat / S9·M21·L50 / risk-raise base (the inviolable
+    # segregation doctrine — ⟨memo⟩, AGENTS.md #8, DEC-20260511-001 #8). The
+    # prior `disc_camps = closed_campaigns[:50]` was NOT `_is_disc`-filtered:
+    # in an all-ALGO / zero-manual window it fed ALGO performance straight
+    # into the founder's discretionary risk-raise. We now enter an EXPLICIT
+    # INSUFFICIENT-DATA state instead — a neutral, NON-raising read that the
+    # 4-gate (T-C1) consumes. Provably byte-identical on EVERY path where
+    # `disc_camps` is non-empty (the live normal path): this block is reached
+    # ONLY when the filtered disc set is empty (the cold-start path that the
+    # old code unsafely back-filled with ALGO).
+    insufficient_manual_sample = not disc_camps
 
     # Multi-window scoring on disc-only campaigns (short=50%, medium=30%, long=20%)
     s9_stats  = _window_stats(disc_camps[:9])
@@ -507,6 +658,30 @@ def compute_adaptive_risk(
         heat_label, heat_color, direction = "חלש", "❄️", "down_fast"
     else:
         heat_label, heat_color, direction = "נייטרל", "➖", "hold"
+
+    # Phase ALGO-2 T-C1 — the founder/Mark 4-gate on the risk-RAISE path ONLY.
+    # OPT-IN: only runs when the caller passes `risk_raise_gate`; otherwise
+    # behavior is byte-identical to before (every existing caller/test). It is
+    # strictly risk-NARROWING — it can ONLY clamp a "up" → "hold"; it NEVER
+    # touches "down_fast"/"hold", the cut path, the RISK_LADDER values, or
+    # update_risk_pct. Protection is never weakened. Money-affecting but
+    # provably regression-safe (it only ever BLOCKS a raise).
+    gate_result = None
+    if risk_raise_gate is not None and direction == "up":
+        # Sample/expectancy are measured on the SAME stat-countable manual
+        # base that drives the heat windows (disc_camps) — the M21 window is
+        # the doctrine "≥20" horizon; expectancy is the clean per-R mean.
+        gate_result = evaluate_risk_raise_gate(
+            manual_sample_n=len(disc_camps),
+            expectancy_r=_window_expectancy_r(disc_camps[:50]),
+            recon_band=risk_raise_gate.get("recon_band"),
+            drawdown_active=bool(risk_raise_gate.get("drawdown_active")),
+            loss_streak=s9_loss_streak,
+            insufficient_manual_sample=insufficient_manual_sample,
+        )
+        if not gate_result["allow_raise"]:
+            # Clamp the raise to a neutral hold + an honest Hebrew reason.
+            heat_label, heat_color, direction = "נייטרל", "➖", "hold"
 
     curr_idx = _closest_ladder_index(current_risk_pct)
     if direction == "up":
@@ -565,7 +740,25 @@ def compute_adaptive_risk(
         "algo_open_r": round(algo_open_r, 2),
         "heat_factors":     heat_factors,
         "what_to_improve":  what_to_improve,
+        # Phase ALGO-2 — ADDITIVE provenance keys (no existing key changed, no
+        # new alert/message TYPE; consumed by the sample-honesty line + tests).
+        "insufficient_manual_sample": insufficient_manual_sample,
+        "stat_base": _stat_base_used,
     }
+    # T-C1: when the 4-gate ran AND blocked a raise, surface the honest
+    # reason + the failed-gate ids (ADDITIVE; only present when the opt-in
+    # gate clamped a "up"). The reason is wired into heat_factors so the
+    # existing renderer shows it with NO new message type.
+    if gate_result is not None:
+        result["risk_raise_gate"] = {
+            "evaluated": True,
+            "allow_raise": gate_result["allow_raise"],
+            "failed": gate_result["failed"],
+            "reason": gate_result["reason"],
+        }
+        if not gate_result["allow_raise"]:
+            result["heat_factors"] = (
+                [f"⛔ {gate_result['reason']}"] + (heat_factors or []))[:6]
 
     # Sprint 8 #9: drawdown auto-cut override.
     # If the 30-day window shows ≤ -8% of NAV, the heat-based recommendation

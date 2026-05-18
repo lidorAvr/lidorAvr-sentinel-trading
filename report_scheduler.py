@@ -244,6 +244,38 @@ def _build_system_health() -> dict:
     }
 
 
+def _fetch_stat_base_df(years: int = 3):
+    """Phase ALGO-2 T-C2: a SEPARATE, READ-ONLY, longer rolling fetch that
+    backs ONLY the risk-raise / Heat statistical base — NOT the report period.
+
+    It deliberately does NOT call `_fetch_trades_df` and does NOT touch the
+    DEC-20260516-020 `weeks=8` report-period fetch: the displayed per-period
+    report KPIs + LOCKED April stay byte-identical because they are computed
+    elsewhere (`compute_period_analytics`) off the unchanged `df`. This read
+    is a pure SELECT via the read-only repository layer (no Supabase
+    mutation). Best-effort: any failure ⇒ None ⇒ the caller degrades to the
+    legacy report-window base (byte-identical fallback)."""
+    try:
+        import pandas as pd
+        from dotenv import load_dotenv
+        import supabase_repository as repo
+
+        load_dotenv()
+        url = os.environ.get("SUPABASE_URL", "")
+        key = os.environ.get("SUPABASE_KEY", "")
+        if not url or not key:
+            return None
+        sb = _get_supabase_client(url, key)
+        since = (datetime.now() - timedelta(weeks=52 * years)).strftime("%Y-%m-%d")
+        rows = repo.get_trades_since(sb, since)
+        if not rows:
+            return None
+        return pd.DataFrame(rows)
+    except Exception as e:
+        log(f"INFO stat-base read unavailable, using report window: {e}")
+        return None
+
+
 def _compute_risk_rec(df, account: dict) -> dict:
     """
     Best-effort adaptive-risk computation for the scheduled summary heat
@@ -251,13 +283,53 @@ def _compute_risk_rec(df, account: dict) -> dict:
     adaptive_risk_engine.compute_adaptive_risk; on any failure (import error,
     empty df, <3 closed campaigns) returns {ok: False, ...} which the
     formatter renders as "אין מספיק נתונים".
+
+    Phase ALGO-2 (T-C1+T-C2): the heat windows / 4-gate now compute off a
+    SEPARATE longer rolling stat-countable MANUAL base (read-only — DEC-020
+    report fetch untouched). The founder/Mark 4-gate is enforced on the
+    risk-RAISE path only. Both are fail-safe: any failure ⇒ the legacy
+    report-window base / no gate, behaviorally as before.
     """
     try:
         from adaptive_risk_engine import compute_closed_campaigns, compute_adaptive_risk
         closed = compute_closed_campaigns(df) if df is not None and not df.empty else []
         risk_pct = float(account.get("risk_pct_input", 0.5))
         nav      = float(account.get("nav", 0))
-        return compute_adaptive_risk(closed, risk_pct, nav)
+
+        # T-C2 — separate, read-only longer rolling manual stat-base.
+        stat_base = None
+        try:
+            sb_df = _fetch_stat_base_df()
+            if sb_df is not None and not sb_df.empty:
+                stat_base = compute_closed_campaigns(sb_df)
+        except Exception as e:
+            log(f"INFO stat-base build failed, using report window: {e}")
+            stat_base = None
+
+        # T-C1 — broker-recon gate context (best-effort; absent ⇒ G1 passes,
+        # i.e. no FALSE block — the gate only ever NARROWS on a Critical gap
+        # it can actually see). Reuses the existing classifier band string.
+        gate_ctx = {"recon_band": None, "drawdown_active": False}
+        try:
+            import telegram_formatters as _tf
+            deposited = float(account.get("total_deposited", 0) or 0)
+            db_net = sum(float(c.get("total_pnl_usd", 0) or 0) for c in closed)
+            recon_gap = nav - (deposited + db_net)
+            _recon = _tf.classify_broker_reconciliation(
+                nav, deposited, db_net,
+                reconciliation_gap=recon_gap,
+                risk_pct_input=risk_pct,
+                nav_source=str(account.get("nav_source", "broker") or "broker"),
+            )
+            gate_ctx["recon_band"] = _recon.get("band")
+        except Exception:
+            gate_ctx["recon_band"] = None
+
+        return compute_adaptive_risk(
+            closed, risk_pct, nav,
+            stat_base_campaigns=stat_base,
+            risk_raise_gate=gate_ctx,
+        )
     except Exception as e:
         return {"ok": False, "error": "compute_failed", "message": str(e)}
 

@@ -56,6 +56,25 @@ def get_old_trades(sb, before_date):
     return sb.table("trades").select("*").lt("trade_date", before_date).execute().data or []
 
 
+def get_trades_since(sb, since_date):
+    """READ-ONLY: every trade row on/after `since_date` (ISO 'YYYY-MM-DD'),
+    oldest-first. Phase ALGO-2 T-C2 — backs the SEPARATE longer-rolling
+    stat-base read for the risk-raise/Heat base (it does NOT touch the
+    DEC-20260516-020 `_fetch_trades_df` report fetch / report period). Pure
+    SELECT — no insert/update/delete, no Supabase mutation. Mirrors the
+    report fetch's column contract (`select("*")`, `gte('trade_date', …)`,
+    `.order('trade_date')`) so `compute_closed_campaigns` consumes it
+    unchanged."""
+    return (
+        sb.table("trades")
+        .select("*")
+        .gte("trade_date", since_date)
+        .order("trade_date", desc=False)
+        .execute()
+        .data or []
+    )
+
+
 def get_campaigns_pnl(sb):
     return sb.table("trades").select("campaign_id,pnl_usd,trade_date").execute().data or []
 
