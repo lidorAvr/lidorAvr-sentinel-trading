@@ -7,6 +7,7 @@
 
 ## 0. ⚠️ BLOCKING PREREQUISITES (verify BEFORE deploy)
 
+0. **Dashboard :8501 — ACCEPTED network-boundary control (DEC-20260518-001).** The dashboard has no in-app auth + a Supabase WRITE tab; founder consciously accepts this ONLY because :8501 is reachable solely over Tailscale (Orange-Pi tailnet addr `100.87.116.60`) / internal LAN — never the public internet. Before/after any deploy do NOT publish `8501` beyond the host's Tailscale/LAN boundary; if that boundary ever changes, in-app auth must be scheduled first.
 1. **`DEV_PIN` MUST be set in the production `.env`.** Phase C1 made the dev-PIN gate **fail-CLOSED**. Without `DEV_PIN`, after deploy the ENTIRE dev menu — incl. **Git Pull+Deploy**, IBKR sync, XML upload, config dump, on-demand reports — is DENIED. (Self-lockout risk if you deploy via the in-bot button without `DEV_PIN`.) → On the host: `grep -q '^DEV_PIN=' .env || echo 'ADD DEV_PIN=<pin> TO .env FIRST'`.
 2. **`sentinel_config.json` on the host must hold a real `nav`** (not an explicit `nav: 0`). NAV-Unify D1 (founder-approved canonical) makes an explicit `0` size `acc_size=0`/`target_risk=0` for bot+risk-monitor. → `python3 -c "import json;d=json.load(open('sentinel_config.json'));print('nav=',d.get('nav'))"` — confirm non-zero.
 3. CI green on `5a0f2cb` (same `pytest --cov-fail-under=67` command verified locally post-commit on a clean tree for every phase).

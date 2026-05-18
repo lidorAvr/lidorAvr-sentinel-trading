@@ -1290,3 +1290,16 @@ Lock-expansion (governed, intent-preserving): NO existing Sprint-20/21/22 clause
 Named Ruling-3 proof: new `tests/test_sprint24_b1b3_byte_identical.py::TestSprint24B1B3ByteIdentical` — B1 partition `.equals()` (index+order, frame spanning countable+ALGO+DATA_INCOMPLETE); B3 full-frame `.equals()` an inlined-loop oracle (all-5 / extra / missing / garbage/NaN/str) + in-place mutation + AST proof the production call passes the exact tuple; LOCKED April regression byte-identical (8 / +$180.49 / WR .375 / PF 2.626 / excl 2) on the reused LOCKED fixture; Sprint-22 tz-aware==tz-naive==8/+$180.49 post-B1/B3. The now-inverted Wave-2 `TestAnalyticsEngineAppendOnly` tests were **repurposed in place** (premise reversed by the founder) to assert the POST-B1/B3 reality — `test_period_data_probe_byte_locked_untouched` + `test_engine_core_untouched` kept AS-IS; no test deleted (Ruling 6.1).
 
 Verification: full suite `python -m pytest -q -p no:cacheprovider` = **1898 passed, 0 failed** (≥ prior 1890; +8 net new). LOCKED April regression byte-identical; Sprint-22 numbers unchanged; `period_data_probe.py` + `engine_core.py` + `docker-compose.yml` + LOCKED `tests/test_real_data_april_regression.py` git-diff EMPTY; no R/NAV/exposure/campaign/Expectancy/PF/WR value change; no admin/dev-PIN gate / secure_runner / compose / migration / schema change; no `telegram_bot.py` change; WS-C / `-1`-sentinel / ALGO-string UNTOUCHED; no existing Sprint-20/21/22 lock clause modified.
+
+---
+
+## DEC-20260518-001 — Dashboard :8501 network-boundary CONSCIOUS ACCEPTANCE + dedicated ALGO team formed
+
+Date: 2026-05-18
+Status: **decided (founder).**
+
+### 1. Security R-1 (dashboard :8501 unauthenticated + Supabase trade-WRITE) — ACCEPTED with compensating control
+The founder consciously accepts the residual: the Streamlit dashboard on `0.0.0.0:8501` (which includes a Supabase stop/quality WRITE tab) has **no in-app authentication**. **Compensating control (founder-stated):** the dashboard is reachable ONLY over **Tailscale** — it sits on the Orange-Pi Tailscale address **100.87.116.60**, accessible solely from devices joined to that Tailscale tailnet OR the real internal LAN; it is NOT exposed to the public internet. R-1 is therefore **ACCEPTED (not fixed)** under this network-boundary control. **Re-opens if** the dashboard is ever exposed beyond Tailscale/LAN, or the port is published publicly — then in-app auth must be scheduled (a deliberate ADDITION, founder-gated). In-app dashboard auth remains a future founder-gated option, not required while the network boundary holds.
+
+### 2. Dedicated ALGO team formed
+Founder decision: stand up a dedicated ALGO team. Charter + roster + the ALGO doctrine (captured from the founder/Mark portfolio memo of 2026-05-18) + the structured ALGO requirements backlog: `docs/teams/ALGO_TEAM_CHARTER.md`. ALGO stays **observe-only** (DEC-20260511-001 #8 / AGENTS.md — Sentinel never manages ALGO exits manually); WS-C / `-1`-sentinel stay DEFERRED unless the founder explicitly reclassifies. All ALGO requirements are investigate-first + founder-gated governed Phases — NONE executed on formation.
