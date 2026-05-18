@@ -260,6 +260,19 @@ def handle_portfolio_room(chat_id):
         total_open_pnl = total_disc_pnl = total_algo_pnl = total_risk = total_realized_camp = 0
         total_exposure = total_disc_exposure = total_algo_exposure = 0
         total_locked_profit = total_giveback_risk = 0
+        # R-ALGO-2 (Sprint-30 G1 / CLOSURE-FIX): the max single open-campaign
+        # original risk — the SAME quantity the dashboard recon oracle passes
+        # as `max_open_campaign_risk` (dashboard.py:452 `live_df["OriginalRisk"]
+        # .max()`, fed to the classifier at dashboard.py:460). Accumulated from
+        # the per-position `original_campaign_risk` already computed in the loop
+        # below (telegram_portfolio.py:307) — NO new data source, NO new math.
+        # Previously this surface OMITTED the argument ⇒ the classifier's
+        # `bool(max_open_campaign_risk)` Critical branch was DEAD here, so the
+        # same gap the dashboard banded "פער נתונים קריטי" was banded the
+        # softer "פער מהותי" on the phone — a two-surface band divergence
+        # directly above a risk-raise rec. Mirroring the oracle's input makes
+        # both surfaces emit the SAME band for the SAME state.
+        _max_open_campaign_risk = 0.0
         algo_count = 0
         active_symbols = []
         # Sprint-27 W3 (UX P0-1) — symbols whose ALREADY-computed engine
@@ -305,6 +318,12 @@ def handle_portfolio_room(chat_id):
 
             init_sl_clean = init_sl if (init_sl > 0 and init_sl < base_price) else 0
             original_campaign_risk = (base_price - init_sl_clean) * base_qty if init_sl_clean > 0 else 0
+            # R-ALGO-2 (Sprint-30 G1): mirror dashboard.py:452's
+            # `live_df["OriginalRisk"].max()` — the exact same per-open-position
+            # `original_campaign_risk` quantity, max-reduced for the recon
+            # classifier's Critical-by-open-risk branch. Read-only, no recompute.
+            if original_campaign_risk > _max_open_campaign_risk:
+                _max_open_campaign_risk = float(original_campaign_risk)
 
             if sl > base_price:
                 current_open_loss_risk = 0
@@ -481,11 +500,23 @@ def handle_portfolio_room(chat_id):
             _db_net_pnl = sum(float(c.get("total_pnl_usd", 0) or 0) for c in _closed_for_rec)
             _db_equity_expected = _total_deposited + _db_net_pnl + total_open_pnl
             _recon_gap = acc_size - _db_equity_expected
+            # R-ALGO-2 (Sprint-30 G1 / CLOSURE-FIX): pass the SAME
+            # `max_open_campaign_risk` the dashboard recon oracle passes
+            # (dashboard.py:460). Omitting it here defaulted it to 0.0 ⇒ the
+            # classifier's `bool(max_open_campaign_risk) and agap > …` Critical
+            # branch (telegram_formatters.py:799-800) was DEAD on this surface,
+            # so a gap the dashboard classifies "פער נתונים קריטי" was
+            # mis-classified the softer "פער מהותי" on the phone — the
+            # post-deploy two-surface band divergence (tg_report_2 L1239 vs
+            # the dashboard oracle), sitting directly above a risk-raise rec.
+            # Same classifier, same inputs ⇒ both surfaces emit the SAME band.
+            # The dashboard oracle (dashboard.py:455-461) remains the reference.
             _recon = tf.classify_broker_reconciliation(
                 acc_size, _total_deposited, _db_net_pnl,
                 reconciliation_gap=_recon_gap,
                 risk_pct_input=_risk_pct_in,
                 nav_source=_nav_src,
+                max_open_campaign_risk=_max_open_campaign_risk,
             )
             msg += f"{tf.fmt_broker_reconciliation(_recon)}\n"
         except Exception:

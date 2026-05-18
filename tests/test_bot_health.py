@@ -99,21 +99,111 @@ class TestReportShape:
 
 class TestNavFreshness:
     def test_nav_critical_shows_red(self):
+        # Sprint-30 G4 (CORRECTED expectation — Mark 6.1, NOT weakened).
+        # PRE-G4 this test asserted BOTH "🚨 NAV קריטי" AND "🔴" in result
+        # — i.e. it codified the DOUBLED + DISAGREEING glyph line
+        # "🔴 🚨 NAV קריטי" as correct (the label's own 🚨 plus the bad()
+        # wrapper's 🔴, two different glyphs). The correct render is a
+        # SINGLE authoritative status glyph. Now asserted strictly: exactly
+        # one 🔴 on the NAV check line, the doubled/disagreeing forms gone,
+        # the label TEXT preserved. Coverage strengthened, not weakened.
         result = _run_report(ec_fresh={
             "ok": True, "is_critical": True, "is_stale": True,
             "freshness_label": "🚨 NAV קריטי",
             "nav": 5000.0,
         })
-        assert "🚨 NAV קריטי" in result
-        assert "🔴" in result
+        nav_line = next(ln for ln in result.split("\n") if "NAV קריטי" in ln)
+        # SINGLE correct glyph (bad() → 🔴), label text preserved …
+        assert "🔴 NAV קריטי" in nav_line
+        # … and the doubled / disagreeing forms are GONE.
+        assert "🔴 🚨" not in nav_line
+        assert "🚨 NAV קריטי" not in nav_line   # label's own glyph stripped
+        assert "🔴 🔴" not in nav_line
+        assert nav_line.count("🔴") == 1
+        assert "🚨" not in nav_line
 
     def test_nav_stale_shows_yellow(self):
+        # Sprint-30 G4: stale ⇒ warn() ⇒ exactly ONE ⚠️ on the NAV line,
+        # NEVER the doubled "⚠️ ⚠️". Strengthened from a bare substring
+        # check to a single-glyph assertion (Mark 6.1 — not weakened).
         result = _run_report(ec_fresh={
             "ok": True, "is_critical": False, "is_stale": True,
             "freshness_label": "⚠️ NAV ישן",
             "nav": 5000.0,
         })
-        assert "⚠️ NAV ישן" in result
+        nav_line = next(ln for ln in result.split("\n") if "NAV ישן" in ln)
+        assert "⚠️ NAV ישן" in nav_line
+        assert "⚠️ ⚠️" not in nav_line
+        assert nav_line.count("⚠️") == 1
+
+    def test_nav_stale_label_glyph_disagrees_single_correct(self):
+        # Sprint-30 G4 (ADD): the engine's stale label carries 🟡
+        # (engine_core.py:1615) while the bot_health stale route is warn()
+        # → ⚠️. The two glyphs DISAGREE; pre-G4 this rendered "⚠️ 🟡 NAV …".
+        # Post-G4 the label's 🟡 is stripped and exactly the wrapper's ⚠️
+        # (the authoritative freshness-routed glyph) remains.
+        result = _run_report(ec_fresh={
+            "ok": True, "is_critical": False, "is_stale": True,
+            "freshness_label": "🟡 NAV $5,000 — עודכן לפני 30ש׳",
+            "nav": 5000.0,
+        })
+        nav_line = next(ln for ln in result.split("\n")
+                        if "עודכן לפני 30" in ln)
+        assert "⚠️ NAV $5,000 — עודכן לפני 30ש׳" in nav_line
+        assert "⚠️ 🟡" not in nav_line
+        assert "🟡" not in nav_line
+        assert nav_line.count("⚠️") == 1
+
+    def test_nav_fresh_no_doubled_green(self):
+        # Sprint-30 G4 (ADD): the most common case — fresh broker NAV. The
+        # engine label starts with ✅ (engine_core.py:1617) and ok() also
+        # prefixes ✅; pre-G4 this rendered "✅ ✅ NAV …" on EVERY healthy
+        # render. Post-G4: exactly one ✅, text preserved.
+        result = _run_report(ec_fresh={
+            "ok": True, "is_critical": False, "is_stale": False,
+            "freshness_label": "✅ NAV $5,000 — עודכן לפני 0.1ש׳",
+            "nav": 5000.0,
+        })
+        nav_line = next(ln for ln in result.split("\n")
+                        if "עודכן לפני 0.1" in ln)
+        assert "✅ NAV $5,000 — עודכן לפני 0.1ש׳" in nav_line
+        assert "✅ ✅" not in nav_line
+        assert nav_line.count("✅") == 1
+
+    def test_nav_manual_no_timestamp_single_glyph(self):
+        # Sprint-30 G4 (ADD): manual / no-timestamp NAV. Engine label
+        # starts with 🟠 (engine_core.py:1634); core sets is_stale=True,
+        # is_critical=False ⇒ bot_health route is warn() → ⚠️. Pre-G4:
+        # the honesty-critical line rendered "⚠️ 🟠 NAV …" (disagreeing
+        # double). Post-G4: single ⚠️, the honest "(הוגדר ידנית)" text
+        # intact (the most honesty-sensitive line must NOT look glitched).
+        result = _run_report(ec_fresh={
+            "ok": True, "is_critical": False, "is_stale": True,
+            "freshness_label": "🟠 NAV $5,000 — אין timestamp (הוגדר ידנית)",
+            "nav": 5000.0,
+        })
+        nav_line = next(ln for ln in result.split("\n")
+                        if "הוגדר ידנית" in ln)
+        assert "⚠️ NAV $5,000 — אין timestamp (הוגדר ידנית)" in nav_line
+        assert "⚠️ 🟠" not in nav_line
+        assert "🟠" not in nav_line
+        assert nav_line.count("⚠️") == 1
+
+    def test_nav_fallback_config_missing_single_red(self):
+        # Sprint-30 G4 (ADD): config missing ⇒ ok=False ⇒ bot_health
+        # emits its OWN bad() message ("sentinel_config.json לא נמצא"),
+        # not the engine label — verify that path still renders a single
+        # 🔴 and never a doubled glyph regardless of label content.
+        result = _run_report(ec_fresh={
+            "ok": False, "is_critical": True, "is_stale": True,
+            "freshness_label": "🔴 NAV: fallback — sentinel_config.json לא נמצא",
+            "nav": 7500.0,
+        })
+        nav_line = next(ln for ln in result.split("\n")
+                        if "sentinel_config.json" in ln)
+        assert "🔴 NAV Config — sentinel_config.json לא נמצא" in nav_line
+        assert "🔴 🔴" not in nav_line
+        assert nav_line.count("🔴") == 1
 
     def test_nav_missing_shows_red(self):
         result = _run_report(ec_fresh={

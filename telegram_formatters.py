@@ -66,6 +66,50 @@ def _l50_true_sample(risk_rec: dict) -> int:
         return 0
 
 
+# ── R-ALGO-3 finish (Sprint-30 G5 / HONESTY-FIX, presentation-only) ─────────
+# The adaptive score line still printed the HARDCODED window literal
+# "S9(9)=… | M21(21)=… | L50(50)=…" directly ABOVE the honest
+# "מדגם נוכחי: N/50" caveat W-A3 added — an on-screen self-contradiction
+# (literal claims 50 while its own caveat one line down says e.g. 9/50).
+# The parentheticals are the window's NOMINAL size, not the TRUE sample
+# actually in each window. adaptive_risk_engine builds the windows as
+# disc_camps[:9]/[:21]/[:50] and _window_stats(...)['n'] == len(window) ==
+# min(window_size, len(disc_camps)) (adaptive_risk_engine.py:283-314,
+# 463-465,561-563). So when the book is small all three collapse to the
+# same true N (no contradiction with the caveat); when there ARE ≥50
+# closed campaigns the true Ns are exactly (9,21,50) ⇒ the line is
+# BYTE-IDENTICAL to today. ZERO math/KPI change; engine_core 0-diff
+# (true Ns are read from the SAME s9/m21/l50_stats['n'] the Win-Rate
+# sub-line already consumes — CALLED/consumed only). CLAUDE.md #1.
+_SCORE_WINDOW_NOMINALS = (9, 21, 50)  # S9 / M21 / L50 nominal window sizes
+
+
+def _score_line_window_labels(risk_rec: dict) -> tuple:
+    """Return the (S9, M21, L50) parenthetical sizes for the score line.
+
+    Returns the TRUE per-window sample sizes (the same s9/m21/l50_stats['n']
+    the Win-Rate sub-line already reads) ONLY when ALL THREE window-stat
+    dicts carry an int `n` — otherwise returns the unchanged nominal literal
+    (9, 21, 50) so the line stays BYTE-IDENTICAL whenever the true sample is
+    not fully known (and so legacy/synthetic risk_recs that omit a window
+    stat — e.g. the W-A3 fixture without m21_stats — keep today's literal,
+    no existing pin weakened). Whenever there ARE ≥50 closed campaigns the
+    three true Ns are exactly (9, 21, 50) ⇒ byte-identical by construction.
+    """
+    try:
+        s9 = risk_rec.get("s9_stats")
+        m21 = risk_rec.get("m21_stats")
+        l50 = risk_rec.get("l50_stats")
+        if (s9 and m21 and l50
+                and s9.get("n") is not None
+                and m21.get("n") is not None
+                and l50.get("n") is not None):
+            return (int(s9["n"]), int(m21["n"]), int(l50["n"]))
+    except Exception:
+        pass
+    return _SCORE_WINDOW_NOMINALS
+
+
 def _l50_sample_honesty_line(n_l50: int) -> str | None:
     """When the real L50 sample is <50, return an honest disclosure line using
     engine_core.get_sample_size_context's OWN wording/contract (no invented
@@ -247,7 +291,12 @@ def fmt_adaptive_risk_block(risk_rec: dict, settle_info: dict | None = None) -> 
     m21_sc = risk_rec.get("m21_score")
     l50_sc = risk_rec.get("l50_score")
     if s9_sc is not None:
-        lines.append(f"{RTL}  ▸ ציון (0-100) לפי טווח: S9(9)=`{s9_sc:.0f}` | M21(21)=`{m21_sc:.0f}` | L50(50)=`{l50_sc:.0f}`")
+        # G5: window parentheticals reflect the TRUE per-window sample so the
+        # score line no longer contradicts the "מדגם נוכחי: N/50" caveat
+        # below it. When the true sample is unknown or there are ≥50 closed
+        # campaigns the labels are exactly (9,21,50) ⇒ BYTE-IDENTICAL.
+        _wS9, _wM21, _wL50 = _score_line_window_labels(risk_rec)
+        lines.append(f"{RTL}  ▸ ציון (0-100) לפי טווח: S9({_wS9})=`{s9_sc:.0f}` | M21({_wM21})=`{m21_sc:.0f}` | L50({_wL50})=`{l50_sc:.0f}`")
         # R-ALGO-3 / W-A3: honest disclosure when the TRUE L50 sample is <50.
         # >=50 ⇒ helper returns None ⇒ the line above is byte-identical.
         _l50_honesty = _l50_sample_honesty_line(_l50_true_sample(risk_rec))

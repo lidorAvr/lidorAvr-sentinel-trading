@@ -173,6 +173,84 @@ def is_during_us_market_hours():
         return False
     return 11 <= now_utc.hour < 21
 
+def _is_material_escalation(prev, current_status, last_alert_ts, now_ts):
+    """Sprint-30 G2 — distinguish a GENUINE worsening from a sub-threshold
+    status-flap re-escalation.
+
+    Background (SPRINT29_ARCH S29-1 / UX P0-2, proven in the real export):
+    `should_alert` fast-paths ANY rank increase straight to a fresh full
+    banner. A campaign straddling a classification boundary (e.g.
+    🔥 Power[rank 2] ↔ 🟡 תקין אך במעקב[rank 3] on a <1% price wiggle —
+    $898→$903→$899→$901, CAT_9409547470 fired 5× in ~65 lines, 15
+    byte-identical blocks) flips DOWN one rank then back UP one rank; the
+    "back UP" hits the escalation fast-path and bypasses the
+    LIVE_ALERT_REPEAT_COOLDOWN entirely → the SAME alert re-fires every poll.
+
+    This predicate returns True only for a *material* escalation that must
+    still fire immediately (escalation semantics PRESERVED):
+      • the new status is a P0/CRITICAL status (never suppressed — Mark §4);
+      • OR we have climbed to a HIGHER rank than any rank we have ALREADY
+        alerted on within the still-active cooldown window (a genuine NEW
+        worsening, e.g. Healthy→Weak→Broken — each new high alerts);
+      • OR the active cooldown window has elapsed (a re-cross after the
+        cooldown is, by the existing LIVE_ALERT_REPEAT_COOLDOWN contract, a
+        fresh event and still fires).
+
+    It returns False ONLY for the noise case: a non-critical re-escalation
+    back UP to a rank we were ALREADY at (≤ the recent alerted peak) while
+    still inside the cooldown window — i.e. the flap. Behaviour-narrowing
+    only: strictly fewer duplicate alerts, no new alert type, ALGO
+    observe-only path (gated by `_algo_observed` at the call site) unaffected.
+    """
+    cur_rank = STATUS_RANK.get(current_status, 0)
+    # P0/critical worsening is NEVER suppressed (Sprint-14 Mark §4 invariant).
+    if current_status in CRITICAL_STATUSES:
+        return True
+    # The cooldown is no longer active → a re-cross is a fresh event (the
+    # existing LIVE_ALERT_REPEAT_COOLDOWN contract). Material.
+    if (now_ts - last_alert_ts) > LIVE_ALERT_REPEAT_COOLDOWN:
+        return True
+    # Within the active cooldown window: a true worsening is one that climbs
+    # ABOVE every rank we already alerted on in this window. A flip back UP
+    # to a rank ≤ the recent alerted peak is the noise-flap → suppress.
+    recent_peak_rank = prev.get("recent_alert_peak_rank")
+    if recent_peak_rank is None:
+        # No tracked peak (legacy/first escalation) → treat as material so a
+        # genuine first escalation is never lost.
+        return True
+    return cur_rank > recent_peak_rank
+
+
+def _next_alert_peak_rank(prev, current_status, do_alert, now_ts):
+    """Sprint-30 G2 — the `recent_alert_peak_rank` value to persist for the
+    NEXT cycle (the worst status rank that has fired an alert while still
+    inside the active LIVE_ALERT_REPEAT_COOLDOWN window).
+
+    Kept OUT of `should_alert`'s return so its (do_alert, ts) 2-tuple
+    contract — relied on by the LOCKED Sprint-14 dedup tests — is byte-for-
+    byte UNCHANGED (Mark 6.1: no existing test weakened). It decays to None
+    when the cooldown has elapsed (a re-cross after cooldown is a fresh
+    event) so a genuine later worsening is never permanently suppressed.
+    Returns None ⇒ caller omits the key (nothing alerted in this window)."""
+    if prev is None:
+        return STATUS_RANK.get(current_status, 0) if do_alert else None
+    last_alert_ts = prev.get("last_alert_ts", 0)
+    prev_peak = prev.get("recent_alert_peak_rank")
+    cooldown_elapsed = (now_ts - last_alert_ts) > LIVE_ALERT_REPEAT_COOLDOWN
+    if do_alert:
+        cur_rank = STATUS_RANK.get(current_status, 0)
+        # On a fresh fire after the cooldown elapsed the window resets to the
+        # just-alerted rank; within an active window it is the running max.
+        if cooldown_elapsed or prev_peak is None:
+            return cur_rank
+        return max(prev_peak, cur_rank)
+    # Nothing fired. If the cooldown has elapsed the in-window peak no longer
+    # applies (decay). Otherwise it stays sticky across the flap.
+    if cooldown_elapsed:
+        return None
+    return prev_peak
+
+
 def should_alert(prev, current_status, current_key):
     now_ts = datetime.utcnow().timestamp()
     if prev is None:
@@ -193,8 +271,18 @@ def should_alert(prev, current_status, current_key):
     prev_key = prev.get("alert_key")
     last_alert_ts = prev.get("last_alert_ts", 0)
 
-    # Escalation: status worsened → always alert immediately (e.g. Healthy→Broken)
-    if STATUS_RANK.get(current_status, 0) > STATUS_RANK.get(prev_status, 0): return True, now_ts
+    # Escalation: status worsened. Sprint-30 G2 — only a MATERIAL escalation
+    # fast-paths past the cooldown; a sub-threshold flap back UP to a rank we
+    # were just at, within the active cooldown window, is the noise-spam and
+    # is held (it then falls through to the cooldown-gated key-change branch
+    # below, exactly like the symmetric de-escalation already does). The
+    # return contract is the SAME (do_alert, new_alert_ts) 2-tuple as before.
+    if STATUS_RANK.get(current_status, 0) > STATUS_RANK.get(prev_status, 0):
+        if _is_material_escalation(prev, current_status, last_alert_ts, now_ts):
+            return True, now_ts
+        # noise-flap re-escalation within cooldown → fall through to the
+        # cooldown-gated branch (does NOT auto-fire); key may differ so the
+        # branch below still allows a fire once the cooldown elapses.
 
     # Critical/Broken repeat: re-alert after 6h during market hours only
     if current_status in CRITICAL_STATUSES:
@@ -416,6 +504,39 @@ def _sizing_leak_alert(sym, setup, sizing_ratio, target_risk_usd, original_campa
     )
 
 
+# Sprint-27 W3 / Sprint-30 G3 — the SINGLE source of the "🧭 מה עכשיו?"
+# companion derivation in the risk-monitor domain. The exact urgent-state set
+# the digest already used (BROKEN / RUNNER / PROFIT_PROTECTION) is hoisted into
+# a named constant so the digest line and the new live-alert companion line are
+# provably the SAME derivation — no new wording, no new logic, no new data.
+_WHATNOW_URGENT_STATES = (
+    ec.POSITION_STATE_BROKEN,
+    ec.POSITION_STATE_RUNNER,
+    ec.POSITION_STATE_PROFIT_PROTECTION,
+)
+
+
+def _whatnow_live_companion(status: str, action: str) -> str:
+    """Sprint-30 G3 — surface the existing "🧭 מה עכשיו?" companion voice on
+    the high-frequency LIVE alert surface (the alert/חדר-מצב path the trader
+    actually lives), where it appeared 0× in the 995-msg live stream.
+
+    PURE presentation, ZERO math, NO new message type: it ONLY restates the
+    ALREADY-computed engine `status` + `action` of THIS alert as one short
+    Hebrew next-step line, using the SAME `🧭 *מה עכשיו?*` voice the
+    on-demand weekly/monthly + daily-digest path already speak. It can NEVER
+    be a false all-clear (it is only ever appended to a fired alert about a
+    flagged position) and it never contradicts the body — it is the body's
+    own `action`, verbatim, framed as the one next step. `status`/`action`
+    are the exact strings already printed two lines above it.
+    """
+    act = (action or "").strip()
+    if act:
+        return f"{RTL}🧭 *מה עכשיו?* {act} — ראה הפירוט למעלה."
+    # Defensive: an empty action is never a green light — point at the body.
+    return f"{RTL}🧭 *מה עכשיו?* יש לבחון את הפוזיציה לפי הפירוט למעלה."
+
+
 def _daily_digest_text(rows: list, date_str: str) -> str:
     RTL_M = "‏"
     _state_emoji = {
@@ -443,10 +564,13 @@ def _daily_digest_text(rows: list, date_str: str) -> str:
     # NO new computation, NO new data source, NO number touched. The Sprint-26
     # UX review (P0-1): the digest opens with a divider then a flat bullet
     # list — the human must reconstruct "do I need to act?" himself.
-    urgent = [r["sym"] for r in rows
-              if r["state"] in (ec.POSITION_STATE_BROKEN,
-                                ec.POSITION_STATE_RUNNER,
-                                ec.POSITION_STATE_PROFIT_PROTECTION)]
+    # Sprint-30 G3: the urgent set is now read from the shared
+    # `_WHATNOW_URGENT_STATES` constant — the SAME tuple (same three states,
+    # same order) the live-alert companion derivation uses. Provably
+    # byte-identical to the prior inline literal (BROKEN, RUNNER,
+    # PROFIT_PROTECTION) — pure de-duplication, no behaviour change. Pinned by
+    # the existing test_digest_body_bullets_byte_identical.
+    urgent = [r["sym"] for r in rows if r["state"] in _WHATNOW_URGENT_STATES]
     if urgent:
         _whatnow = (f"{RTL_M}🧭 *מה עכשיו?* {len(urgent)} פוז' דורשות החלטה: "
                     f"{', '.join(urgent)} — ראה פירוט למטה.")
@@ -467,6 +591,16 @@ def _daily_digest_text(rows: list, date_str: str) -> str:
     if urgent:
         lines.append(f"{RTL_M}───────────────────")
         lines.append(f"{RTL_M}⚡ *נדרשת החלטה:* {', '.join(urgent)}")
+    else:
+        # Sprint-30 G6 — silence ≠ all-clear. When the digest renders with
+        # NOTHING actionable it previously ended on the flat bullet list +
+        # the dashboard footer; an idle monitor and a calm one looked
+        # identical (0 positive-heartbeat in the 1,425-msg real export). Add
+        # ONE explicit Hebrew alive line to the EXISTING digest message (NOT
+        # a new periodic message): the monitor ran, it is active, and
+        # nothing needs action right now — honest, additive, ZERO math.
+        lines.append(f"{RTL_M}───────────────────")
+        lines.append(f"{RTL_M}✅ *מערכת פעילה — אין פעולה נדרשת כרגע.*")
     lines.append(f"{RTL_M}───────────────────")
     lines.append(f"{RTL_M}_(ללא פעולה נוספת? הדאשבורד עדכני)_")
     return "\n".join(lines)
@@ -700,6 +834,12 @@ def main():
         prev = state["positions"].get(campaign_id)
 
         do_alert, new_alert_ts = should_alert(prev, engine["status"], alert_key)
+        # Sprint-30 G2: the recent-alerted-peak rank to persist for the next
+        # cycle (kept out of should_alert's 2-tuple so the LOCKED Sprint-14
+        # dedup tests' (fire, ts) unpack is byte-for-byte unchanged).
+        _now_for_peak = datetime.utcnow().timestamp()
+        _alert_peak_rank = _next_alert_peak_rank(
+            prev, engine["status"], do_alert, _now_for_peak)
 
         # Sprint 14 RC-6 (Mark §2 / DEC-20260511-001 / invariant #8): ALGO is
         # observer-only and MUST NEVER push a management action. This generic
@@ -738,16 +878,35 @@ def main():
                 f"{RTL}פעולה: *{engine['action']}*\n"
                 f"{RTL}טריגר: `{engine['trigger']}`"
             )
-            
+
             if str(setup).upper() != "ALGO" and engine["suggested_stop"] > 0 and engine["suggested_stop"] != sl:
                 msg += f"\n{RTL}סטופ מוצע: `${engine['suggested_stop']:.2f}`"
-                
+
+            # Sprint-30 G3 — append the existing "🧭 מה עכשיו?" companion
+            # voice onto the LIVE alert (the high-frequency surface the
+            # trader actually lives — it was 0× in the 995-msg live stream).
+            # PURE presentation, ZERO math, NO new message type: it restates
+            # THIS alert's ALREADY-computed engine `action` as the one next
+            # step, in the SAME companion voice the weekly/digest path
+            # speaks. It is appended to an already-fired alert about a
+            # flagged position, so it can never be a false all-clear, and it
+            # echoes the body's own `action` so it can never contradict it.
+            msg += "\n" + _whatnow_live_companion(
+                engine["status"], engine["action"])
+
             send_telegram(msg)
             
         new_pos_entry = {
             "status": engine["status"], "alert_key": alert_key,
             "updated_at": datetime.utcnow().isoformat(), "last_alert_ts": new_alert_ts,
         }
+        # Sprint-30 G2: persist the recent in-window alerted-peak rank so the
+        # next cycle can tell a genuine NEW worsening apart from a noise-flap
+        # re-escalation back to a rank we were just at. None ⇒ omit the key
+        # entirely (cooldown decayed / nothing alerted yet) so a later
+        # genuine escalation is never permanently suppressed.
+        if _alert_peak_rank is not None:
+            new_pos_entry["recent_alert_peak_rank"] = _alert_peak_rank
         # Carry over threshold-tracking fields from previous state
         if prev:
             for carry_key in ("peak_open_r", "last_deviation_class", "last_deviation_ts",

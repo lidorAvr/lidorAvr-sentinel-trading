@@ -17,14 +17,45 @@ from bot_core import supabase, RTL
 from bot_helpers import get_account_settings
 
 
+# Sprint-30 G4 — doubled status-glyph fix (R10/F7, presentation-only).
+# `engine_core.get_nav_with_freshness()` returns a `freshness_label` that
+# ALREADY begins with its OWN status emoji (`✅`/`🟡`/🟠`/`🔴`/`⚠️` —
+# engine_core.py:1600,1613-1634; engine_core is BYTE-LOCKED, consumed only).
+# `ok()/warn()/bad()` then PREPEND a second emoji ⇒ `✅ ✅ NAV …`,
+# `🔴 🟠 NAV …`, `⚠️ 🟠 NAV …` — a doubled glyph whose two halves can even
+# DISAGREE (wrapper severity from is_stale/is_critical routing vs the label's
+# own leading glyph). Fix is in bot_health.py ONLY: strip a leading status
+# glyph from any msg before the wrapper prefixes the ONE authoritative glyph,
+# so every freshness state (fresh/stale/critical/unknown/manual/fallback)
+# renders exactly one correct, non-disagreeing status glyph. Zero semantic
+# change — the freshness ROUTING (bad/warn/ok) is unchanged and remains the
+# single source of the displayed severity.
+_STATUS_GLYPHS = ("✅", "⚠️", "🔴", "🟠", "🟡", "🚨")
+
+
+def _strip_leading_status_glyph(msg: str) -> str:
+    """Remove a single leading status emoji (+ its following space) from a
+    check message so the ok()/warn()/bad() wrapper supplies exactly ONE
+    authoritative glyph. Idempotent and safe for messages with no leading
+    glyph (the common case — returned unchanged)."""
+    s = str(msg)
+    for g in _STATUS_GLYPHS:
+        if s.startswith(g):
+            return s[len(g):].lstrip(" ")
+    return s
+
+
 def build_health_report() -> str:
     """Run 13 health checks and return a formatted RTL Hebrew report."""
     checks = []
     SEP = "───────────────"
 
-    def ok(msg):   checks.append(f"✅ {msg}")
-    def warn(msg): checks.append(f"⚠️ {msg}")
-    def bad(msg):  checks.append(f"🔴 {msg}")
+    # G4: strip any glyph the message already carries (e.g. the NAV
+    # freshness_label) BEFORE prefixing — never double-prefix; the wrapper's
+    # single glyph (driven by the freshness routing below) is authoritative.
+    def ok(msg):   checks.append(f"✅ {_strip_leading_status_glyph(msg)}")
+    def warn(msg): checks.append(f"⚠️ {_strip_leading_status_glyph(msg)}")
+    def bad(msg):  checks.append(f"🔴 {_strip_leading_status_glyph(msg)}")
 
     # 1. IBKR Sync Status
     try:
