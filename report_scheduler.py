@@ -499,7 +499,7 @@ def _run_monthly(now: datetime):
         ob_history     = rob.compute_open_book_history(
             open_book, recent_monthly, prev_snap)
 
-        coaching    = _monthly_coaching_insights(analytics)
+        coaching    = _monthly_coaching_insights(analytics, dev_data.get("score"))
         weekly_snaps = load_recent("weekly", n=5)
         weekly_breakdown = _build_weekly_breakdown(weekly_snaps, period_start, period_end)
 
@@ -597,16 +597,17 @@ def _weekly_coaching_insights(a: dict) -> list:
     return insights
 
 
-def _monthly_coaching_insights(a: dict) -> list:
+def _monthly_coaching_insights(a: dict, dev_score=None) -> list:
     insights = []
-    dev = a.get("dev_score", 0) or 0
-    if dev >= 80:
-        insights.append(f"ציון פיתוח מעולה ({dev}/100) — אתה פועל בעקביות ברמה גבוהה.")
-    elif dev < 50:
-        insights.append(
-            f"ציון פיתוח נמוך ({dev}/100) — יש לשפר משמעת תהליך ואיכות ה-edge. "
-            "קרא שוב את כללי ה-Minervini ויישם."
-        )
+    dev = dev_score
+    if dev is not None:
+        if dev >= 80:
+            insights.append(f"ציון פיתוח מעולה ({dev}/100) — אתה פועל בעקביות ברמה גבוהה.")
+        elif dev < 50:
+            insights.append(
+                f"ציון פיתוח נמוך ({dev}/100) — יש לשפר משמעת תהליך ואיכות ה-edge. "
+                "קרא שוב את כללי ה-Minervini ויישם."
+            )
 
     import math as _math
     pf = a.get("profit_factor") or 0  # None (no losses, loaded from snapshot) → 0

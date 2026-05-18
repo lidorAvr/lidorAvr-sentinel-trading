@@ -172,7 +172,7 @@ def run_on_demand(period_type: str, now: datetime = None,
                             f"{period_end.strftime('%d/%m/%Y')}")
             caption = f"📊 Sentinel Weekly Report (On-Demand) | {period_label}"
         else:
-            coaching = sched._monthly_coaching_insights(analytics)
+            coaching = sched._monthly_coaching_insights(analytics, dev_data.get("score"))
             # Reuse the scheduler's monthly weekly-breakdown helper exactly;
             # it is a pure read (load_recent reads, does NOT write).
             from report_snapshot_store import load_recent
