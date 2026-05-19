@@ -38,6 +38,7 @@ import engine_core as ec
 import adaptive_risk_engine as are
 import open_tasks
 import algo_rules  # Sprint-17 #4/#5 — static §1 known-rule lookup (pure leaf)
+import algo_divergence  # Phase ALGO-2A W-2A1 — pure observe-only live↔backtest edge-shape divergence (single-source-of-truth formatter)
 import supabase_repository as repo
 from bot_core import bot, supabase, user_state, RTL
 from telegram_menus import get_portfolio_menu
@@ -760,6 +761,73 @@ _RISK_BASIS_HE = {
 }
 
 
+def _build_algo_live_symbol_aggregates(chat_id):
+    """Phase ALGO-2A W-2A2 — build the live ALGO **per-symbol** edge-shape
+    aggregates the W-2A1 divergence formatter consumes.
+
+    Read-only / boundary-safe: pull the live closed campaigns the SAME way
+    the rest of the bot does (`repo.get_all_trades` →
+    `are.compute_closed_campaigns`), isolate the ALGO cohort via the
+    EXISTING `algo_metrics.build_algo_cohort` (the provable #8 complement of
+    the headline countable set — `STAT_BUCKET_ALGO`), then group by symbol
+    and reuse `algo_metrics`' OWN pure helpers (`_profit_factor`,
+    `_max_loss_streak`, `_expectancy`) so NO new R/NAV/WR/PF math is written
+    here (AGENTS.md Red Line). The per-trade unit is the engine's existing
+    portable `net_r` (= total_pnl / original_campaign_risk) — exactly the
+    fallback `algo_metrics._trade_returns_pct` already documents.
+
+    Returns ``{ "<SYMBOL>": {n, win_rate_pct, avg_return_pct,
+    profit_factor, loss_streak}, ... }`` (read-only, never mutates state,
+    zero push, zero Supabase write). ANY failure ⇒ ``{}`` so the panel is
+    never blanked and the formatter degrades to its honest empty marker
+    (never a fabricated zero). Divergence NEVER feeds WR/Expectancy/PF —
+    this dict is consumed ONLY by the observe-only divergence formatter.
+    """
+    try:
+        import algo_metrics as _am
+
+        df = pd.DataFrame(repo.get_all_trades(supabase))
+        closed = are.compute_closed_campaigns(df)
+        if not closed:
+            return {}
+        camp_df = pd.DataFrame(closed)
+        cohort = _am.build_algo_cohort(camp_df)
+        if cohort is None or cohort.empty or "symbol" not in cohort.columns:
+            return {}
+
+        aggs = {}
+        for sym, grp in cohort.groupby("symbol"):
+            # net_r is the engine's existing per-trade unit; we only READ
+            # already-computed campaign fields (no new math).
+            if {"total_pnl_usd", "original_campaign_risk"}.issubset(
+                    grp.columns):
+                vals = []
+                for _, r in grp.iterrows():
+                    risk = float(r.get("original_campaign_risk", 0) or 0)
+                    if risk > 0:
+                        vals.append(
+                            float(r.get("total_pnl_usd", 0) or 0) / risk)
+            else:
+                vals = []
+            if not vals:
+                continue
+            n = len(vals)
+            wins = sum(1 for v in vals if v > 0)
+            aggs[str(sym).upper()] = {
+                "n": n,
+                "win_rate_pct": (wins / n * 100.0) if n else None,
+                # AVG basis — matches what algo_metrics exposes (_expectancy).
+                "avg_return_pct": _am._expectancy(vals),
+                "profit_factor": _am._profit_factor(vals),
+                "loss_streak": _am._max_loss_streak(vals),
+            }
+        return aggs
+    except Exception:
+        # Honest: a failed read-only probe must NOT blank the panel and must
+        # NOT fabricate aggregates (absence ≠ data; AGENTS.md #1).
+        return {}
+
+
 def handle_algo_panel(chat_id):
     """#5 / DEC-006 — ONE consolidated, observation-only ALGO read-out card.
 
@@ -806,6 +874,21 @@ def handle_algo_panel(chat_id):
         f"{RTL}Sentinel אינו מנהל, אינו ממליץ, ואינו נספר בסטטיסטיקה.\n"
         f"{RTL}המידע למטה הוא מה ש-Sentinel *רואה* — לא הוראת פעולה.\n\n"
     )
+    # Phase ALGO-2A W-2A2 — build the live ALGO per-symbol edge-shape
+    # aggregates ONCE (panel-open only; zero push, zero Supabase write, zero
+    # state mutation). Boundary-safe: any failure ⇒ {} so the existing panel
+    # is NEVER blanked and the W-2A1 formatter degrades to its honest
+    # "אין מספיק מדגם" / no-data marker (never a fabricated zero/delta).
+    _algo_live_aggs = _build_algo_live_symbol_aggregates(chat_id)
+    # The backtest side: the EXISTING pure read-only store (no network /
+    # Supabase / live coupling). Boundary-safe — empty on any failure.
+    try:
+        import algo_backtest_store as _abs
+        _algo_bt_stats = _abs.compute_algo_backtest_stats(
+            _abs.load_algo_backtests())
+    except Exception:
+        _algo_bt_stats = {}
+
     # Per-position purely descriptive observation line (Mark §2.2 exact
     # shape — no imperative verb, no Sentinel stop number).
     for a in algo:
@@ -825,6 +908,20 @@ def handle_algo_panel(chat_id):
         body += (
             f"{RTL}• {sym}: מצב נצפה — {state_label}.\n"
             f"{RTL}  בסיס סיכון: {rb}. סטופ חיצוני: {ext_he}.\n"
+        )
+        # Phase ALGO-2A W-2A2 — ONE 🔭 observe-only live↔backtest edge-shape
+        # divergence block per symbol, AFTER the per-symbol state line and
+        # BEFORE the mandatory backtest caveat. Rendered ONLY on panel open
+        # (no push). Text comes from the W-2A1 SINGLE-SOURCE-OF-TRUTH
+        # formatter — the dashboard ALGO-backtest panel calls the SAME
+        # formatter so the two surfaces are byte-identical (anti-drift).
+        # Observe-only: neutral 🔭, no 🔴/🟢, no imperative, never fed into
+        # WR/Expectancy/PF; below the hard min-live-sample gate it shows the
+        # honest "אין מספיק מדגם חי" marker, never a delta/zero.
+        _div_text = algo_divergence.format_symbol_divergence(
+            sym, _algo_live_aggs, _algo_bt_stats)
+        body += "".join(
+            f"{RTL}{_ln}\n" for _ln in _div_text.split("\n")
         )
         # Sprint-17 #5 — ALGO dead-money = the ALGO's OWN §1 time-exit window
         # (QQQ/HOOD/PLTR only; TSLA/JPM have none → no line). Descriptive

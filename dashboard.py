@@ -15,6 +15,7 @@ import account_state as acc_state  # Sprint-27 W1: canonical NAV single-source (
 from dashboard_nav import nav_sidebar_render as _nav_sidebar_render  # Sprint-27 W1: pure B1-style sidebar NAV honesty helper
 import telegram_formatters as tf  # Sprint-15: import-pure helpers (no telebot/supabase/engine import inside tf)
 import algo_backtest_store as abs_store  # Phase ALGO-BT-1 W-BT4: pure read-only BACKTEST stats (no network/Supabase/write/live-ALGO coupling)
+import algo_divergence  # Phase ALGO-2A W-2A1: pure observe-only live↔backtest edge-shape divergence (single-source-of-truth formatter, no engine/analytics/Supabase/network import)
 import state_io
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -1178,6 +1179,68 @@ else:
             st.caption(
                 "מקור: ייצוא TrendSpider Strategy Tester (Volume=1, Trade cost=0%) — "
                 "מדדי edge לכל טרייד, לא P&L חשבון, לא נתון חי, לא הבטחה קדימה.")
+
+        # ── Phase ALGO-2A W-2A2 — ADDITIVE observe-only divergence section ───
+        # Purely additive: ONE marker-delimited section that surfaces the
+        # per-symbol live↔backtest EDGE-SHAPE divergence via the W-2A1
+        # SINGLE-SOURCE-OF-TRUTH formatter `algo_divergence
+        # .format_symbol_divergence`. The Telegram ALGO panel calls the SAME
+        # formatter so the two surfaces are byte-identical (anti-drift, the
+        # core "both" requirement). Observe-only doctrine
+        # (DEC-20260511-001 #8 / AGENTS.md #8): ZERO alerts, ZERO directives,
+        # ZERO push, ZERO Supabase write, ZERO state mutation; neutral 🔭
+        # only (no 🔴/🟢), never fed into WR/Expectancy/PF; below the hard
+        # min-live-sample gate it shows the honest "אין מספיק מדגם חי"
+        # marker, never a delta/zero. It alters / reorders / recomputes NO
+        # existing dashboard number or string. Boundary-safe — degrades to
+        # the honest empty marker and never raises.
+        st.markdown("<!-- ALGO-2A divergence section START -->",
+                    unsafe_allow_html=True)
+        st.markdown("---")
+        st.subheader("🔭 ALGO — הפרש חי↔בקטסט (תצפית בלבד, אפס איתות)")
+        try:
+            _div_live_aggs = {}
+            if not camp_df.empty:
+                _algo_live_df = camp_df[
+                    camp_df['stat_bucket'] == ec.STAT_BUCKET_ALGO]
+                if (not _algo_live_df.empty
+                        and 'symbol' in _algo_live_df.columns):
+                    for _sym, _grp in _algo_live_df.groupby('symbol'):
+                        if 'Total_Campaign_R' not in _grp.columns:
+                            continue
+                        _vals = [
+                            float(_x) for _x in _grp['Total_Campaign_R']
+                            .tolist() if _x is not None]
+                        if not _vals:
+                            continue
+                        _wins = sum(1 for _v in _vals if _v > 0)
+                        import algo_metrics as _div_am
+                        _div_live_aggs[str(_sym).upper()] = {
+                            "n": len(_vals),
+                            "win_rate_pct": _wins / len(_vals) * 100.0,
+                            "avg_return_pct": _div_am._expectancy(_vals),
+                            "profit_factor": _div_am._profit_factor(_vals),
+                            "loss_streak": _div_am._max_loss_streak(_vals),
+                        }
+            # Union of symbols present on either side (honest empty per side).
+            _div_syms = set(_div_live_aggs.keys())
+            for _s in (_bt_stats.get("strategies", {}) or {}).values():
+                if isinstance(_s, dict) and _s.get("symbol"):
+                    _div_syms.add(str(_s["symbol"]).upper())
+            if not _div_syms:
+                st.info(algo_divergence.INSUFFICIENT_LIVE_SAMPLE_HE)
+            else:
+                for _dsym in sorted(_div_syms):
+                    # SINGLE SOURCE OF TRUTH — identical formatter the
+                    # Telegram ALGO panel calls (cross-surface byte-identity).
+                    st.text(algo_divergence.format_symbol_divergence(
+                        _dsym, _div_live_aggs, _bt_stats))
+        except Exception:
+            # Honest: a failed read-only build must not blank the panel and
+            # must not fabricate a delta (absence ≠ data; AGENTS.md #1).
+            st.info(algo_divergence.INSUFFICIENT_LIVE_SAMPLE_HE)
+        st.markdown("<!-- ALGO-2A divergence section END -->",
+                    unsafe_allow_html=True)
 
     with tabs[3]:
         st.subheader("Execution Archive (Visual Journal)")
