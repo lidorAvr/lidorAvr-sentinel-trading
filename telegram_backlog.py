@@ -37,6 +37,22 @@ def get_next_missing(chat_id):
                     if init_sl is None or init_sl == 0:
                         repo.update_trade(supabase, row["trade_id"], {"initial_stop": -1, "stop_loss": -1})
                         continue
+            elif row.get('side', '').upper() == 'SELL':
+                # Setup/Quality are entry-time, campaign-level properties answered
+                # at open. Mirror the BUY add-on inheritance above so the close
+                # journal does not re-ask an already-answered open question.
+                cid = row.get('campaign_id')
+                if cid:
+                    older_buys = repo.get_earlier_buys_for_campaign(supabase, cid, row["trade_date"])
+                    if older_buys:
+                        first_b = older_buys[0]
+                        upd = {}
+                        for f in ("setup_type", "quality"):
+                            if row.get(f) is None and first_b.get(f) is not None:
+                                upd[f] = first_b.get(f)
+                        if upd:
+                            repo.update_trade(supabase, row["trade_id"], upd)
+                            continue
             t = row
             break
 
