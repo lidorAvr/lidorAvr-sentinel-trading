@@ -14,6 +14,7 @@ import engine_core as ec
 import supabase_repository as repo
 import telegram_formatters as tf
 import adaptive_risk_engine as are
+import position_lifecycle as plc
 from bot_core import bot, supabase, user_state, RTL
 from bot_helpers import get_account_settings, get_nav_and_risk
 
@@ -257,6 +258,23 @@ def handle_portfolio_room(chat_id):
         spy_hist = ec.get_cached_history("SPY", "1y", "1d")
 
         user_state[chat_id] = {'temp_positions': open_pos.to_dict('records')}
+
+        # Phase REPORT-2 (W-R2-2) — read-only per-campaign raw-leg lookup for
+        # the additive units-lifecycle line. NO new data source / NO Supabase
+        # / NO network: it slices the SAME `df` already fetched above
+        # (`repo.get_all_trades` is byte-identical, used read-only). The leg
+        # split + honest-empty + reconciliation decision live entirely inside
+        # the pure `position_lifecycle` helper — this only hands it the raw
+        # rows and the engine's OWN authoritative `quantity`. The existing
+        # `quantity`/`כמות` card number is NEVER touched (strictly additive).
+        _camp_legs = {}
+        if not df.empty and 'campaign_id' in df.columns:
+            _lc_cols = [c for c in ('side', 'quantity', 'trade_id')
+                        if c in df.columns]
+            for _cid, _grp in df[df['campaign_id'].notnull()].groupby(
+                    'campaign_id'):
+                _camp_legs[_cid] = _grp[_lc_cols].to_dict('records')
+
         total_open_pnl = total_disc_pnl = total_algo_pnl = total_risk = total_realized_camp = 0
         total_exposure = total_disc_exposure = total_algo_exposure = 0
         total_locked_profit = total_giveback_risk = 0
@@ -396,6 +414,20 @@ def handle_portfolio_room(chat_id):
             qty_text   = f"`{qty}`" + (f" (+חיזוק)" if add_on_count > 0 else "")
             entry_text = f"${entry:.2f}" + (f" (בסיס: ${base_price:.2f})" if add_on_count > 0 else "")
 
+            # Phase REPORT-2 (W-R2-1/2) — units lifecycle, read-only & honest.
+            # The pure helper re-derives Σ|BUY|/Σ|SELL|/net from the SAME raw
+            # legs the engine splits, gated by the engine's OWN authoritative
+            # `quantity` (`row['quantity']` == engine_core.py:560 net_qty).
+            # Missing/ambiguous/non-reconciling ⇒ honest `—` + `לא ניתן לאמת`
+            # (never a fabricated number, AGENTS.md #1). `format_units_lifecycle`
+            # is THE single source of truth — the dashboard calls the SAME
+            # function for cross-surface byte-identity (anti-drift, SCOPE §5).
+            _lc = plc.compute_units_lifecycle(
+                _camp_legs.get(row.get('campaign_id')),
+                engine_net_qty=qty,
+            )
+            _lc_line = plc.format_units_lifecycle(_lc)
+
             if str(setup).upper() == 'ALGO':
                 algo_count += 1
                 total_algo_pnl += open_pnl_usd
@@ -424,6 +456,54 @@ def handle_portfolio_room(chat_id):
                 total_disc_exposure += pos_value
                 total_risk += current_open_loss_risk
 
+                # Phase REPORT-2 (W-R2-3) — SUPPRESSIVE-ONLY decision-awareness,
+                # the 4 HARD FENCES (SCOPE §4 — INVIOLABLE):
+                #  (a) ALGO carve-out: this is the NON-ALGO branch only; the
+                #      ALGO branch above is git-diff-untouched by this softening
+                #      (observe-only, AGENTS.md #8 / DEC-20260511-001).
+                #  (b) ZERO risk-math change: operates ONLY on the ALREADY-
+                #      computed display string `action_short`; never re-enters
+                #      the engine, never alters R/NAV/exposure/heat.
+                #  (c) NO new directive / TYPE / callback / push: it only
+                #      REPLACES a redundant realize/trim/Runner-tighten voice
+                #      with a neutral honest note when units were already
+                #      partially realized.
+                #  (d) Ambiguity ⇒ EXISTING behaviour: fires ONLY when the
+                #      lifecycle is `ok=True` AND realized-units > 0; on
+                #      `ok=False` the existing `action_short` renders verbatim.
+                #  A BROKEN / stop-breach / critical status+action is NEVER
+                #  suppressed (those engine branches stay verbatim).
+                _action_short_eff = action_short
+                _SOFTENABLE = (
+                    "שקול מימוש חלקי",
+                    "שקול מימוש נוסף",
+                    "הידוק ל-Runner",
+                    "הידוק אגרסיבי ל-Runner",
+                    "קדם סטופ ל-Runner",
+                    "Runner חופשי - שקול מימוש",
+                    "Runner חופשי - שקול מימוש נוסף בשבירת MA10",
+                    "Runner חופשי - שקול מימוש בשבירת MA10",
+                )
+                _CRITICAL_STATUS = ("🚨 קריטי", "🔴 Broken",
+                                    "🚨 חריגת סיכון אלגו")
+                _NEVER_SUPPRESS_ACTION = (
+                    "יציאה מיידית 🚨",
+                    "יציאה / הידוק מידי",
+                    "מימוש יתרה / יציאה לפי תוכנית",
+                    "שקול סגירת יתרת Runner",
+                    "להפחית חשיפה",
+                )
+                if (
+                    _lc.get("ok")
+                    and (_lc.get("realized") or 0) > 0
+                    and status not in _CRITICAL_STATUS
+                    and action_short not in _NEVER_SUPPRESS_ACTION
+                    and any(t in str(action_short) for t in _SOFTENABLE)
+                ):
+                    _action_short_eff = (
+                        "כבר מומש חלקית — אין צורך לממש שוב כרגע"
+                    )
+
                 msg += tf.fmt_position_card(
                     i=i, sym=sym, setup=setup, days_held=days_held,
                     curr=curr, entry=entry, open_pnl=open_pnl_usd,
@@ -431,7 +511,7 @@ def handle_portfolio_room(chat_id):
                     total_pos_profit=total_pos_profit,
                     total_campaign_r=total_campaign_r,
                     open_r_val=open_r_val, status=status,
-                    action_short=action_short,
+                    action_short=_action_short_eff,
                     add_on_count=add_on_count, base_price=base_price,
                     locked_profit=locked_profit_usd,
                     giveback_risk=giveback_risk_usd,
@@ -439,6 +519,11 @@ def handle_portfolio_room(chat_id):
                     price_is_fallback=price_is_fallback,
                     dual_r_fragment=_dual_r_frag,
                 ) + "\n"
+                # Phase REPORT-2 (W-R2-1/2) — ONE additive units-lifecycle line
+                # from THE single formatter. Strictly additive: every existing
+                # card number/string above is byte-identical; this line never
+                # replaces `quantity`/`כמות`.
+                msg += f"{RTL}   ▸ {_lc_line}\n"
                 if original_campaign_risk > 0 and sizing_str != "✅ תקין":
                     clean_sizing = sizing_str.replace('⚠️ ', '').replace('📉 ', '')
                     msg += f"{RTL}   ▸ ⚖️ בקרת קמפיין: {clean_sizing}\n"

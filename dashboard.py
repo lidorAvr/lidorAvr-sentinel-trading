@@ -16,6 +16,7 @@ from dashboard_nav import nav_sidebar_render as _nav_sidebar_render  # Sprint-27
 import telegram_formatters as tf  # Sprint-15: import-pure helpers (no telebot/supabase/engine import inside tf)
 import algo_backtest_store as abs_store  # Phase ALGO-BT-1 W-BT4: pure read-only BACKTEST stats (no network/Supabase/write/live-ALGO coupling)
 import algo_divergence  # Phase ALGO-2A W-2A1: pure observe-only live↔backtest edge-shape divergence (single-source-of-truth formatter, no engine/analytics/Supabase/network import)
+import position_lifecycle as plc  # Phase REPORT-2 W-R2-1: pure read-only units-lifecycle helper + THE single-source-of-truth formatter (shared with telegram_portfolio; no engine/analytics/risk_monitor/Supabase/network import)
 import state_io
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -298,6 +299,20 @@ else:
             if cid and 'campaign_id' in df_sorted.columns:
                 buys = df_sorted[(df_sorted['campaign_id'] == cid) & (df_sorted['side'].str.upper() == 'BUY')]
                 campaign_buy_records[cid] = buys[['trade_date', 'price', 'quantity']].to_dict('records')
+
+    # Phase REPORT-2 (W-R2-2) — read-only per-campaign raw-leg lookup for the
+    # additive units-lifecycle element. NO new data source: it slices the SAME
+    # `df_sorted` already in hand. The leg split + honest-empty + reconciliation
+    # decision live entirely in the pure `position_lifecycle` helper — the
+    # SAME function `telegram_portfolio` calls (cross-surface byte-identity,
+    # anti-drift SCOPE §5). The existing `Qty` column / every existing number
+    # is NEVER touched (strictly additive).
+    _camp_legs_dash = {}
+    if 'campaign_id' in df_sorted.columns:
+        _lc_cols_dash = [c for c in ('side', 'quantity', 'trade_id')
+                         if c in df_sorted.columns]
+        for _cid_d, _grp_d in df_sorted[df_sorted['campaign_id'].notnull()].groupby('campaign_id'):
+            _camp_legs_dash[_cid_d] = _grp_d[_lc_cols_dash].to_dict('records')
     
     closed_campaigns = []
     if 'campaign_id' in df_sorted.columns:
@@ -840,6 +855,25 @@ else:
                     if earnings_info.get('date'):
                         earnings_str += f" ({earnings_info['date'].strftime('%d/%m/%Y')})"
                     st.caption(f"🏷️ Data Quality: {badge_str}   |   📅 דו\"ח רווחים: {earnings_str}")
+                    # Phase REPORT-2 (W-R2-1/2) — ONE additive marker-delimited
+                    # units-lifecycle element from THE single source-of-truth
+                    # formatter (the SAME `position_lifecycle.format_units_lifecycle`
+                    # `telegram_portfolio` calls — cross-surface byte-identity,
+                    # anti-drift SCOPE §5). `pos['Qty']` IS the engine's own
+                    # net_qty (engine_core.py:560), used ONLY as the §3
+                    # reconciliation reference; missing/ambiguous/non-reconciling
+                    # legs ⇒ honest `—` + `לא ניתן לאמת` (never a fabricated
+                    # number, AGENTS.md #1). The existing `Qty` value / every
+                    # existing number is byte-identical (strictly additive — it
+                    # never replaces `Qty`).
+                    _lc_dash = plc.compute_units_lifecycle(
+                        _camp_legs_dash.get(pos.get('CampaignId')),
+                        engine_net_qty=pos['Qty'],
+                    )
+                    st.caption(
+                        f"📦 [units-lifecycle] "
+                        f"{plc.format_units_lifecycle(_lc_dash)}"
+                    )
                     pa1, pa2, pa3, pa4 = st.columns(4)
 
                     # עמודה 1: סיכון
