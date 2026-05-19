@@ -1231,10 +1231,19 @@ else:
                 st.info(algo_divergence.INSUFFICIENT_LIVE_SAMPLE_HE)
             else:
                 for _dsym in sorted(_div_syms):
-                    # SINGLE SOURCE OF TRUTH — identical formatter the
-                    # Telegram ALGO panel calls (cross-surface byte-identity).
-                    st.text(algo_divergence.format_symbol_divergence(
+                    # SINGLE SOURCE OF TRUTH — identical per-symbol LINE
+                    # formatter the Telegram ALGO panel calls (cross-surface
+                    # byte-identity). Phase ALGO-2A.1: ONE concise line per
+                    # symbol; the mandatory honesty bundle is emitted ONCE
+                    # below (de-duplicated, never removed).
+                    st.text(algo_divergence.format_symbol_divergence_line(
                         _dsym, _div_live_aggs, _bt_stats))
+                # The mandatory divergence honesty footer (join banner +
+                # observe-only + backtest label + the full 5-disclaimer
+                # bundle + the non-suppressible backtest caveat) emitted
+                # EXACTLY ONCE — byte-identical to the Telegram panel's
+                # footer (anti-drift, SINGLE SOURCE OF TRUTH).
+                st.text(algo_divergence.format_divergence_footer())
         except Exception:
             # Honest: a failed read-only build must not blank the panel and
             # must not fabricate a delta (absence ≠ data; AGENTS.md #1).

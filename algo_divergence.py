@@ -31,11 +31,25 @@ an honest empty marker, never 0). Every surfaced figure carries the
 existing `BACKTEST_LABEL` + `OBSERVE_ONLY_LABEL` + the 6 honesty
 disclaimers + the founder-asserted (NOT system-verified) join banner.
 
-ANTI-DRIFT (SCOPE §5): `format_symbol_divergence` is the **single source
-of truth** for the displayed text. BOTH surfaces (the Telegram ALGO panel
-and the dashboard ALGO-backtest panel) call THIS one formatter — neither
-formats independently, so the two surfaces are byte-identical by
-construction.
+ANTI-DRIFT (SCOPE §5): the displayed text is split into TWO pure
+single-source-of-truth functions — `format_symbol_divergence_line`
+(the ONE concise per-symbol line) and `format_divergence_footer` (the
+mandatory honesty bundle, rendered EXACTLY ONCE per panel). BOTH
+surfaces (the Telegram ALGO panel and the dashboard ALGO-backtest panel)
+call BOTH of these — neither formats independently, so the two surfaces
+are byte-identical by construction. `format_symbol_divergence` is kept
+(now delegating to line + footer) so no external caller breaks.
+
+Phase ALGO-2A.1 refinement (founder UX): the per-symbol block used to
+repeat the full ~5-line honesty bundle for EVERY symbol (a wall of
+duplicated text — not RTL-friendly / not concise, CLAUDE.md). It is now
+ONE concise line per symbol + ONE shared footer per panel. Nothing
+honest was removed — all mandatory content (join banner, observe-only
+label, backtest label, the full 5-disclaimer bundle, and the
+non-suppressible backtest caveat) is preserved, just rendered once. The
+below-floor message is now concrete: it states the actual live sample
+size, the floor, and how many more trades are needed for a reliable
+sample (never a fabricated 0 or floor).
 
 Never raises (boundary-input discipline): any missing / malformed / empty
 input degrades to an honest marker, never a crash and never a fabricated
@@ -365,63 +379,68 @@ def compute_symbol_divergence(
     return result
 
 
-# ── W-2A1 — THE single pure formatter (SINGLE SOURCE OF TRUTH) ──────────────
+# ── W-2A1 — THE single pure formatters (SINGLE SOURCE OF TRUTH) ─────────────
+# Phase ALGO-2A.1 split: ONE concise per-symbol LINE (no disclaimer tail) +
+# ONE shared honesty FOOTER rendered EXACTLY ONCE per panel. BOTH surfaces
+# call BOTH of these — neither formats independently (anti-drift, SCOPE §5).
 
-def format_symbol_divergence(
+
+def format_symbol_divergence_line(
     symbol: str,
     live_aggregates: Optional[Dict[str, Any]],
     backtest_stats: Optional[Dict[str, Any]],
     min_live_sample: int = MIN_LIVE_SAMPLE,
 ) -> str:
-    """THE single source of truth for the displayed per-symbol divergence
-    text (SCOPE §5 anti-drift). BOTH surfaces — the Telegram ALGO panel and
-    the dashboard ALGO-backtest panel — call THIS one formatter so the two
-    are byte-identical by construction.
+    """THE single source of truth for the ONE concise per-symbol divergence
+    LINE (SCOPE §5 anti-drift). Returns the per-symbol content ONLY — NO
+    disclaimer / caveat / banner tail (that mandatory honesty bundle is
+    emitted once per panel by `format_divergence_footer`).
 
     Pure: no I/O, no side effect, no state, never raises. Observe-only:
     neutral `🔭` only (no 🔴/🟢, no imperative verb); max wording
-    "דרוש עיון", never "דרושה פעולה". Below the hard min-live-sample gate
-    ⇒ the explicit "אין מספיק מדגם חי" marker, NEVER a delta / zero.
+    "תצפית, לא איתות", never "דרושה פעולה". Below the hard
+    min-live-sample gate ⇒ a CONCRETE honest marker stating the actual
+    live sample size, the floor, and how many more trades are needed —
+    NEVER a delta, NEVER a fabricated zero/floor.
 
-    Output is a single multi-line block (Hebrew, RTL-friendly). It is
-    deterministic for a given input — calling twice yields an identical
+    Deterministic for a given input — calling twice yields an identical
     string.
     """
     d = compute_symbol_divergence(
         symbol, live_aggregates, backtest_stats, min_live_sample)
     sym = d["symbol"]
+    floor = d["min_live_sample"]
+    live_n = d["live_n"]
 
-    # Mandatory non-suppressible labels + the founder-asserted join banner +
-    # the full disclaimer bundle, always present with ANY divergence text.
-    tail = (
-        f"{MARKER} {sym}: {d['join_banner']}\n"
-        f"{MARKER} {OBSERVE_ONLY_LABEL} · {BACKTEST_LABEL}\n"
-        f"{MARKER} {' · '.join(d['disclaimers'])}\n"
-        f"{MARKER} {BACKTEST_CAVEAT_HE}"
-    )
-
-    # Hard min-sample gate (SCOPE §3 #1): explicit honest marker — NEVER a
-    # delta, NEVER a silent zero. "דרוש עיון" wording only, no imperative.
+    # Hard min-sample gate (SCOPE §3 #1): explicit CONCRETE honest marker —
+    # NEVER a delta, NEVER a silent zero. If the live n is known we state the
+    # exact sample size, the floor, and how many MORE are needed for a
+    # reliable sample; if n is unknown we say so honestly (never fabricate
+    # 0 or the floor — zero-as-truth is forbidden, SCOPE §3).
     if not d["enough_sample"]:
+        if live_n is None:
+            return (
+                f"{MARKER} {sym}: מדגם חי לא זמין — "
+                f"הפרש לא מוצג (תצפית, לא איתות)"
+            )
+        missing = max(0, floor - live_n)
         return (
-            f"{MARKER} {sym}: הפרש חי↔בקטסט — {INSUFFICIENT_LIVE_SAMPLE_HE} "
-            f"(דרוש עיון, לא פעולה)\n"
-            f"{tail}"
+            f"{MARKER} {sym}: מדגם חי {live_n}/{floor} — "
+            f"חסרים {missing} לסף אמין · "
+            f"הפרש לא מוצג (תצפית, לא איתות)"
         )
 
     if not d["backtest_present"]:
         return (
-            f"{MARKER} {sym}: הפרש חי↔בקטסט — אין אסטרטגיית בקטסט תואמת "
-            f"לסימול (לא מוצג הפרש; דרוש עיון, לא פעולה)\n"
-            f"{tail}"
+            f"{MARKER} {sym}: אין אסטרטגיית בקטסט תואמת — "
+            f"הפרש לא מוצג (תצפית, לא איתות)"
         )
 
     basis = d["return_basis"] or "—"
     # Edge-shape deltas only; each missing side ⇒ honest '—', never a zero.
-    head = (
-        f"{MARKER} {sym}: הפרש edge חי↔בקטסט (תצפית בלבד, לא איתות; "
-        f"דרוש עיון, לא פעולה)\n"
-        f"{MARKER}  N-חי={d['live_n']} · "
+    return (
+        f"{MARKER} {sym}: הפרש edge חי↔בקטסט (תצפית, לא איתות) · "
+        f"N-חי={d['live_n']} · "
         f"ΔWR={_fmt_pct(d['win_rate_delta'])} · "
         f"Δתשואה({basis})={_fmt_pct(d['return_delta'])} · "
         f"ΔPF={_fmt_num(d['profit_factor_delta'])} · "
@@ -433,4 +452,44 @@ def format_symbol_divergence(
         f"תשואה={_fmt_pct(d['backtest']['return_pct'])} · "
         f"PF={_fmt_pf(d['backtest']['profit_factor'])}"
     )
-    return f"{head}\n{tail}"
+
+
+def format_divergence_footer() -> str:
+    """THE single source of truth for the mandatory honesty bundle, emitted
+    EXACTLY ONCE per panel (SCOPE §3/§5). Contains — nothing removed:
+      * the founder-asserted (NOT system-verified) join banner,
+      * the `OBSERVE_ONLY_LABEL`,
+      * the `BACKTEST_LABEL`,
+      * the full ordered 5-disclaimer bundle,
+      * the NON-suppressible `ALGO_BACKTEST_CAVEAT_HE` backtest caveat.
+
+    Pure, deterministic, takes no input, never raises. Both surfaces emit
+    THIS exact footer once after their per-symbol loop so the honesty
+    content is preserved verbatim while no longer duplicated per symbol
+    (Phase ALGO-2A.1 de-duplication — honest content de-duplicated, never
+    removed).
+    """
+    return (
+        f"{MARKER} {JOIN_BANNER_HE}\n"
+        f"{MARKER} {OBSERVE_ONLY_LABEL} · {BACKTEST_LABEL}\n"
+        f"{MARKER} {' · '.join(ALL_DISCLAIMERS_HE)}\n"
+        f"{MARKER} {BACKTEST_CAVEAT_HE}"
+    )
+
+
+def format_symbol_divergence(
+    symbol: str,
+    live_aggregates: Optional[Dict[str, Any]],
+    backtest_stats: Optional[Dict[str, Any]],
+    min_live_sample: int = MIN_LIVE_SAMPLE,
+) -> str:
+    """Backward-compatible single-block formatter (per-symbol line + the
+    full footer appended) so NO external caller breaks. The two SURFACES
+    no longer call this — they call `format_symbol_divergence_line` per
+    symbol + `format_divergence_footer` ONCE per panel (Phase ALGO-2A.1
+    de-duplication). Kept pure / deterministic / never-raises.
+    """
+    return (
+        f"{format_symbol_divergence_line(symbol, live_aggregates, backtest_stats, min_live_sample)}\n"
+        f"{format_divergence_footer()}"
+    )

@@ -909,19 +909,23 @@ def handle_algo_panel(chat_id):
             f"{RTL}• {sym}: מצב נצפה — {state_label}.\n"
             f"{RTL}  בסיס סיכון: {rb}. סטופ חיצוני: {ext_he}.\n"
         )
-        # Phase ALGO-2A W-2A2 — ONE 🔭 observe-only live↔backtest edge-shape
-        # divergence block per symbol, AFTER the per-symbol state line and
-        # BEFORE the mandatory backtest caveat. Rendered ONLY on panel open
-        # (no push). Text comes from the W-2A1 SINGLE-SOURCE-OF-TRUTH
-        # formatter — the dashboard ALGO-backtest panel calls the SAME
-        # formatter so the two surfaces are byte-identical (anti-drift).
-        # Observe-only: neutral 🔭, no 🔴/🟢, no imperative, never fed into
-        # WR/Expectancy/PF; below the hard min-live-sample gate it shows the
-        # honest "אין מספיק מדגם חי" marker, never a delta/zero.
-        _div_text = algo_divergence.format_symbol_divergence(
+        # Phase ALGO-2A.1 W-2A2 — ONE concise 🔭 observe-only live↔backtest
+        # edge-shape divergence LINE per symbol, AFTER the per-symbol state
+        # line. The mandatory honesty bundle is no longer repeated per
+        # symbol — it is emitted ONCE per panel by
+        # `format_divergence_footer()` after this loop (Phase ALGO-2A.1
+        # de-duplication: honest content de-duplicated, never removed).
+        # Rendered ONLY on panel open (no push). Text comes from the W-2A1
+        # SINGLE-SOURCE-OF-TRUTH per-symbol line formatter — the dashboard
+        # ALGO-backtest panel calls the SAME formatter so the two surfaces
+        # are byte-identical (anti-drift). Observe-only: neutral 🔭, no
+        # 🔴/🟢, no imperative, never fed into WR/Expectancy/PF; below the
+        # hard min-live-sample gate it shows the CONCRETE honest sample
+        # shortfall ("מדגם חי n/floor — חסרים …"), never a delta/zero.
+        _div_line = algo_divergence.format_symbol_divergence_line(
             sym, _algo_live_aggs, _algo_bt_stats)
         body += "".join(
-            f"{RTL}{_ln}\n" for _ln in _div_text.split("\n")
+            f"{RTL}{_ln}\n" for _ln in _div_line.split("\n")
         )
         # Sprint-17 #5 — ALGO dead-money = the ALGO's OWN §1 time-exit window
         # (QQQ/HOOD/PLTR only; TSLA/JPM have none → no line). Descriptive
@@ -932,8 +936,22 @@ def handle_algo_panel(chat_id):
                 f"{RTL}  ⏳ ALGO {sym} קרוב לחלון יציאת-הזמן שלו "
                 f"({te}) — לוודא שהאלגו מחובר ופועל. תיאור, לא הוראה.\n"
             )
+    # Phase ALGO-2A.1 W-2A2 — the mandatory divergence honesty bundle (join
+    # banner + observe-only label + backtest label + the full 5-disclaimer
+    # bundle + the non-suppressible backtest caveat) emitted EXACTLY ONCE
+    # per panel via the W-2A1 SINGLE-SOURCE-OF-TRUTH footer formatter (the
+    # dashboard ALGO-backtest panel emits the byte-identical footer once
+    # too — anti-drift). This replaces the now-redundant PER-SYMBOL
+    # duplication of that bundle ONLY — honest content de-duplicated, never
+    # removed (every mandatory disclaimer/caveat is still present here).
+    _div_footer = algo_divergence.format_divergence_footer()
+    body += "".join(
+        f"{RTL}{_ln}\n" for _ln in _div_footer.split("\n")
+    )
     # Backtest-caveat — MANDATORY on any surface that shows ALGO data derived
     # from the founder backtest dataset (MARK §5; AGENTS.md #1). Non-suppressible.
+    # This is the PANEL's OWN pre-Phase-ALGO-2A global caveat (its own
+    # contract — kept intact; the footer's caveat is allowed to coincide).
     body += f"\n{RTL}{algo_rules.ALGO_BACKTEST_CAVEAT_HE}\n"
     # Honest source label (same vocabulary the list uses).
     body += (

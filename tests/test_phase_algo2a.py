@@ -75,13 +75,19 @@ class TestCase1DeltaCorrectness:
         assert d["backtest_present"] is True
 
     def test_formatter_shows_each_side_and_deltas(self):
+        # Phase ALGO-2A.1: the per-symbol LINE carries the deltas (the
+        # honesty bundle moved to the once-per-panel footer).
+        line = adv.format_symbol_divergence_line("HOOD", _live(), _bt())
+        assert "ΔWR=-6.00%" in line
+        assert "Δתשואה(ממוצע)=-6.30%" in line
+        assert "ΔPF=-1.45" in line
+        assert "Δרצף-L=2.00" in line
+        assert "חי: WR=+60.00%" in line
+        assert "בקטסט: WR=+66.00%" in line
+        # the back-compat single block still contains both halves
         out = adv.format_symbol_divergence("HOOD", _live(), _bt())
-        assert "ΔWR=-6.00%" in out
-        assert "Δתשואה(ממוצע)=-6.30%" in out
-        assert "ΔPF=-1.45" in out
-        assert "Δרצף-L=2.00" in out
-        assert "חי: WR=+60.00%" in out
-        assert "בקטסט: WR=+66.00%" in out
+        assert line in out
+        assert adv.format_divergence_footer() in out
 
     def test_missing_one_side_field_is_honest_dash_never_zero(self):
         """A missing side metric ⇒ honest '—', never a fabricated 0 delta
@@ -90,17 +96,17 @@ class TestCase1DeltaCorrectness:
         live["HOOD"].pop("profit_factor")
         d = adv.compute_symbol_divergence("HOOD", live, _bt())
         assert d["profit_factor_delta"] is None
-        out = adv.format_symbol_divergence("HOOD", live, _bt())
-        assert "ΔPF=—" in out
-        assert "ΔPF=+0.00" not in out and "ΔPF=0.00" not in out
+        line = adv.format_symbol_divergence_line("HOOD", live, _bt())
+        assert "ΔPF=—" in line
+        assert "ΔPF=+0.00" not in line and "ΔPF=0.00" not in line
 
     def test_infinite_pf_never_fabricates_finite_delta(self):
         bt = _bt()
         bt["strategies"]["HOOD::strat"]["profit_factor"] = float("inf")
         d = adv.compute_symbol_divergence("HOOD", _live(), bt)
         assert d["profit_factor_delta"] is None
-        out = adv.format_symbol_divergence("HOOD", _live(), bt)
-        assert "בקטסט:" in out and "PF=∞" in out
+        line = adv.format_symbol_divergence_line("HOOD", _live(), bt)
+        assert "בקטסט:" in line and "PF=∞" in line
 
     def test_compute_is_pure_and_never_raises_on_garbage(self):
         for bad_live, bad_bt in (
@@ -111,6 +117,9 @@ class TestCase1DeltaCorrectness:
             d = adv.compute_symbol_divergence("HOOD", bad_live, bad_bt)
             assert isinstance(d, dict)
             assert d["win_rate_delta"] is None
+            line = adv.format_symbol_divergence_line(
+                "HOOD", bad_live, bad_bt)
+            assert isinstance(line, str) and adv.MARKER in line
             txt = adv.format_symbol_divergence("HOOD", bad_live, bad_bt)
             assert isinstance(txt, str) and adv.MARKER in txt
 
@@ -125,38 +134,50 @@ class TestCase2MinSampleGate:
         two are pinned equal so they can never silently drift)."""
         assert adv.MIN_LIVE_SAMPLE == am.ALGO_COHORT_WINDOW == 30
 
-    def test_below_floor_is_honest_marker_not_zero_not_delta(self):
-        d = adv.compute_symbol_divergence("HOOD", _live(n=29), _bt())
+    def test_below_floor_is_concrete_shortfall_not_zero_not_delta(self):
+        """Phase ALGO-2A.1: below the floor the per-symbol LINE states the
+        CONCRETE live sample size, the floor, and how many MORE are
+        needed — never a delta, never a fabricated zero."""
+        d = adv.compute_symbol_divergence("HOOD", _live(n=4), _bt())
         assert d["enough_sample"] is False
         assert d["win_rate_delta"] is None
         assert d["return_delta"] is None
         assert d["profit_factor_delta"] is None
         assert d["loss_streak_delta"] is None
-        out = adv.format_symbol_divergence("HOOD", _live(n=29), _bt())
-        assert adv.INSUFFICIENT_LIVE_SAMPLE_HE in out
-        assert "אין מספיק מדגם חי" in out
+        line = adv.format_symbol_divergence_line("HOOD", _live(n=4), _bt())
+        # concrete: actual sample size / floor + missing-to-reliable count
+        assert "מדגם חי 4/30" in line
+        assert "חסרים 26 לסף אמין" in line
+        assert "הפרש לא מוצג (תצפית, לא איתות)" in line
         # never a zero/delta when below floor
         for tok in ("ΔWR=", "Δתשואה", "+0.00%", "0.00%"):
-            assert tok not in out, tok
+            assert tok not in line, tok
 
     def test_at_floor_is_enough(self):
         d = adv.compute_symbol_divergence("HOOD", _live(n=30), _bt())
         assert d["enough_sample"] is True
 
-    def test_missing_live_n_is_below_floor_not_zero(self):
+    def test_missing_live_n_is_honest_unavailable_not_zero(self):
+        """Phase ALGO-2A.1: live n unknown ⇒ honest "מדגם חי לא זמין",
+        NEVER a fabricated 0 or the floor (zero-as-truth forbidden)."""
         d = adv.compute_symbol_divergence(
             "HOOD", {"HOOD": {"win_rate_pct": 60.0}}, _bt())
         assert d["live_n"] is None
         assert d["enough_sample"] is False
-        out = adv.format_symbol_divergence(
+        line = adv.format_symbol_divergence_line(
             "HOOD", {"HOOD": {"win_rate_pct": 60.0}}, _bt())
-        assert adv.INSUFFICIENT_LIVE_SAMPLE_HE in out
+        assert "מדגם חי לא זמין" in line
+        assert "הפרש לא מוצג (תצפית, לא איתות)" in line
+        # NEVER a fabricated 0 or floor presented as the live n
+        assert "מדגם חי 0/" not in line and "מדגם חי 30/30" not in line
 
     def test_no_backtest_strategy_is_honest_not_zero(self):
-        out = adv.format_symbol_divergence("HOOD", _live(), {"strategies": {}})
-        assert "אין אסטרטגיית בקטסט תואמת" in out
+        line = adv.format_symbol_divergence_line(
+            "HOOD", _live(), {"strategies": {}})
+        assert "אין אסטרטגיית בקטסט תואמת" in line
+        assert "הפרש לא מוצג (תצפית, לא איתות)" in line
         for tok in ("ΔWR=", "+0.00%"):
-            assert tok not in out
+            assert tok not in line
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -164,53 +185,76 @@ class TestCase2MinSampleGate:
 # ════════════════════════════════════════════════════════════════════════════
 
 class TestCase3DisclaimersAndBanner:
-    def _all(self):
-        return adv.format_symbol_divergence("HOOD", _live(), _bt())
+    def _footer(self):
+        return adv.format_divergence_footer()
 
-    def test_join_banner_always_present_both_states(self):
-        for live in (_live(), _live(n=2)):
-            out = adv.format_symbol_divergence("HOOD", live, _bt())
-            assert adv.JOIN_BANNER_HE in out
-            assert "אותה-אסטרטגיה לפי אישור המנהל" in out
-            assert "לא מאומת אוטומטית" in out
+    def test_footer_rendered_exactly_once_and_is_pure(self):
+        """Phase ALGO-2A.1: the mandatory honesty bundle is ONE shared
+        footer (no input, deterministic, never raises) — it appears
+        exactly ONCE per panel, not duplicated per symbol."""
+        f1 = adv.format_divergence_footer()
+        f2 = adv.format_divergence_footer()
+        assert f1 == f2 and isinstance(f1, str)
+        # the join banner / each disclaimer / the caveat each occur EXACTLY
+        # once inside the single shared footer.
+        assert f1.count(adv.JOIN_BANNER_HE) == 1
+        assert f1.count(adv.WINDOW_REGIME_MISMATCH_HE) == 1
+        assert f1.count(adv.MULTIPLE_COMPARISONS_HE) == 1
+        assert f1.count(adv.BACKTEST_CAVEAT_HE) == 1
+        # the concise per-symbol LINE carries NONE of the bundle (it moved
+        # wholesale to the footer — de-duplicated, never removed).
+        line = adv.format_symbol_divergence_line("HOOD", _live(), _bt())
+        assert adv.JOIN_BANNER_HE not in line
+        assert adv.WINDOW_REGIME_MISMATCH_HE not in line
+        assert adv.BACKTEST_CAVEAT_HE not in line
 
-    def test_six_disclaimers_present(self):
-        out = self._all()
-        # #1 hard min-sample (its TEXT is present as the gate constant; it
-        # triggers as the marker when below floor — proven in Case 2).
-        assert adv.INSUFFICIENT_LIVE_SAMPLE_HE == \
-            "אין מספיק מדגם חי — לא מוצג הפרש (לא חוסר, לא איתות)"
-        # #2 window/regime
-        assert adv.WINDOW_REGIME_MISMATCH_HE in out
-        # #3 survivorship/look-ahead
-        assert adv.SURVIVORSHIP_HE in out
-        # #4 Volume=1/cost=0 — REUSES the existing BACKTEST_LABEL verbatim
-        from algo_backtest_store import BACKTEST_LABEL
-        assert adv.NO_COST_HE == BACKTEST_LABEL
-        assert BACKTEST_LABEL in out
-        # #5 long-only-vs-live
-        assert adv.LONG_ONLY_HE in out
-        # #6 multiple-comparisons
-        assert adv.MULTIPLE_COMPARISONS_HE in out
+    def test_join_banner_present_in_shared_footer(self):
+        out = self._footer()
+        assert adv.JOIN_BANNER_HE in out
+        assert "אותה-אסטרטגיה לפי אישור המנהל" in out
+        assert "לא מאומת אוטומטית" in out
 
-    def test_observe_only_and_backtest_caveat_labels_present(self):
+    def test_all_mandatory_honesty_content_present_in_footer(self):
+        """None of the mandatory honesty content was dropped in the
+        Phase ALGO-2A.1 de-duplication — every disclaimer, both labels,
+        the join banner and the non-suppressible caveat remain."""
+        out = self._footer()
         from algo_backtest_store import BACKTEST_LABEL, OBSERVE_ONLY_LABEL
         from algo_rules import ALGO_BACKTEST_CAVEAT_HE
-        out = self._all()
+        # #1 hard min-sample text still defined as the gate constant
+        # (it triggers as the concrete per-symbol shortfall — Case 2).
+        assert adv.INSUFFICIENT_LIVE_SAMPLE_HE == \
+            "אין מספיק מדגם חי — לא מוצג הפרש (לא חוסר, לא איתות)"
+        # join banner + observe-only + backtest label
+        assert adv.JOIN_BANNER_HE in out
         assert OBSERVE_ONLY_LABEL in out
         assert BACKTEST_LABEL in out
+        # the full 5-disclaimer bundle
+        assert adv.WINDOW_REGIME_MISMATCH_HE in out   # #2 window/regime
+        assert adv.SURVIVORSHIP_HE in out             # #3 survivorship
+        assert adv.NO_COST_HE == BACKTEST_LABEL       # #4 Volume=1/cost=0
+        assert adv.LONG_ONLY_HE in out                # #5 long-only
+        assert adv.MULTIPLE_COMPARISONS_HE in out     # #6 multiple-comp
+        # the NON-suppressible backtest caveat — still present (once)
         assert ALGO_BACKTEST_CAVEAT_HE in out
-        # reused verbatim — no duplicated string definitions
         assert adv.BACKTEST_CAVEAT_HE == ALGO_BACKTEST_CAVEAT_HE
 
-    def test_below_floor_still_carries_all_mandatory_labels(self):
-        out = adv.format_symbol_divergence("HOOD", _live(n=1), _bt())
+    def test_footer_independent_of_symbol_or_sample_state(self):
+        """The shared footer is the SAME regardless of per-symbol state
+        (below floor, no backtest, enough sample) — it is emitted once
+        per panel and is invariant."""
+        assert adv.format_divergence_footer() == \
+            adv.format_divergence_footer()
+        # back-compat single block (below floor) STILL carries the full
+        # mandatory bundle (line + footer) — nothing honest lost.
         from algo_backtest_store import BACKTEST_LABEL, OBSERVE_ONLY_LABEL
+        out = adv.format_symbol_divergence("HOOD", _live(n=1), _bt())
         assert adv.JOIN_BANNER_HE in out
         assert BACKTEST_LABEL in out
         assert OBSERVE_ONLY_LABEL in out
         assert adv.WINDOW_REGIME_MISMATCH_HE in out
         assert adv.MULTIPLE_COMPARISONS_HE in out
+        assert adv.BACKTEST_CAVEAT_HE in out
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -219,11 +263,16 @@ class TestCase3DisclaimersAndBanner:
 
 class TestCase4ObserveOnly:
     def _all_outputs(self):
+        # every per-symbol LINE state + the shared footer + the
+        # back-compat single block — observe-only must hold for ALL.
         return [
+            adv.format_symbol_divergence_line("HOOD", _live(), _bt()),
+            adv.format_symbol_divergence_line("HOOD", _live(n=3), _bt()),
+            adv.format_symbol_divergence_line(
+                "HOOD", _live(), {"strategies": {}}),
+            adv.format_symbol_divergence_line("HOOD", None, None),
+            adv.format_divergence_footer(),
             adv.format_symbol_divergence("HOOD", _live(), _bt()),
-            adv.format_symbol_divergence("HOOD", _live(n=3), _bt()),
-            adv.format_symbol_divergence("HOOD", _live(), {"strategies": {}}),
-            adv.format_symbol_divergence("HOOD", None, None),
         ]
 
     def test_no_verdict_colour_emoji(self):
@@ -234,8 +283,8 @@ class TestCase4ObserveOnly:
 
     def test_no_imperative_or_directive_token(self):
         # imperative / actuation Hebrew tokens that would make this a
-        # recommendation; "דרושה פעולה" is explicitly forbidden (only the
-        # passive "דרוש עיון" is permitted, SCOPE §4).
+        # recommendation; "דרושה פעולה" is explicitly forbidden (only
+        # passive observe-only wording is permitted, SCOPE §4).
         forbidden = (
             "דרושה פעולה", "מומלץ", "המלצה", "הדק", "צמצם", "מכור",
             "קנה", "צא ", "הגדל", "הקטן", "בצע", "סגור פוזיציה",
@@ -244,9 +293,16 @@ class TestCase4ObserveOnly:
         for out in self._all_outputs():
             for tok in forbidden:
                 assert tok not in out, tok
-            # the permitted passive wording IS present
-            assert "דרוש עיון" in out or \
-                adv.INSUFFICIENT_LIVE_SAMPLE_HE in out
+        # the permitted passive observe-only wording IS present on every
+        # per-symbol LINE (Phase ALGO-2A.1: "תצפית, לא איתות").
+        for line in (
+            adv.format_symbol_divergence_line("HOOD", _live(), _bt()),
+            adv.format_symbol_divergence_line("HOOD", _live(n=3), _bt()),
+            adv.format_symbol_divergence_line(
+                "HOOD", _live(), {"strategies": {}}),
+            adv.format_symbol_divergence_line("HOOD", None, None),
+        ):
+            assert "תצפית, לא איתות" in line
 
     def test_helper_has_no_state_push_or_supabase(self):
         """The W-2A1 helper performs no write / push / Supabase / network —
@@ -324,26 +380,35 @@ class TestCase5ImportPurity:
 # ════════════════════════════════════════════════════════════════════════════
 
 class TestCase6CrossSurfaceByteIdentity:
-    def test_telegram_path_and_dashboard_path_emit_identical_text(self):
-        """The Telegram ALGO panel and the dashboard ALGO-backtest panel
-        BOTH call the SAME single-source-of-truth formatter
-        `algo_divergence.format_symbol_divergence`. For the SAME input the
-        two surface code paths therefore emit byte-identical divergence
-        text — proven by calling the exact formatter both surfaces call."""
+    def test_telegram_path_and_dashboard_path_emit_identical_line_and_footer(
+            self):
+        """Phase ALGO-2A.1 REDEFINED cross-surface byte-identity (the core
+        anti-drift proof, SCOPE §5): the Telegram ALGO panel and the
+        dashboard ALGO-backtest panel BOTH call the SAME
+        `algo_divergence.format_symbol_divergence_line` PER SYMBOL and the
+        SAME `algo_divergence.format_divergence_footer` ONCE. For the SAME
+        input the per-symbol LINE is byte-identical across surfaces AND the
+        shared footer is byte-identical across surfaces."""
         live, bt = _live(), _bt()
         for sym in ("HOOD", "ZZZ"):
-            telegram_text = adv.format_symbol_divergence(sym, live, bt)
-            dashboard_text = adv.format_symbol_divergence(sym, live, bt)
-            assert telegram_text == dashboard_text
-            assert telegram_text.encode("utf-8") == \
-                dashboard_text.encode("utf-8")
+            telegram_line = adv.format_symbol_divergence_line(sym, live, bt)
+            dashboard_line = adv.format_symbol_divergence_line(sym, live, bt)
+            assert telegram_line == dashboard_line
+            assert telegram_line.encode("utf-8") == \
+                dashboard_line.encode("utf-8")
+        telegram_footer = adv.format_divergence_footer()
+        dashboard_footer = adv.format_divergence_footer()
+        assert telegram_footer == dashboard_footer
+        assert telegram_footer.encode("utf-8") == \
+            dashboard_footer.encode("utf-8")
 
-    def test_both_surfaces_reference_the_single_formatter(self):
+    def test_both_surfaces_reference_the_single_line_and_footer(self):
         """Static proof neither surface formats independently: both
         `telegram_tasks.py handle_algo_panel` and the dashboard
         ALGO-backtest section call `algo_divergence
-        .format_symbol_divergence` (the ONE formatter) and nothing else
-        formats the divergence text."""
+        .format_symbol_divergence_line` (the ONE per-symbol line) and
+        `algo_divergence.format_divergence_footer` (the ONE shared
+        footer) — nothing else formats the divergence text."""
         root = os.path.dirname(os.path.dirname(__file__))
         tt = open(os.path.join(root, "telegram_tasks.py"),
                   encoding="utf-8").read()
@@ -351,14 +416,24 @@ class TestCase6CrossSurfaceByteIdentity:
                     encoding="utf-8").read()
         assert "import algo_divergence" in tt
         assert "import algo_divergence" in dash
-        assert "algo_divergence.format_symbol_divergence(" in tt
-        assert "algo_divergence.format_symbol_divergence(" in dash
+        assert "algo_divergence.format_symbol_divergence_line(" in tt
+        assert "algo_divergence.format_symbol_divergence_line(" in dash
+        assert "algo_divergence.format_divergence_footer(" in tt
+        assert "algo_divergence.format_divergence_footer(" in dash
+        # the footer is emitted EXACTLY ONCE per surface (de-dup proof)
+        assert tt.count("algo_divergence.format_divergence_footer(") == 1
+        assert dash.count("algo_divergence.format_divergence_footer(") == 1
+        # the back-compat formatter is still importable for any other caller
+        assert callable(adv.format_symbol_divergence)
+        assert callable(adv.compute_symbol_divergence)
 
     def test_formatter_is_deterministic_idempotent(self):
         live, bt = _live(), _bt()
-        a = adv.format_symbol_divergence("HOOD", live, bt)
-        b = adv.format_symbol_divergence("HOOD", live, bt)
+        a = adv.format_symbol_divergence_line("HOOD", live, bt)
+        b = adv.format_symbol_divergence_line("HOOD", live, bt)
         assert a == b
+        assert adv.format_divergence_footer() == \
+            adv.format_divergence_footer()
         # input not mutated (pure)
         assert live == _live() and bt == _bt()
 
@@ -368,7 +443,8 @@ class TestCase6CrossSurfaceByteIdentity:
 # ════════════════════════════════════════════════════════════════════════════
 
 class TestCase7AdditiveWiring:
-    def test_telegram_panel_addition_is_after_state_line_before_caveat(self):
+    def test_telegram_panel_line_per_symbol_then_footer_once_before_caveat(
+            self):
         root = os.path.dirname(os.path.dirname(__file__))
         tt = open(os.path.join(root, "telegram_tasks.py"),
                   encoding="utf-8").read()
@@ -376,16 +452,28 @@ class TestCase7AdditiveWiring:
         end = tt.index("\ndef ", start + 1)
         block = tt[start:end]
         i_state = block.index("מצב נצפה")
-        i_div = block.index("algo_divergence.format_symbol_divergence(")
+        i_line = block.index(
+            "algo_divergence.format_symbol_divergence_line(")
+        i_footer = block.index(
+            "algo_divergence.format_divergence_footer(")
         i_caveat = block.index("algo_rules.ALGO_BACKTEST_CAVEAT_HE")
-        # the 🔭 divergence call is AFTER the per-symbol state line and
-        # BEFORE the existing mandatory backtest caveat (SCOPE §5a).
-        assert i_state < i_div < i_caveat
-        # the existing observation line + mandatory caveat are still present
+        # Phase ALGO-2A.1: per-symbol LINE is AFTER the per-symbol state
+        # line; the shared FOOTER comes AFTER the per-symbol loop and
+        # BEFORE the panel's own pre-existing mandatory caveat.
+        assert i_state < i_line < i_footer < i_caveat
+        # the per-symbol LINE is inside the per-symbol loop; the footer is
+        # emitted EXACTLY ONCE (de-dup: not repeated per symbol).
+        assert block.count(
+            "algo_divergence.format_symbol_divergence_line(") == 1
+        assert block.count(
+            "algo_divergence.format_divergence_footer(") == 1
+        # the existing observation line + the panel's OWN pre-existing
+        # global caveat are still present (kept intact).
         assert "מנוהל חיצונית. בקרה בלבד." in block
         assert "סטופ חיצוני:" in block
+        assert "algo_rules.ALGO_BACKTEST_CAVEAT_HE" in block
 
-    def test_dashboard_section_is_marker_delimited_and_additive(self):
+    def test_dashboard_section_is_marker_delimited_line_then_footer(self):
         root = os.path.dirname(os.path.dirname(__file__))
         dash = open(os.path.join(root, "dashboard.py"),
                     encoding="utf-8").read()
@@ -394,8 +482,17 @@ class TestCase7AdditiveWiring:
         s = dash.index("ALGO-2A divergence section START")
         e = dash.index("ALGO-2A divergence section END")
         section = dash[s:e]
-        # additive section calls the single formatter and writes no Supabase
-        assert "algo_divergence.format_symbol_divergence(" in section
+        # additive section: per-symbol LINE in the loop + ONE shared footer
+        assert "algo_divergence.format_symbol_divergence_line(" in section
+        assert "algo_divergence.format_divergence_footer(" in section
+        # the footer is emitted EXACTLY ONCE (de-dup proof)
+        assert section.count(
+            "algo_divergence.format_divergence_footer(") == 1
+        i_line = section.index(
+            "algo_divergence.format_symbol_divergence_line(")
+        i_footer = section.index(
+            "algo_divergence.format_divergence_footer(")
+        assert i_line < i_footer
         for forbidden in ("supabase.table", ".execute(", ".insert(",
                           ".update(", ".delete("):
             assert forbidden not in section, forbidden
