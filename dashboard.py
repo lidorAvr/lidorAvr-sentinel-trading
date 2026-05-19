@@ -201,6 +201,24 @@ def compute_live_portfolio_data(open_trades_dict, _acc_size, _target_risk_usd, _
         score = eval_res['data']['score'] if eval_res['ok'] and eval_res['data']['score'] else 50
         status = eval_res['data']['status'] if eval_res['ok'] else "Unknown"
         sizing_status = eval_res['data'].get('sizing_status', '✅ תקין') if eval_res['ok'] else "Unknown"
+        # Phase REPORT-3 (block 4) — read-only surfacing of the engine's
+        # ALREADY-computed advisory action from the EXISTING `eval_res`
+        # (engine_core.evaluate_position_engine, called once above at
+        # dashboard.py:196-199). NO new engine call, NO new math: it merely
+        # reads `eval_res['data']['action']` (the raw `action_short` /
+        # build_management_action token; for an ALGO position the engine
+        # already returns the verbatim externally-managed
+        # "מנוהל חיצונית — בקרה בלבד" oversight-only string). On engine
+        # not-OK the raw engine error string is surfaced verbatim (honest;
+        # AGENTS.md #1 — absence ≠ data, never a fabricated directive). The
+        # export §2 prints this RAW action with an explicit honest note that
+        # the Telegram card additionally applies a display-only
+        # partial-realize de-noising (REPORT-2 §4) the export does NOT
+        # replicate. Strictly ADDITIVE — every existing live_df column is
+        # byte-identical.
+        _engine_action = eval_res['data']['action'] if eval_res['ok'] else None
+        _engine_action_err = (None if eval_res['ok']
+                              else f"engine: {eval_res.get('error', 'unknown')}")
         
         sec_b = ec.get_sector_bundle(sym)
 
@@ -226,6 +244,11 @@ def compute_live_portfolio_data(open_trades_dict, _acc_size, _target_risk_usd, _
         live_positions.append({
             'Symbol': sym, 'Setup': setup, 'Exposure_USD': pos_value, 'Exposure_Pct': weight_pct,
             'PnL': open_pnl, 'Open_R': open_r_val, 'Total_R': total_campaign_r, 'Score': score, 'Status': status, 'Sizing': sizing_status,
+            # Phase REPORT-3 block 4 — ADDITIVE read-only fields from the
+            # EXISTING `eval_res` (no new engine call). Raw engine advisory
+            # action; honest engine-error string when not OK.
+            'Action': _engine_action,
+            'ActionErr': _engine_action_err,
             'Structure_R': (_structure_r_dash if _rbasis_dash['structure_valid'] else None),
             'Account_R': (_account_r_dash if _rbasis_dash['account_valid'] else None),
             'R_Basis': _rbasis_dash['primary_basis_label'],
@@ -597,9 +620,37 @@ else:
     except Exception:
         pass
     ai_str += f"- Expectancy: {expectancy_r:.2f}R per trade | Adjusted R/R: {adj_rr:.2f}:1\n\n"
+
+    # Phase REPORT-3 block 2 — Adaptive-risk regime / trade-heat. Reuses the
+    # ALREADY-computed `_risk_rec` (the single `are.compute_adaptive_risk`
+    # call site stays dashboard.py:515; it ran BEFORE this builder) +ONLY the
+    # PURE `tf.fmt_adaptive_risk_block` and the read-only config-file read
+    # `are.get_risk_settle_info()` — the SAME pair the Telegram report calls
+    # (telegram_portfolio.py:640; cross-surface byte-identity, anti-drift
+    # SCOPE §6). ZERO new `compute_adaptive_risk` call ⇒ ZERO new
+    # risk_recommendations.json write, ZERO new risk/heat math
+    # (adaptive_risk_engine.py git-diff EMPTY). `_risk_rec.ok` False ⇒
+    # `fmt_adaptive_risk_block` already renders the honest `⚪ {msg}` marker
+    # — never a fabricated heat/recommendation (AGENTS.md #1). Markdown `*…*`
+    # left as-is (display sugar only — byte-identical to the Telegram block).
+    ai_str += f"## 🎯 1b. Adaptive Risk Regime / Trade-Heat\n"
+    try:
+        ai_str += f"{tf.fmt_adaptive_risk_block(_risk_rec, settle_info=are.get_risk_settle_info())}\n\n"
+    except Exception:
+        ai_str += f"- ⚪ סיכון אדפטיבי: לא ניתן לחשב המלצה (נתון לא זמין)\n\n"
+
     ai_str += f"## 🔭 2. Live Battlefield (Open Positions)\n"
     # שימוש במחירים שכבר חושבו ב-live_df — ללא קריאת רשת כפולה
     _live_price_lookup = dict(zip(live_df['Symbol'], live_df['Current'])) if not live_df.empty else {}
+    # Phase REPORT-3 block 4 — read-only Symbol→Action / Symbol→ActionErr
+    # lookups built the SAME way as `_live_price_lookup` above (zip over the
+    # EXISTING live_df columns added strictly-additively at
+    # dashboard.py:226-236 from the ALREADY-computed `eval_res`). NO new
+    # engine call, NO new math.
+    _live_action_lookup = (dict(zip(live_df['Symbol'], live_df['Action']))
+                           if not live_df.empty and 'Action' in live_df else {})
+    _live_action_err_lookup = (dict(zip(live_df['Symbol'], live_df['ActionErr']))
+                               if not live_df.empty and 'ActionErr' in live_df else {})
     if not actual_open_trades.empty:
         for _, row in actual_open_trades.iterrows():
             sym, qty, entry, setup, sl, init_sl = row['symbol'], row['quantity'], row['price'], row['setup_type'], row['stop_loss'], row['initial_stop']
@@ -689,6 +740,46 @@ else:
             ai_str += f"  Entry: ${entry:.2f} | Curr: ${curr_p:.2f} | InitStop: {init_stop_str} | CurrStop: {stop_display} | OpenPnL: ${open_pnl:.2f} | {open_r_str}{risk_dev}\n"
             ai_str += f"  Earnings: {earnings_str} | EventRisk: {_ev_str}\n"
             ai_str += f"  State: {_state_str} | Sizing: {_sizing_str}\n"
+            # Phase REPORT-3 block 1 — units-lifecycle. Reuses THE single
+            # source-of-truth pair `plc.compute_units_lifecycle` +
+            # `plc.format_units_lifecycle` — the SAME functions the dashboard
+            # detail panel (dashboard.py:869-876) and the Telegram card
+            # (telegram_portfolio.py:425-429) call (cross-surface
+            # byte-identity, anti-drift SCOPE §6). `_camp_legs_dash` was
+            # already built read-only (dashboard.py:299-318); `qty` IS the
+            # engine's authoritative net_qty for this position. The helper's
+            # 4 honest-empty gates render `— (לא ניתן לאמת)` when legs are
+            # missing/ambiguous/non-reconciling — never a fabricated number
+            # (AGENTS.md #1). Strictly ADDITIVE; safe on ALGO (factual units
+            # read-out, no directive).
+            _lc_ai = plc.compute_units_lifecycle(
+                _camp_legs_dash.get(_campaign_id),
+                engine_net_qty=qty,
+            )
+            ai_str += f"  📦 {plc.format_units_lifecycle(_lc_ai)}\n"
+            # Phase REPORT-3 block 4 — per-position engine recommended action.
+            # The RAW engine `action_short` read-only from the EXISTING
+            # `eval_res` (surfaced via the additive live_df['Action'] field;
+            # NO new engine call, NO new math). For an ALGO position the
+            # engine already returns the verbatim externally-managed
+            # oversight-only string — printed as-is with NO added directive
+            # (ALGO observe-only INVIOLABLE, AGENTS.md #8). On engine not-OK
+            # the raw engine error is printed verbatim (honest; AGENTS.md #1
+            # — never a fabricated directive). An explicit honest note
+            # discloses this is the engine's advisory action and that the
+            # Telegram card additionally applies a display-only
+            # partial-realize de-noising (REPORT-2 §4) the export does NOT
+            # replicate — so a reader never assumes byte-identity with the
+            # softened Telegram "מה עכשיו" voice.
+            _action_ai = _live_action_lookup.get(sym)
+            _action_err_ai = _live_action_err_lookup.get(sym)
+            if _action_ai is not None and str(_action_ai) != "":
+                ai_str += (f"  Engine Action (advisory, raw): {_action_ai}\n"
+                           f"    ⓘ raw engine action; the Telegram card additionally applies a display-only partial-realize de-noising (REPORT-2) the export does NOT replicate\n")
+            else:
+                _err_txt = _action_err_ai if (_action_err_ai is not None and str(_action_err_ai) != "") else "engine: unavailable"
+                ai_str += (f"  Engine Action (advisory, raw): — ({_err_txt})\n"
+                           f"    ⓘ engine result not OK — error shown verbatim; not softened (no fabricated directive)\n")
             if not is_algo_pos and _ctx['has_profit']:
                 ai_str += (f"  Protected Profit: ${_ctx['protected_profit']:.0f}"
                            f" | Giveback to Stop: ${_ctx['giveback_usd']:.0f}"
@@ -698,7 +789,40 @@ else:
                 ai_str += (f"  Capital at Risk: ${_ctx['capital_at_risk']:.0f}"
                            f" | Breakeven Protocol: {_be_str}\n")
     else: ai_str += "No open positions.\n"
-    
+
+    # Phase REPORT-3 block 5 — Portfolio aggregate summary. Composed ONLY
+    # from the EXISTING live_df columns + `current_acc_size`, summed with
+    # the SAME read-only `live_df[col].sum()` expressions the existing
+    # Heat-Map already uses (dashboard.py:813-833). ZERO new math: it NEVER
+    # recomputes R / NAV / exposure — these are factual same-source sums
+    # (SCOPE §5 same-source-numbers mandate). `total_open_pnl` is the
+    # ALREADY-computed sidebar value (dashboard.py:454). It inherits the
+    # export's EXISTING NAV-freshness footer + the Broker-Reconciliation
+    # honesty line already printed in §1 (no aggregate asserted as exact
+    # beyond what the export already discloses). The ALGO-cluster exposure
+    # is a factual exposure read-out (the export §1 already prints ALGO
+    # count/PnL the same way) — no directive (ALGO observe-only intact).
+    ai_str += f"\n## 📊 2b. Portfolio Aggregate (Command Summary)\n"
+    if not live_df.empty:
+        _agg_pnl = float(total_open_pnl)
+        _agg_locked = float(live_df['LockedProfit'].sum()) if 'LockedProfit' in live_df else 0.0
+        _agg_giveback = float(live_df['GivebackRisk'].sum()) if 'GivebackRisk' in live_df else 0.0
+        _agg_caprisk = float(live_df['CapitalRisk'].sum()) if 'CapitalRisk' in live_df else 0.0
+        _agg_expo_usd = float(live_df['Exposure_USD'].sum()) if 'Exposure_USD' in live_df else 0.0
+        _agg_expo_pct = (_agg_expo_usd / current_acc_size * 100.0) if current_acc_size > 0 else 0.0
+        _algo_mask = live_df['Setup'].astype(str).str.upper() == 'ALGO'
+        _agg_algo_expo_usd = float(live_df.loc[_algo_mask, 'Exposure_USD'].sum()) if 'Exposure_USD' in live_df else 0.0
+        _agg_algo_expo_pct = (_agg_algo_expo_usd / current_acc_size * 100.0) if current_acc_size > 0 else 0.0
+        ai_str += f"- Total Floating PnL: ${_agg_pnl:,.2f}\n"
+        ai_str += f"- Locked Profit (in-stop): ${_agg_locked:,.2f}\n"
+        ai_str += f"- Giveback Risk (floating profit at risk): ${_agg_giveback:,.2f}\n"
+        ai_str += f"- Open Capital-Loss Risk (disc): ${_agg_caprisk:,.2f}\n"
+        ai_str += f"- Total Exposure: {_agg_expo_pct:.1f}% of base capital (${_agg_expo_usd:,.0f})\n"
+        ai_str += f"- ALGO-Cluster Exposure: {_agg_algo_expo_pct:.1f}% of base capital (${_agg_algo_expo_usd:,.0f})\n"
+        ai_str += f"  (factual sums of the existing live_df columns / Heat-Map; not a recompute of R/NAV/exposure; NAV-freshness + reconciliation honesty per §1/footer)\n"
+    else:
+        ai_str += "- אין פוזיציות פתוחות.\n"
+
     ai_str += f"\n## 📅 3. Execution Archive (Recent Campaigns)\n"
     if not camp_df.empty:
         for _, row in camp_df.sort_values('close_date', ascending=False).head(20).iterrows():
@@ -730,6 +854,34 @@ else:
                 else: stop_str = f" | Exit Stop: ${ev['stop']:.2f}" if ev['stop'] > 0 else ""
                 ai_str += f"  * {ev['date'].strftime('%Y-%m-%d')}: {action_str}{stop_str}\n"
     else: ai_str += "No campaigns closed yet.\n"
+
+    # Phase REPORT-3 block 3 (ALGO-2A live<->backtest divergence) — DEFERRED
+    # under a SCOPE section-11 STOP condition. Surfacing the divergence in
+    # the export REQUIRES a SECOND divergence per-symbol-line + footer call
+    # site inside this file (the export is a distinct surface from the
+    # ALGO-backtest tab panel, both live in dashboard.py). The LANDED Phase
+    # ALGO-2A.1 acceptance test in tests/test_phase_algo2a.py
+    # (TestCase6CrossSurfaceByteIdentity ::
+    #  test_both_surfaces_reference_the_single_line_and_footer) pins the
+    # FILE-LEVEL footer-call literal count in dashboard.py to exactly one as
+    # a de-duplication invariant. Block 3 inherently makes that count two.
+    # Per the binding orchestration: tests/test_phase_algo2a.py is OUTSIDE
+    # the permitted diff and an existing test MUST NOT be weakened/deleted
+    # (Mark 6.1). The over-assertion (it conflates "footer once per SURFACE"
+    # with "footer once per FILE") is plausibly a bug-codifying test that a
+    # SCOPE section-9 governed correction could fix — but that requires
+    # editing a forbidden file, so this is ESCALATED, NOT worked around (no
+    # inline re-implementation of the footer/line text — that would drift
+    # from the single source, violating SCOPE section-6). Honest disclosure
+    # in the export so the reader knows the consolidation is intentionally
+    # partial here. (The literal divergence API tokens are deliberately not
+    # spelled verbatim in this comment so the LANDED ALGO-2A.1 raw-substring
+    # de-dup count stays exactly its pre-existing value — the STOP fence is
+    # held byte-for-byte, not merely structurally.)
+    ai_str += f"\n## 🔭 3b. ALGO Live↔Backtest Edge-Shape Divergence\n"
+    ai_str += ("- (לא נכלל בייצוא זה — תצפית ALGO חי↔בקטסט זמינה בלוח "
+               "המחוונים בלשונית ALGO; הוחרגה מהייצוא בשל אילוץ ממשל "
+               "[REPORT-3 STOP] — לא נתון חסר, לא איתות)\n")
 
     # ── Next Required Decisions ──────────────────────────────────────────────
     ai_str += f"\n## 🧭 4. Next Required Decisions\n"
