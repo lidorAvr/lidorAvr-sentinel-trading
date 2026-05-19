@@ -403,12 +403,27 @@ class TestCase6CrossSurfaceByteIdentity:
             dashboard_footer.encode("utf-8")
 
     def test_both_surfaces_reference_the_single_line_and_footer(self):
-        """Static proof neither surface formats independently: both
-        `telegram_tasks.py handle_algo_panel` and the dashboard
-        ALGO-backtest section call `algo_divergence
-        .format_symbol_divergence_line` (the ONE per-symbol line) and
-        `algo_divergence.format_divergence_footer` (the ONE shared
-        footer) — nothing else formats the divergence text."""
+        """Static proof neither surface formats independently AND the
+        mandatory honesty footer is emitted EXACTLY ONCE *per SURFACE* (the
+        true de-dup invariant — NOT a per-FILE count).
+
+        Phase REPORT-3.1 founder-authorized Mark-6.1 CORRECTION (not a
+        weakening — strictly MORE precise): at ALGO-2A.1 time dashboard.py
+        held exactly ONE divergence surface, so a whole-FILE
+        `dash.count(...) == 1` accidentally equalled the per-surface
+        invariant. REPORT-3's AI export is a SECOND legitimate divergence
+        surface in the SAME dashboard.py, so the per-FILE `== 1` would
+        FALSELY fail while the real intent — "footer once **per surface**
+        (de-dup proof)" stated by this very docstring — still holds. The
+        assertion is therefore scoped to EACH marker-delimited divergence
+        surface region: within EACH region the footer substring appears
+        EXACTLY ONCE (never per-symbol / never duplicated) and the
+        per-symbol LINE substring appears (the surface still calls the
+        single formatter — anti-drift). telegram_tasks.py has exactly ONE
+        ALGO-panel surface so its whole-file footer count stays `== 1`
+        (still correct, preserved verbatim). This still FAILS if (i) any
+        surface emits the footer more than once / inside its per-symbol
+        loop, or (ii) a surface stops calling the single formatter."""
         root = os.path.dirname(os.path.dirname(__file__))
         tt = open(os.path.join(root, "telegram_tasks.py"),
                   encoding="utf-8").read()
@@ -420,9 +435,37 @@ class TestCase6CrossSurfaceByteIdentity:
         assert "algo_divergence.format_symbol_divergence_line(" in dash
         assert "algo_divergence.format_divergence_footer(" in tt
         assert "algo_divergence.format_divergence_footer(" in dash
-        # the footer is emitted EXACTLY ONCE per surface (de-dup proof)
+        # telegram_tasks.py: exactly ONE ALGO-panel surface ⇒ whole-file
+        # footer count == 1 is still the correct per-surface invariant here
+        # (unchanged — do NOT relax this side).
         assert tt.count("algo_divergence.format_divergence_footer(") == 1
-        assert dash.count("algo_divergence.format_divergence_footer(") == 1
+        # dashboard.py: the de-dup invariant is PER SURFACE. Scope the
+        # assertion to EACH marker-delimited divergence surface region — the
+        # existing ALGO-backtest panel AND the REPORT-3 AI-export surface.
+        surface_bounds = (
+            ("<!-- ALGO-2A divergence section START -->",
+             "<!-- ALGO-2A divergence section END -->"),
+            ("# === ALGO-2A divergence (AI export) START ===",
+             "# === ALGO-2A divergence (AI export) END ==="),
+        )
+        for start_marker, end_marker in surface_bounds:
+            assert start_marker in dash, start_marker
+            assert end_marker in dash, end_marker
+            s = dash.index(start_marker)
+            e = dash.index(end_marker)
+            assert s < e, (start_marker, end_marker)
+            surface = dash[s:e]
+            # the surface still calls the single formatter (anti-drift): it
+            # does NOT format the divergence text independently.
+            assert "algo_divergence.format_symbol_divergence_line(" \
+                in surface, start_marker
+            # the mandatory honesty footer is emitted EXACTLY ONCE within
+            # THIS surface (de-dup: once per surface, NEVER per-symbol /
+            # NEVER duplicated). >1 here ⇒ FAIL (per-symbol duplication);
+            # 0 here ⇒ FAIL (surface stopped calling the single footer).
+            assert surface.count(
+                "algo_divergence.format_divergence_footer(") == 1, \
+                start_marker
         # the back-compat formatter is still importable for any other caller
         assert callable(adv.format_symbol_divergence)
         assert callable(adv.compute_symbol_divergence)

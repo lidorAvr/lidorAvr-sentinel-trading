@@ -307,6 +307,58 @@ def prefetch_symbols_parallel(symbols, max_workers=8):
         for f in as_completed(futures):
             f.result()
 
+
+def _build_algo_divergence_inputs(_camp_df):
+    """Phase REPORT-3.1 — the ONE read-only assembly of the inputs the
+    ALGO live↔backtest edge-shape divergence consumes, shared by BOTH
+    divergence SURFACES in this file: the existing ALGO-backtest tab panel
+    AND the AI-export Block 3. Extracted verbatim from the existing panel
+    assembly so the two surfaces feed `algo_divergence`'s SINGLE-source
+    formatter from ONE shared input set — zero re-implementation, zero new
+    compute path, byte-identical by construction (SCOPE §6 anti-drift).
+
+    Pure / read-only: `abs_store` (file-read only — no Supabase / network /
+    write) + the `algo_metrics` pure list helpers + a read-only slice of the
+    already-built `camp_df`. NO engine re-entry, NO state mutation, NO
+    recompute of R / NAV / exposure. Never raises (boundary-safe): any
+    failure degrades to honest-empty aggregates, never a fabricated number.
+
+    Returns ``(_div_live_aggs, _bt_stats)`` — the SAME two objects the
+    existing panel used to build inline (now built once, reused by both).
+    """
+    _bt_stats = abs_store.compute_algo_backtest_stats(
+        abs_store.load_algo_backtests())
+    _div_live_aggs = {}
+    try:
+        if _camp_df is not None and not _camp_df.empty:
+            _algo_live_df = _camp_df[
+                _camp_df['stat_bucket'] == ec.STAT_BUCKET_ALGO]
+            if (not _algo_live_df.empty
+                    and 'symbol' in _algo_live_df.columns):
+                import algo_metrics as _div_am
+                for _sym, _grp in _algo_live_df.groupby('symbol'):
+                    if 'Total_Campaign_R' not in _grp.columns:
+                        continue
+                    _vals = [
+                        float(_x) for _x in _grp['Total_Campaign_R']
+                        .tolist() if _x is not None]
+                    if not _vals:
+                        continue
+                    _wins = sum(1 for _v in _vals if _v > 0)
+                    _div_live_aggs[str(_sym).upper()] = {
+                        "n": len(_vals),
+                        "win_rate_pct": _wins / len(_vals) * 100.0,
+                        "avg_return_pct": _div_am._expectancy(_vals),
+                        "profit_factor": _div_am._profit_factor(_vals),
+                        "loss_streak": _div_am._max_loss_streak(_vals),
+                    }
+    except Exception:
+        # Honest: a failed read-only build must not fabricate a delta
+        # (absence ≠ data; AGENTS.md #1) — degrade to empty aggregates.
+        _div_live_aggs = {}
+    return _div_live_aggs, _bt_stats
+
+
 if df.empty:
     st.warning("No data found. Check your filters.")
 else:
@@ -855,33 +907,53 @@ else:
                 ai_str += f"  * {ev['date'].strftime('%Y-%m-%d')}: {action_str}{stop_str}\n"
     else: ai_str += "No campaigns closed yet.\n"
 
-    # Phase REPORT-3 block 3 (ALGO-2A live<->backtest divergence) — DEFERRED
-    # under a SCOPE section-11 STOP condition. Surfacing the divergence in
-    # the export REQUIRES a SECOND divergence per-symbol-line + footer call
-    # site inside this file (the export is a distinct surface from the
-    # ALGO-backtest tab panel, both live in dashboard.py). The LANDED Phase
-    # ALGO-2A.1 acceptance test in tests/test_phase_algo2a.py
-    # (TestCase6CrossSurfaceByteIdentity ::
-    #  test_both_surfaces_reference_the_single_line_and_footer) pins the
-    # FILE-LEVEL footer-call literal count in dashboard.py to exactly one as
-    # a de-duplication invariant. Block 3 inherently makes that count two.
-    # Per the binding orchestration: tests/test_phase_algo2a.py is OUTSIDE
-    # the permitted diff and an existing test MUST NOT be weakened/deleted
-    # (Mark 6.1). The over-assertion (it conflates "footer once per SURFACE"
-    # with "footer once per FILE") is plausibly a bug-codifying test that a
-    # SCOPE section-9 governed correction could fix — but that requires
-    # editing a forbidden file, so this is ESCALATED, NOT worked around (no
-    # inline re-implementation of the footer/line text — that would drift
-    # from the single source, violating SCOPE section-6). Honest disclosure
-    # in the export so the reader knows the consolidation is intentionally
-    # partial here. (The literal divergence API tokens are deliberately not
-    # spelled verbatim in this comment so the LANDED ALGO-2A.1 raw-substring
-    # de-dup count stays exactly its pre-existing value — the STOP fence is
-    # held byte-for-byte, not merely structurally.)
+    # Phase REPORT-3.1 — the ONE shared read-only divergence input assembly
+    # (built ONCE here, reused by BOTH the AI-export Block 3 below AND the
+    # existing ALGO-backtest tab panel). Same precedent as `_camp_legs_dash`
+    # (built once, consumed by export + detail panel). No recompute / no new
+    # compute path: a single `_build_algo_divergence_inputs` call drives both
+    # divergence surfaces ⇒ byte-identical by construction (SCOPE §6).
+    _export_div_live, _export_div_bt = _build_algo_divergence_inputs(camp_df)
+
+    # === ALGO-2A divergence (AI export) START ===
+    # Phase REPORT-3 Block 3 (REPORT-3.1, founder-authorized governed
+    # correction) — the AI export's ALGO live↔backtest edge-shape divergence
+    # surface. This is a SECOND legitimate divergence SURFACE in dashboard.py
+    # (distinct from the ALGO-backtest tab panel). It is byte-identical to
+    # that panel + the Telegram ALGO panel BY CONSTRUCTION: it consumes the
+    # ONE shared read-only input set `_build_algo_divergence_inputs(...)`
+    # built once above (`_export_div_live` / `_export_div_bt`) and renders
+    # via algo_divergence's SINGLE-source pair — per-symbol
+    # `format_symbol_divergence_line(...)` then `format_divergence_footer()`
+    # EXACTLY ONCE after the loop (de-dup: footer once per SURFACE, never per
+    # symbol). ZERO re-implementation, ZERO new compute (SCOPE §6). The
+    # marker comments above/below delimit THIS surface so the corrected
+    # ALGO-2A.1 de-dup test can scope its assertion per-surface (it mirrors
+    # the existing ALGO-backtest tab panel's own HTML-comment delimiters).
+    # Observe-only INVIOLABLE (AGENTS.md #8 / DEC-20260511-001): neutral
+    # marker only, no imperative, no verdict colour, never fed into
+    # WR/Expectancy/PF, no directive. Honest-empty / concrete-shortfall /
+    # no-cohort markers are decided by the formatter (never a fabricated
+    # delta; AGENTS.md #1).
     ai_str += f"\n## 🔭 3b. ALGO Live↔Backtest Edge-Shape Divergence\n"
-    ai_str += ("- (לא נכלל בייצוא זה — תצפית ALGO חי↔בקטסט זמינה בלוח "
-               "המחוונים בלשונית ALGO; הוחרגה מהייצוא בשל אילוץ ממשל "
-               "[REPORT-3 STOP] — לא נתון חסר, לא איתות)\n")
+    ai_str += "_תצפית בלבד — אפס איתות, לא הזנת KPI, לא הנחיה._\n"
+    _export_div_syms = set(_export_div_live.keys())
+    for _es in (_export_div_bt.get("strategies", {}) or {}).values():
+        if isinstance(_es, dict) and _es.get("symbol"):
+            _export_div_syms.add(str(_es["symbol"]).upper())
+    if not _export_div_syms:
+        ai_str += f"- {algo_divergence.INSUFFICIENT_LIVE_SAMPLE_HE}\n"
+    else:
+        for _esym in sorted(_export_div_syms):
+            # SINGLE SOURCE OF TRUTH — the SAME per-symbol LINE formatter the
+            # dashboard ALGO panel + the Telegram ALGO panel call on the SAME
+            # shared input ⇒ byte-identical across surfaces (anti-drift).
+            ai_str += algo_divergence.format_symbol_divergence_line(
+                _esym, _export_div_live, _export_div_bt) + "\n"
+        # The mandatory honesty footer emitted EXACTLY ONCE per surface
+        # (de-dup proof) — byte-identical to the panel/Telegram footer.
+        ai_str += algo_divergence.format_divergence_footer() + "\n"
+    # === ALGO-2A divergence (AI export) END ===
 
     # ── Next Required Decisions ──────────────────────────────────────────────
     ai_str += f"\n## 🧭 4. Next Required Decisions\n"
@@ -1330,8 +1402,14 @@ else:
         # forward promise.
         st.markdown("---")
         st.subheader("📊 ALGO — בסיס בקטסט (פיקוח בלבד)")
-        _bt_loaded = abs_store.load_algo_backtests()
-        _bt_stats = abs_store.compute_algo_backtest_stats(_bt_loaded)
+        # Phase REPORT-3.1 — REUSE the ONE shared read-only divergence input
+        # set already built once for the AI export (`_export_div_bt` /
+        # `_export_div_live` via `_build_algo_divergence_inputs`). NO second
+        # assembly / NO recompute: this panel and the AI-export Block 3 now
+        # feed algo_divergence's single formatter from the SAME inputs ⇒
+        # byte-identical by construction (SCOPE §6 anti-drift). Same
+        # `_camp_legs_dash`-style "build once, reuse" precedent.
+        _bt_stats = _export_div_bt
         st.caption(f"⚠️ {abs_store.BACKTEST_LABEL} · {abs_store.OBSERVE_ONLY_LABEL}")
         _bt_strats = _bt_stats.get("strategies", {})
         if not _bt_strats:
@@ -1385,29 +1463,13 @@ else:
         st.markdown("---")
         st.subheader("🔭 ALGO — הפרש חי↔בקטסט (תצפית בלבד, אפס איתות)")
         try:
-            _div_live_aggs = {}
-            if not camp_df.empty:
-                _algo_live_df = camp_df[
-                    camp_df['stat_bucket'] == ec.STAT_BUCKET_ALGO]
-                if (not _algo_live_df.empty
-                        and 'symbol' in _algo_live_df.columns):
-                    for _sym, _grp in _algo_live_df.groupby('symbol'):
-                        if 'Total_Campaign_R' not in _grp.columns:
-                            continue
-                        _vals = [
-                            float(_x) for _x in _grp['Total_Campaign_R']
-                            .tolist() if _x is not None]
-                        if not _vals:
-                            continue
-                        _wins = sum(1 for _v in _vals if _v > 0)
-                        import algo_metrics as _div_am
-                        _div_live_aggs[str(_sym).upper()] = {
-                            "n": len(_vals),
-                            "win_rate_pct": _wins / len(_vals) * 100.0,
-                            "avg_return_pct": _div_am._expectancy(_vals),
-                            "profit_factor": _div_am._profit_factor(_vals),
-                            "loss_streak": _div_am._max_loss_streak(_vals),
-                        }
+            # Phase REPORT-3.1 — REUSE the ONE shared read-only live-ALGO
+            # aggregate set already built once for the AI export
+            # (`_export_div_live`). NO second assembly / NO recompute: this
+            # panel and the AI-export Block 3 feed the SAME inputs into
+            # algo_divergence's single formatter ⇒ byte-identical by
+            # construction (SCOPE §6 anti-drift; `_camp_legs_dash` precedent).
+            _div_live_aggs = _export_div_live
             # Union of symbols present on either side (honest empty per side).
             _div_syms = set(_div_live_aggs.keys())
             for _s in (_bt_stats.get("strategies", {}) or {}).values():

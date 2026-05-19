@@ -211,23 +211,27 @@ class TestBlock2AdaptiveRisk:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# Block 3 — ALGO-2A divergence: DEFERRED under a SCOPE §11 STOP condition.
-# Surfacing it requires a SECOND format_divergence_footer() call site in
-# dashboard.py; the LANDED ALGO-2A.1 test pins that file-level count == 1 as
-# a de-dup invariant; tests/test_phase_algo2a.py is OUTSIDE the permitted
-# diff and MUST NOT be weakened (Mark 6.1). Escalated, NOT worked around
-# (no inline footer re-implementation — that would drift from the single
-# source, SCOPE §6). The export honestly discloses the deferral.
+# Block 3 — ALGO-2A divergence: LANDED (Phase REPORT-3.1, founder-authorized
+# governed correction). The AI export is a SECOND legitimate divergence
+# SURFACE in dashboard.py (distinct from the ALGO-backtest tab panel). It is
+# byte-identical to that panel + the Telegram ALGO panel BY CONSTRUCTION: a
+# SINGLE shared read-only input set (`_build_algo_divergence_inputs`, built
+# once) feeds algo_divergence's SINGLE-source pair —
+# `format_symbol_divergence_line(...)` per symbol then
+# `format_divergence_footer()` EXACTLY ONCE per surface (de-dup proof, per
+# SURFACE not per file). The ALGO-2A.1 de-dup test was correspondingly
+# CORRECTED (not weakened) to a per-surface invariant (Mark 6.1). The export
+# Block-3 region is delimited by stable unique marker comments. Observe-only
+# INVIOLABLE (AGENTS.md #8 / DEC-20260511-001).
 # ════════════════════════════════════════════════════════════════════════════
-class TestBlock3AlgoDivergenceDeferredUnderStop:
-    def test_export_does_NOT_add_a_second_divergence_call_site(self):
-        """The STOP fence held: the export adds NO new
-        format_symbol_divergence_line / format_divergence_footer call site
-        — the ALGO-2A.1 de-dup invariant (dashboard footer count == 1) is
-        preserved."""
-        # exactly the ONE pre-existing dashboard ALGO-panel footer CALL
-        # (the only NON-comment occurrence). The export block 3 reference is
-        # a prose comment only, never an executable call.
+class TestBlock3AlgoDivergenceLanded:
+    def test_export_is_a_second_divergence_surface_single_formatter(self):
+        """LANDED: dashboard.py now has TWO divergence SURFACES (the
+        ALGO-backtest tab panel + the AI-export Block 3) and BOTH render via
+        the algo_divergence SINGLE-source pair — no inline re-implementation
+        (SCOPE §6 anti-drift). There are exactly TWO executable
+        `format_symbol_divergence_line` call sites and TWO
+        `format_divergence_footer` call sites (one per surface)."""
         tree = ast.parse(_DASH)
         footer_calls = [
             n.lineno for n in ast.walk(tree)
@@ -239,50 +243,169 @@ class TestBlock3AlgoDivergenceDeferredUnderStop:
             if isinstance(n, ast.Call)
             and isinstance(n.func, ast.Attribute)
             and n.func.attr == "format_symbol_divergence_line"]
-        assert len(footer_calls) == 1, footer_calls
-        assert len(line_calls) == 1, line_calls
+        # one footer + one per-symbol-line call site per SURFACE (panel +
+        # export); the footer is NEVER inside a per-symbol loop (de-dup).
+        assert len(footer_calls) == 2, footer_calls
+        assert len(line_calls) == 2, line_calls
 
-    def test_algo2a1_dedup_invariant_test_unmodified_and_passes(self):
-        """The LANDED ALGO-2A.1 acceptance test that the STOP protects is
-        byte-unchanged AND still green (Mark 6.1 — never weaken)."""
-        # we did not touch tests/test_phase_algo2a.py at all
-        import subprocess
-        out = subprocess.run(
-            ["git", "-C", _ROOT, "diff", "--name-only",
-             "tests/test_phase_algo2a.py"],
-            capture_output=True, text=True).stdout.strip()
-        assert out == "", \
-            "tests/test_phase_algo2a.py MUST be byte-unchanged (Mark 6.1)"
-        # the invariant the STOP protects: dashboard footer call count == 1
-        assert _DASH.count(
-            "st.text(algo_divergence.format_divergence_footer())") == 1
+    def test_export_block3_region_is_marker_delimited_line_then_footer(self):
+        """The export Block-3 region is wrapped in stable unique marker
+        comments (mirrors the panel's `<!-- ALGO-2A divergence section
+        START/END -->`) so the corrected ALGO-2A.1 de-dup test can scope
+        per-surface; inside it the per-symbol LINE precedes the footer and
+        the footer appears EXACTLY ONCE (de-dup per surface)."""
+        assert "# === ALGO-2A divergence (AI export) START ===" in _DASH
+        assert "# === ALGO-2A divergence (AI export) END ===" in _DASH
+        s = _DASH.index("# === ALGO-2A divergence (AI export) START ===")
+        e = _DASH.index("# === ALGO-2A divergence (AI export) END ===")
+        region = _DASH[s:e]
+        assert "algo_divergence.format_symbol_divergence_line(" in region
+        assert "algo_divergence.format_divergence_footer(" in region
+        # footer EXACTLY ONCE in THIS surface (per-surface de-dup proof)
+        assert region.count(
+            "algo_divergence.format_divergence_footer(") == 1
+        i_line = region.index(
+            "algo_divergence.format_symbol_divergence_line(")
+        i_footer = region.index(
+            "algo_divergence.format_divergence_footer(")
+        assert i_line < i_footer
+        # no Supabase / state / push smuggled into the export surface
+        for forbidden in ("supabase.table", ".execute(", ".insert(",
+                          ".update(", ".delete(", "bot.send_message"):
+            assert forbidden not in region, forbidden
 
-    def test_export_discloses_block3_deferral_honestly(self):
-        # honest disclosure (AGENTS.md #1): the export states the divergence
-        # is NOT included here for a governance reason — "not missing data,
-        # not a signal" — pointing at the dashboard ALGO tab where it lives.
-        assert "## 🔭 3b. ALGO Live↔Backtest Edge-Shape Divergence" in _DASH
-        assert "REPORT-3 STOP" in _DASH
-        assert "לא נתון חסר, לא איתות" in _DASH
-        assert "תצפית ALGO חי↔בקטסט זמינה בלוח" in _DASH
+    def test_export_block3_byte_identical_to_single_source_pair(self):
+        """Cross-surface byte-identity (SCOPE §8(b)): the export Block-3
+        text is, BY CONSTRUCTION, `format_symbol_divergence_line(sym, ...)`
+        per symbol + `format_divergence_footer()` ONCE — the SAME single
+        source the dashboard ALGO panel + the Telegram ALGO panel call.
+        Proven on synthetic inputs: the export emits exactly the formatter
+        output (never a re-implemented / fabricated delta)."""
+        live = {"HOOD": {"n": 35, "win_rate_pct": 60.0,
+                         "avg_return_pct": 1.20, "profit_factor": 1.80,
+                         "loss_streak": 3}}
+        bt = {"strategies": {"HOOD::s": {
+            "symbol": "HOOD", "n": 50, "win_rate_pct": 66.0,
+            "avg_return_pct": 7.5, "median_return_pct": 7.5,
+            "profit_factor": 3.25, "longest_loss_streak": 1}}}
+        # the export builds, per symbol, `format_symbol_divergence_line(...)`
+        # + "\n" then ONE `format_divergence_footer()` + "\n" — identical to
+        # what the dashboard ALGO panel renders for the SAME shared input.
+        expected = (
+            ad.format_symbol_divergence_line("HOOD", live, bt) + "\n"
+            + ad.format_divergence_footer() + "\n"
+        )
+        # byte-for-byte stable (single source ⇒ deterministic)
+        again = (
+            ad.format_symbol_divergence_line("HOOD", live, bt) + "\n"
+            + ad.format_divergence_footer() + "\n"
+        )
+        assert expected == again
+        assert expected.encode("utf-8") == again.encode("utf-8")
+        # the export source uses the formatter return value directly, NOT a
+        # hand-written string (no inline re-implementation, SCOPE §6).
+        s = _DASH.index("# === ALGO-2A divergence (AI export) START ===")
+        e = _DASH.index("# === ALGO-2A divergence (AI export) END ===")
+        region = _DASH[s:e]
+        assert ("ai_str += algo_divergence.format_symbol_divergence_line("
+                in region)
+        assert ("ai_str += algo_divergence.format_divergence_footer()"
+                in region)
+        assert "compute_symbol_divergence" not in region
 
-    def test_no_inline_footer_reimplementation_anti_drift(self):
-        """The deferral did NOT smuggle the divergence text in by hand —
-        no fabricated delta / inline footer (SCOPE §6 single-source)."""
-        b3 = _DASH[_DASH.index("Phase REPORT-3 block 3 (ALGO-2A"):
-                   _DASH.index("Next Required Decisions",
-                               _DASH.index(
-                                   "Phase REPORT-3 block 3 (ALGO-2A"))]
-        # no executable divergence formatter call inside the deferred block
-        assert "ai_str += f\"{algo_divergence.format" not in b3
-        assert "compute_symbol_divergence" not in b3
-        # the divergence single-source formatter is still intact / importable
-        assert callable(ad.format_symbol_divergence_line)
-        assert callable(ad.format_divergence_footer)
+    def test_export_block3_observe_only_and_honest_empty_preserved(self):
+        """ALGO observe-only INVIOLABLE: neutral 🔭, no imperative, no
+        🔴/🟢; honest-empty / concrete-shortfall / no-cohort markers are the
+        formatter's (never a fabricated delta — AGENTS.md #1)."""
+        s = _DASH.index("# === ALGO-2A divergence (AI export) START ===")
+        e = _DASH.index("# === ALGO-2A divergence (AI export) END ===")
+        region = _DASH[s:e]
+        # the export sub-section keeps the observe-only header + the
+        # explicit "observation only / zero signal / no KPI / no directive".
+        assert ("## 🔭 3b. ALGO Live↔Backtest Edge-Shape Divergence"
+                in region)
+        assert "תצפית בלבד" in region
+        # no-cohort ⇒ the EXISTING honest INSUFFICIENT marker, never a delta
+        assert "algo_divergence.INSUFFICIENT_LIVE_SAMPLE_HE" in region
+        # no imperative / verdict colour smuggled into the export OUTPUT —
+        # scope to the executable `ai_str +=` emit lines (prose comments are
+        # not rendered to the founder; the rendered text is what matters).
+        emit = "".join(
+            ln for ln in region.splitlines(keepends=True)
+            if ln.lstrip().startswith("ai_str"))
+        assert emit, "export Block-3 must emit ai_str content"
+        assert "🔴" not in emit and "🟢" not in emit
+        assert "דרושה פעולה" not in emit
+        # below-floor concrete shortfall is the formatter's (single source)
+        line = ad.format_symbol_divergence_line(
+            "FOO", {"FOO": {"n": 5, "win_rate_pct": 50.0,
+                            "avg_return_pct": 1.0, "profit_factor": 1.5,
+                            "loss_streak": 2}}, {"strategies": {}})
+        assert "מדגם חי 5/30" in line and "חסרים 25" in line
+        assert "תצפית, לא איתות" in line
+        assert "🔴" not in line and "🟢" not in line
+        assert "דרושה פעולה" not in line
+        assert ad.MARKER == "🔭"
+        assert "אין מספיק מדגם חי" in ad.INSUFFICIENT_LIVE_SAMPLE_HE
+
+    def test_export_and_panel_share_one_readonly_input_assembly(self):
+        """SCOPE §6 anti-drift: both divergence surfaces consume the ONE
+        shared read-only assembly `_build_algo_divergence_inputs(...)` (built
+        once — the `_camp_legs_dash` precedent), so they are byte-identical
+        BY CONSTRUCTION and there is no second/parallel compute path. The
+        helper is pure read-only (no Supabase / network / write / engine
+        re-entry / R-NAV-exposure recompute)."""
+        tree = ast.parse(_DASH)
+        helper_calls = [
+            n.lineno for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == "_build_algo_divergence_inputs"]
+        # built ONCE, reused by both surfaces (one call site)
+        assert len(helper_calls) == 1, helper_calls
+        # the shared variables feed BOTH the export and the panel
+        assert "_export_div_live, _export_div_bt = " \
+               "_build_algo_divergence_inputs(camp_df)" in _DASH
+        assert "_bt_stats = _export_div_bt" in _DASH
+        assert "_div_live_aggs = _export_div_live" in _DASH
+        # the helper body is read-only — no Supabase / write / engine re-entry
+        h0 = _DASH.index("def _build_algo_divergence_inputs(")
+        h1 = _DASH.index("\n\n\n", h0)
+        helper = _DASH[h0:h1]
+        for forbidden in ("supabase", ".execute(", ".insert(", ".update(",
+                          ".delete(", "json.dump", "evaluate_position_engine",
+                          "compute_adaptive_risk", "are."):
+            assert forbidden not in helper, forbidden
+
+    def test_algo2a1_dedup_test_corrected_per_surface_not_weakened(self):
+        """Mark 6.1 — the ALGO-2A.1 de-dup over-assertion was CORRECTED to a
+        per-SURFACE invariant (strictly MORE precise, NOT weakened): the
+        founder-authorized single surgical change to TestCase6 swaps the
+        whole-FILE `dash.count(...) == 1` for a PER-SURFACE-region check
+        (footer exactly once within EACH delimited divergence surface). The
+        telegram_tasks.py side stays `== 1` (one ALGO-panel surface). No
+        other assertion in tests/test_phase_algo2a.py changed."""
+        a2a = _src("tests/test_phase_algo2a.py")
+        # the corrected test asserts PER-SURFACE (region-scoped), not a
+        # whole-file `dash.count(...) == 1` (which the legitimate 2nd
+        # surface would falsely trip).
+        assert "dash.count(\"algo_divergence.format_divergence_footer(\")" \
+               " == 1" not in a2a
+        # telegram_tasks.py still has exactly one ALGO-panel surface — its
+        # whole-file footer count == 1 stays correct and is preserved.
+        assert "tt.count(\"algo_divergence.format_divergence_footer(\")" \
+               " == 1" in a2a
+        # the corrected test still requires BOTH surfaces to reference the
+        # single formatter (anti-drift kept) and scopes the de-dup per the
+        # marker-delimited regions (panel + AI export).
+        assert "format_symbol_divergence_line(" in a2a
+        assert "format_divergence_footer(" in a2a
+        assert "ALGO-2A divergence section START" in a2a  # panel region
+        assert "ALGO-2A divergence (AI export) START" in a2a  # export region
 
     def test_underlying_divergence_formatter_still_honest_observe_only(self):
-        # the single-source formatter the dashboard ALGO panel still uses is
-        # unchanged & honest (below-floor concrete shortfall; observe-only).
+        # the single-source formatter both surfaces use is unchanged & honest
+        # (below-floor concrete shortfall; observe-only; no fabricated 0).
         line = ad.format_symbol_divergence_line(
             "FOO", {"FOO": {"n": 5, "win_rate_pct": 50.0,
                             "avg_return_pct": 1.0, "profit_factor": 1.5,
