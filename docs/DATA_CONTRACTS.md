@@ -34,8 +34,58 @@ Common fields observed in the system:
 - `management_state`
 - `management_flags`
 - `target_risk_usd`
+- `locked_entry_price` *(RISK-1a, migration 006 — NULL until locked)*
+- `locked_entry_at` *(RISK-1a, migration 006 — NULL until locked)*
+- `lock_source` *(RISK-1a, migration 006 — NULL until locked)*
+- `lock_method` *(RISK-1a, migration 006 — NULL until locked)*
 
 Do not assume every field is always populated. Existing code often handles missing values.
+
+### Locked-immutable at-entry price contract (RISK-1a, migration 006)
+
+`locked_entry_price` is the **canonical at-entry anchor** for planned-risk math
+going forward — the price the trader committed to at trade-entry, captured
+once and never recomputed. The legacy `price` column stays as the broker-fill
+record (truth-of-execution); these two diverge by design once the position has
+been adjusted, marked-to-market, or partially re-recorded. The drift between
+them is exactly the regression that motivated RISK-1 (a live dashboard reading
+`price` showed mark-to-market values labelled as entry — e.g. an $87 MRVL
+position rendered as $170 once the symbol ran).
+
+| Column                | Type             | Populated by                                                                             |
+|-----------------------|------------------|------------------------------------------------------------------------------------------|
+| `locked_entry_price`  | `NUMERIC(12,4)`  | RISK-1b wizard (forward) / RISK-1c backfill / RISK-1d `/at_entry_correct`                |
+| `locked_entry_at`     | `TIMESTAMPTZ`    | The same writer, at the moment of the lock (NOT row-insert time)                         |
+| `lock_source`         | `TEXT`           | One of: `broker_avg_fill` \| `reuters_open` \| `declared_by_user` \| `unknown`           |
+| `lock_method`         | `TEXT`           | One of: `wizard` \| `backfill` \| `admin_correction`                                     |
+
+**NULL is the legitimate "not-yet-locked" sentinel.** Every row that existed
+before migration 006 was applied has `locked_entry_price IS NULL` until a
+RISK-1b/1c/1d writer touches it. Callers MUST treat NULL as "fall back to the
+legacy display path + surface a banner-flagged 'not yet locked' state". Do
+NOT silently substitute `price` for `locked_entry_price` — that would
+re-introduce the exact display-drift regression RISK-1 exists to fix.
+
+**Read pattern.** A new RISK-1d formatter is the **single source of truth** for
+displaying entry price across all 3 surfaces (Telegram, AI export, dashboard).
+The formatter exposes a `mode` flag:
+- `mode='historical'` (default — used by LOCKED-April and every backwards-
+  compatible caller): reads `price` exactly as before. NEW lock columns are
+  ignored. **April reconciliation is byte-identical by construction** — see
+  `tests/_byte_lock_baselines/`.
+- `mode='live'` (new — opted-in by live-dashboard / Telegram / AI-export
+  callers): reads `locked_entry_price` when non-NULL, falls back to `price`
+  with a banner when NULL.
+
+**No SQL CHECK constraint on `lock_source` / `lock_method`.** Validation lives
+in the application layer (`supabase_repository.set_locked_entry`). Phase A
+intentionally keeps DDL flexible (CLAUDE.md preferred-refactor: gradual
+extraction over premature lock-in).
+
+**Audit-log integration.** `set_locked_entry` itself does NOT write an
+`audit_log` row — the call sites do, via `audit_logger.log_action`, with
+richer before/after context than the helper has. RISK-1b/1c/1d each register
+their own action constant.
 
 **`pnl_usd` is the authoritative broker-side NET realized PnL (commission
 already deducted).** The DEC-019/-020 raw-Supabase reconciliation

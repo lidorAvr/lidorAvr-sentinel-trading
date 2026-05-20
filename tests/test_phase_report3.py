@@ -554,6 +554,21 @@ class TestBlock5PortfolioAggregate:
 # read-only intact; permitted-diff; LOCKED April + byte-lock unaffected
 # ════════════════════════════════════════════════════════════════════════════
 class TestCrossCuttingNeverReplaceAndReadOnly:
+    @pytest.mark.skip(reason=(
+        "REPORT-3 phase-scope-discipline guard — landed/retired with "
+        "commits 6015a73 and e0fff1a. While REPORT-3 was active this "
+        "test pinned 'only dashboard.py may change' (forbid migrations/, "
+        "docs/, supabase_repository.py, etc.). RISK-1 (the next phase, "
+        "tracked in docs/PHASE_RISK1_SCOPE.md / commit e0fff1a) is "
+        "intentionally cross-cutting: by design it MUST touch "
+        "migrations/, docs/DATA_CONTRACTS.md, and supabase_repository.py "
+        "(+later telegram_bot.py and dashboard.py). The audit trail of "
+        "REPORT-3's discipline is preserved verbatim below (the body of "
+        "this test is untouched) for history; the skip marker only "
+        "stops enforcement now that the phase has shipped. Each new "
+        "phase pins its own scope at its own boundary, not in this "
+        "REPORT-3-named file."
+    ))
     def test_only_dashboard_changed_in_permitted_diff(self):
         """`git diff --name-only` must be exactly dashboard.py (+ this NEW
         test). Every protected/byte-locked file git-diff EMPTY (SCOPE §7)."""

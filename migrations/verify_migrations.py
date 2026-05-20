@@ -19,9 +19,11 @@ runtime; this script gives operators a clean pre-deploy check.
 Each migration in this directory describes a table or columns it adds.
 For now we hard-code the post-conditions in MIGRATIONS below. If we add
 many more migrations, switch to a per-migration manifest file — but with
-the five migrations today (001…005), that's still over-engineering.
+the six migrations today (001…006), that's still over-engineering.
 (Sprint-25 A2/Data-F3: corrected the stale "only two migrations"
-docstring — the runtime check already verifies all five, 001…005.)
+docstring — the runtime check already verifies all five, 001…005.
+RISK-1a: extended to include the at-entry locked-immutable price
+columns added in 006_add_locked_entry_to_trades.sql.)
 """
 from __future__ import annotations
 import os
@@ -54,6 +56,14 @@ MIGRATIONS: list[tuple[str, str, list[str] | None]] = [
         "005_create_open_tasks.sql",
         "open_tasks",
         None,  # whole table is new — existence is the test
+    ),
+    (
+        "006_add_locked_entry_to_trades.sql",
+        "trades",
+        ["locked_entry_price", "locked_entry_at", "lock_source", "lock_method"],
+        # ^ RISK-1a — at-entry locked-immutable price columns. NULL-additive;
+        #   migration is byte-safe for the LOCKED April fixture (analytics_engine
+        #   reads `price`/`pnl_usd`, not these).
     ),
 ]
 

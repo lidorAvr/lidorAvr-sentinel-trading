@@ -218,3 +218,93 @@ def insert_trades(sb, trades: list) -> int:
     res = sb.table("trades").insert(trades).execute()
     data = res.data if hasattr(res, "data") else None
     return len(data) if data else 0
+
+
+# ── RISK-1a — at-entry locked-immutable entry-price helpers ───────────────────
+# Backed by migration 006_add_locked_entry_to_trades.sql. Reads/writes the 4
+# lock columns: locked_entry_price, locked_entry_at, lock_source, lock_method.
+# When locked_entry_price is NULL the trade is "not yet locked" — callers must
+# treat that as the legitimate sentinel (banner-flagged in the formatter; the
+# legacy `price` column still drives the historical April / mode='historical'
+# path unchanged).
+
+def get_locked_entry(sb, trade_id: str) -> dict | None:
+    """Return the 4 lock columns for a single trade, or None when missing.
+
+    Shape on success:
+        {"locked_entry_price": float|None,
+         "locked_entry_at":    str|None,   # ISO timestamp from Supabase
+         "lock_source":        str|None,
+         "lock_method":        str|None}
+
+    Returns None when the trade_id has no row at all. A row that exists but
+    has locked_entry_price IS NULL returns the dict with None values — the
+    caller distinguishes "row missing" from "row not yet locked".
+    """
+    res = (
+        sb.table("trades")
+        .select("locked_entry_price, locked_entry_at, lock_source, lock_method")
+        .eq("trade_id", trade_id)
+        .limit(1)
+        .execute()
+    )
+    data = res.data if res and res.data else []
+    if not data:
+        return None
+    row = data[0]
+    return {
+        "locked_entry_price": row.get("locked_entry_price"),
+        "locked_entry_at":    row.get("locked_entry_at"),
+        "lock_source":        row.get("lock_source"),
+        "lock_method":        row.get("lock_method"),
+    }
+
+
+def set_locked_entry(sb, trade_id: str, *, price: float,
+                     source: str, method: str) -> None:
+    """Write the locked-entry record for a trade. All 4 lock columns are set
+    atomically in a single UPDATE; locked_entry_at is stamped server-acceptable
+    ISO-UTC at the moment of this call (NOT row-insert time — we want the
+    lock-time, which is when the wizard / backfill / admin-correction ran).
+
+    `source` must be one of: 'broker_avg_fill', 'reuters_open',
+    'declared_by_user', 'unknown'. `method` must be one of: 'wizard',
+    'backfill', 'admin_correction'. Application-layer validation only — the
+    SQL has no CHECK constraint (Phase A keeps DDL flexible).
+
+    No-op on the `audit_log` row here — the call sites (RISK-1b wizard, RISK-1c
+    backfill, RISK-1d /at_entry_correct) log their own action-specific audit
+    rows via audit_logger.log_action with richer before/after context than
+    this helper has access to.
+    """
+    from datetime import datetime, timezone
+    locked_at_iso = datetime.now(timezone.utc).isoformat()
+    sb.table("trades").update({
+        "locked_entry_price": price,
+        "locked_entry_at":    locked_at_iso,
+        "lock_source":        source,
+        "lock_method":        method,
+    }).eq("trade_id", trade_id).execute()
+
+
+def get_trades_missing_lock(sb, *, symbol: str | None = None) -> list:
+    """Return BUY trades that have no locked_entry_price yet.
+
+    Filters in Python (not in SQL): fetches all BUY rows for the optional
+    `symbol` (or every BUY row when symbol is None), then keeps the rows with
+    locked_entry_price IS NULL. Chosen over a `.is_('locked_entry_price',
+    'null')` filter because that supabase-py syntax is not used elsewhere in
+    this codebase, and prod scale (<500 BUY rows total) makes the in-Python
+    filter free. RISK-1c may add a partial SQL index if backfill batches grow.
+
+    Used by:
+      - RISK-1c admin backfill (operator-driven; lists every row still needing
+        a lock so the founder can confirm coverage).
+      - RISK-1d formatter banner ("X positions not yet locked — use /at_entry
+        to add").
+    """
+    q = sb.table("trades").select("*").eq("side", "BUY")
+    if symbol is not None:
+        q = q.eq("symbol", symbol)
+    rows = q.execute().data or []
+    return [r for r in rows if r.get("locked_entry_price") is None]

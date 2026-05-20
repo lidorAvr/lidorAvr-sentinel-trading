@@ -383,3 +383,200 @@ class TestGetOpenCampaignForSymbol:
             {"campaign_id": "CID-OVER", "quantity": -120, "trade_date": "2026-05-05"},
         ]
         assert repo.get_open_campaign_for_symbol(sb, "NVDA") is None
+
+
+# ── RISK-1a helpers: get_locked_entry ─────────────────────────────────────────
+
+@pytest.mark.unit
+class TestGetLockedEntry:
+    """
+    RISK-1a — read the 4 at-entry locked-immutable columns for one trade.
+    Returns None when the row is missing entirely (distinguishes "no row" from
+    "row exists but locked_entry_price IS NULL", which returns a dict of Nones).
+    """
+
+    def test_calls_trades_table(self):
+        sb = _sb()
+        sb.execute.return_value.data = [{
+            "locked_entry_price": 87.25, "locked_entry_at": "2026-05-20T10:00:00+00:00",
+            "lock_source": "broker_avg_fill", "lock_method": "wizard",
+        }]
+        repo.get_locked_entry(sb, "T123")
+        sb.table.assert_called_with("trades")
+
+    def test_selects_4_lock_columns(self):
+        sb = _sb()
+        sb.execute.return_value.data = [{
+            "locked_entry_price": 87.25, "locked_entry_at": "2026-05-20T10:00:00+00:00",
+            "lock_source": "broker_avg_fill", "lock_method": "wizard",
+        }]
+        repo.get_locked_entry(sb, "T123")
+        select_call = sb.select.call_args_list[-1]
+        select_arg = select_call[0][0]
+        for col in ("locked_entry_price", "locked_entry_at",
+                    "lock_source", "lock_method"):
+            assert col in select_arg, f"expected {col} in select(): {select_arg!r}"
+
+    def test_filters_by_trade_id(self):
+        sb = _sb()
+        sb.execute.return_value.data = [{
+            "locked_entry_price": 87.25, "locked_entry_at": "2026-05-20T10:00:00+00:00",
+            "lock_source": "broker_avg_fill", "lock_method": "wizard",
+        }]
+        repo.get_locked_entry(sb, "T123")
+        sb.eq.assert_called_with("trade_id", "T123")
+
+    def test_returns_dict_when_row_exists(self):
+        sb = _sb()
+        sb.execute.return_value.data = [{
+            "locked_entry_price": 87.25, "locked_entry_at": "2026-05-20T10:00:00+00:00",
+            "lock_source": "broker_avg_fill", "lock_method": "wizard",
+        }]
+        result = repo.get_locked_entry(sb, "T123")
+        assert result == {
+            "locked_entry_price": 87.25,
+            "locked_entry_at": "2026-05-20T10:00:00+00:00",
+            "lock_source": "broker_avg_fill",
+            "lock_method": "wizard",
+        }
+
+    def test_returns_none_when_no_row(self):
+        sb = _sb()
+        sb.execute.return_value.data = []
+        assert repo.get_locked_entry(sb, "T999") is None
+
+    def test_returns_dict_of_nones_when_row_unlocked(self):
+        """A row that exists but has no lock yet → dict with all-None values
+        (NOT None). Lets callers distinguish 'no row' from 'not yet locked'."""
+        sb = _sb()
+        sb.execute.return_value.data = [{
+            "locked_entry_price": None, "locked_entry_at": None,
+            "lock_source": None, "lock_method": None,
+        }]
+        result = repo.get_locked_entry(sb, "T-UNLOCKED")
+        assert result == {
+            "locked_entry_price": None,
+            "locked_entry_at": None,
+            "lock_source": None,
+            "lock_method": None,
+        }
+
+
+# ── RISK-1a helpers: set_locked_entry ─────────────────────────────────────────
+
+@pytest.mark.unit
+class TestSetLockedEntry:
+    """
+    RISK-1a — write the at-entry locked-immutable record. All 4 columns set
+    atomically in one UPDATE; locked_entry_at stamped ISO-UTC at call-time.
+    """
+
+    def test_writes_all_4_lock_columns(self):
+        sb = _sb()
+        repo.set_locked_entry(
+            sb, "T123",
+            price=87.25, source="broker_avg_fill", method="wizard",
+        )
+        update_payload = sb.update.call_args_list[-1][0][0]
+        assert update_payload["locked_entry_price"] == 87.25
+        assert update_payload["lock_source"] == "broker_avg_fill"
+        assert update_payload["lock_method"] == "wizard"
+        assert "locked_entry_at" in update_payload
+
+    def test_filters_by_trade_id_on_update(self):
+        sb = _sb()
+        repo.set_locked_entry(
+            sb, "T123",
+            price=87.25, source="broker_avg_fill", method="wizard",
+        )
+        sb.eq.assert_called_with("trade_id", "T123")
+
+    def test_stamps_iso_utc_timestamp(self):
+        """locked_entry_at must be an ISO-format string with UTC tz info."""
+        import re
+        sb = _sb()
+        repo.set_locked_entry(
+            sb, "T123",
+            price=87.25, source="broker_avg_fill", method="wizard",
+        )
+        update_payload = sb.update.call_args_list[-1][0][0]
+        ts = update_payload["locked_entry_at"]
+        # Match "YYYY-MM-DDTHH:MM:SS(.ffffff)?+00:00" — datetime.isoformat with tz
+        assert re.match(
+            r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?\+00:00$", ts,
+        ), f"Expected ISO-UTC timestamp, got: {ts!r}"
+
+    def test_passes_through_source_and_method_values(self):
+        """Helper itself does NOT validate source/method — call sites do.
+        Values flow through verbatim. This pins that contract."""
+        sb = _sb()
+        repo.set_locked_entry(
+            sb, "T-BACKFILL",
+            price=42.10, source="declared_by_user", method="admin_correction",
+        )
+        update_payload = sb.update.call_args_list[-1][0][0]
+        assert update_payload["lock_source"] == "declared_by_user"
+        assert update_payload["lock_method"] == "admin_correction"
+
+
+# ── RISK-1a helpers: get_trades_missing_lock ──────────────────────────────────
+
+@pytest.mark.unit
+class TestGetTradesMissingLock:
+    """
+    RISK-1a — list BUY rows still needing a lock. Filter is in-Python:
+    fetches BUY rows (optionally per-symbol), keeps the ones with
+    locked_entry_price IS NULL. Prod scale (<500 BUY rows) makes this free.
+    """
+
+    def test_filters_by_side_buy(self):
+        sb = _sb()
+        sb.execute.return_value.data = []
+        repo.get_trades_missing_lock(sb)
+        eq_calls = [str(c) for c in sb.eq.call_args_list]
+        assert any("BUY" in c for c in eq_calls), \
+            f"expected BUY filter in eq calls: {eq_calls!r}"
+
+    def test_returns_only_unlocked_rows(self):
+        """Rows with non-NULL locked_entry_price are dropped; NULL kept."""
+        sb = _sb()
+        sb.execute.return_value.data = [
+            {"trade_id": "T1", "symbol": "MRVL", "locked_entry_price": None},
+            {"trade_id": "T2", "symbol": "MRVL", "locked_entry_price": 87.25},
+            {"trade_id": "T3", "symbol": "AAPL", "locked_entry_price": None},
+        ]
+        result = repo.get_trades_missing_lock(sb)
+        ids = sorted(r["trade_id"] for r in result)
+        assert ids == ["T1", "T3"]
+
+    def test_filters_by_symbol_when_given(self):
+        sb = _sb()
+        sb.execute.return_value.data = []
+        repo.get_trades_missing_lock(sb, symbol="MRVL")
+        eq_calls = [str(c) for c in sb.eq.call_args_list]
+        assert any("MRVL" in c for c in eq_calls), \
+            f"expected symbol filter when given: {eq_calls!r}"
+
+    def test_no_symbol_filter_when_none(self):
+        """When symbol=None, only the BUY-side filter is applied (no symbol eq)."""
+        sb = _sb()
+        sb.execute.return_value.data = []
+        repo.get_trades_missing_lock(sb, symbol=None)
+        eq_calls = [str(c) for c in sb.eq.call_args_list]
+        # Exactly one eq call: side=BUY. No symbol filter.
+        assert len(eq_calls) == 1, \
+            f"expected only the BUY filter when symbol=None: {eq_calls!r}"
+
+    def test_returns_empty_when_no_data(self):
+        sb = _sb()
+        sb.execute.return_value.data = None
+        assert repo.get_trades_missing_lock(sb) == []
+
+    def test_returns_empty_when_all_locked(self):
+        """All BUY rows have locked_entry_price set — nothing to return."""
+        sb = _sb()
+        sb.execute.return_value.data = [
+            {"trade_id": "T1", "symbol": "MRVL", "locked_entry_price": 87.25},
+            {"trade_id": "T2", "symbol": "AAPL", "locked_entry_price": 150.0},
+        ]
+        assert repo.get_trades_missing_lock(sb) == []
