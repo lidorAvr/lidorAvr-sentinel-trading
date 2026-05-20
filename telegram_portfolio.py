@@ -239,7 +239,13 @@ def handle_portfolio_room(chat_id):
             except Exception: pass
             return bot.send_message(chat_id, f"❌ שגיאת תשתית במשיכת פוזיציות:\n`{pos_res['error']}`")
 
-        open_pos = pos_res["data"]
+        # RISK-1c.1 — engine_core is byte-locked, so it does not propagate
+        # the `locked_entry_price` column into its per-campaign output dict.
+        # The pure enrichment helper computes the campaign-level lock anchor
+        # from the raw BUY rows in `df` (which DOES carry the column from
+        # the select("*") fetch). See position_lock_anchor.py for semantics.
+        import position_lock_anchor as _pla
+        open_pos = _pla.attach_lock_anchors(pos_res["data"], df)
         if open_pos.empty:
             try: bot.delete_message(chat_id, loading_msg.message_id)
             except Exception: pass

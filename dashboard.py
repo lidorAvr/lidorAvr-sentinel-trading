@@ -386,7 +386,18 @@ if df.empty:
 else:
     df_sorted = df.sort_values('trade_date')
     pos_res = ec.get_open_positions_campaign(df_sorted)
-    actual_open_trades = pos_res["data"] if pos_res["ok"] else pd.DataFrame()
+    # RISK-1c.1 — engine_core is byte-locked and does not propagate
+    # `locked_entry_price` into its per-campaign output dict. The pure
+    # enrichment helper attaches the campaign-level lock anchor (weighted
+    # average of locked_entry_prices when ALL BUYs in the campaign are
+    # locked, None otherwise) from the raw BUYs already present in
+    # `df_sorted`. Strictly additive — every existing column of
+    # `actual_open_trades` is unchanged. See position_lock_anchor.py.
+    import position_lock_anchor as _pla
+    actual_open_trades = (
+        _pla.attach_lock_anchors(pos_res["data"], df_sorted)
+        if pos_res["ok"] else pd.DataFrame()
+    )
 
     # בניית lookup של קמפיין → רשימת BUY rows לחישוב Add-on quality
     campaign_buy_records = {}

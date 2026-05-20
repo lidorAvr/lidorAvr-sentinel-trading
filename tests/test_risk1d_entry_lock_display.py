@@ -348,3 +348,197 @@ class TestNoSilentSubstitution:
             if "tf.resolve_entry_display(" in src:
                 assert "['banner']" in src or '["banner"]' in src, (
                     f"{path} resolves entry but never reads ['banner']")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# D. RISK-1c.1 regression — position_lock_anchor enrichment outside engine_core
+# ════════════════════════════════════════════════════════════════════════════
+# Bug found in prod 21/05/2026 ~01:40: RISK-1c successfully locked 71 rows in
+# Supabase, but /portfolio for MRVL still showed "⚠️ לא-נעול". Root cause:
+# engine_core.get_open_positions_campaign builds the per-campaign output dict
+# with 14 explicit fields and `locked_entry_price` is not among them, so the
+# row that reaches the resolver always carries lock=None ⇒ banner. engine_core
+# is BYTE-LOCKED (test_sprint25_byte_lock_redteam + 7 sibling guards) so it
+# cannot be modified. The fix is a pure enrichment helper called by the 2
+# display surfaces AFTER get_open_positions_campaign.
+
+
+class TestComputeCampaignLockAnchor:
+    """Pin the pure helper that computes one campaign's lock anchor."""
+
+    def _buys(self, rows):
+        import pandas as pd
+        return pd.DataFrame(rows)
+
+    def test_all_locked_returns_weighted_average(self):
+        import position_lock_anchor as pla
+        buys = self._buys([
+            {"locked_entry_price": 87.0, "quantity": 2},
+            {"locked_entry_price": 90.0, "quantity": 2},
+        ])
+        # (87*2 + 90*2)/4 = 88.5
+        assert pla.compute_campaign_lock_anchor(buys) == 88.5
+
+    def test_partial_lock_returns_none(self):
+        # Any NaN/None in the column ⇒ honest "not all locked" ⇒ None.
+        import position_lock_anchor as pla
+        buys = self._buys([
+            {"locked_entry_price": 87.0, "quantity": 2},
+            {"locked_entry_price": None, "quantity": 2},
+        ])
+        assert pla.compute_campaign_lock_anchor(buys) is None
+
+    def test_missing_column_returns_none_april_path(self):
+        # LOCKED-April fixture: the column does not exist on the input frame.
+        import position_lock_anchor as pla
+        buys = self._buys([
+            {"price": 87.0, "quantity": 2},
+        ])
+        assert pla.compute_campaign_lock_anchor(buys) is None
+
+    def test_drift_resistance_lock_wins_over_drifted_price(self):
+        # THE MRVL regression unit test: `price` drifted to $170 via re-sync,
+        # `locked_entry_price` stays at $87. The anchor returns $87 — the
+        # drifted price column is never read by this helper.
+        import position_lock_anchor as pla
+        buys = self._buys([
+            {"price": 170.0, "locked_entry_price": 87.0, "quantity": 1},
+        ])
+        assert pla.compute_campaign_lock_anchor(buys) == 87.0
+
+    def test_zero_or_negative_lock_treated_as_unlocked(self):
+        # Defensive: a rogue 0/negative in locked_entry_price (broker-anomaly,
+        # corrupted manual write) must NOT be treated as a valid anchor —
+        # collapse to None so the banner stays.
+        import position_lock_anchor as pla
+        buys_zero = self._buys([
+            {"locked_entry_price": 0.0, "quantity": 1},
+            {"locked_entry_price": 100.0, "quantity": 1},
+        ])
+        assert pla.compute_campaign_lock_anchor(buys_zero) is None
+
+        buys_neg = self._buys([
+            {"locked_entry_price": -5.0, "quantity": 1},
+            {"locked_entry_price": 100.0, "quantity": 1},
+        ])
+        assert pla.compute_campaign_lock_anchor(buys_neg) is None
+
+    def test_empty_dataframe_returns_none(self):
+        import position_lock_anchor as pla
+        assert pla.compute_campaign_lock_anchor(self._buys([])) is None
+        assert pla.compute_campaign_lock_anchor(None) is None
+
+    def test_zero_total_quantity_returns_none(self):
+        # Pathological: all rows have qty=0 (shouldn't happen, but defensive).
+        import position_lock_anchor as pla
+        buys = self._buys([
+            {"locked_entry_price": 100.0, "quantity": 0},
+        ])
+        assert pla.compute_campaign_lock_anchor(buys) is None
+
+
+class TestAttachLockAnchors:
+    """Pin the DataFrame-level enrichment that the 2 surfaces call."""
+
+    def _df(self, rows):
+        import pandas as pd
+        return pd.DataFrame(rows)
+
+    def test_adds_column_to_every_campaign_row(self):
+        import position_lock_anchor as pla
+        open_pos = self._df([
+            {"campaign_id": "C1", "symbol": "MRVL", "price": 88.5},
+            {"campaign_id": "C2", "symbol": "AAPL", "price": 150.0},
+        ])
+        raw = self._df([
+            # C1: both BUYs locked.
+            {"campaign_id": "C1", "side": "BUY", "locked_entry_price": 87.0, "quantity": 2},
+            {"campaign_id": "C1", "side": "BUY", "locked_entry_price": 90.0, "quantity": 2},
+            # C2: one BUY locked, one not ⇒ partial-lock ⇒ None.
+            {"campaign_id": "C2", "side": "BUY", "locked_entry_price": 150.0, "quantity": 1},
+            {"campaign_id": "C2", "side": "BUY", "locked_entry_price": None, "quantity": 1},
+        ])
+        out = pla.attach_lock_anchors(open_pos, raw)
+        assert "locked_entry_price" in out.columns
+        c1_anchor = out[out["campaign_id"] == "C1"]["locked_entry_price"].iloc[0]
+        c2_anchor = out[out["campaign_id"] == "C2"]["locked_entry_price"].iloc[0]
+        assert c1_anchor == 88.5
+        assert c2_anchor is None
+
+    def test_strictly_additive_existing_columns_preserved(self):
+        # The fix must NOT mutate or drop any existing column on the
+        # open_positions DataFrame — that would break engine_core's contract
+        # (which a thousand downstream call sites depend on).
+        import position_lock_anchor as pla
+        open_pos = self._df([
+            {"campaign_id": "C1", "symbol": "X", "price": 100.0,
+             "quantity": 1, "stop_loss": 90.0, "setup_type": "VCP"},
+        ])
+        raw = self._df([
+            {"campaign_id": "C1", "side": "BUY", "locked_entry_price": 100.0, "quantity": 1},
+        ])
+        out = pla.attach_lock_anchors(open_pos, raw)
+        for col in ("campaign_id", "symbol", "price", "quantity",
+                    "stop_loss", "setup_type"):
+            assert col in out.columns
+
+    def test_returns_input_unchanged_when_open_pos_is_none(self):
+        import position_lock_anchor as pla
+        assert pla.attach_lock_anchors(None, self._df([])) is None
+
+    def test_handles_empty_open_pos(self):
+        # Empty open positions ⇒ column gets added (empty) but no rows.
+        import position_lock_anchor as pla
+        out = pla.attach_lock_anchors(self._df([]), self._df([]))
+        assert "locked_entry_price" in out.columns
+        assert len(out) == 0
+
+    def test_handles_missing_raw_columns_safely(self):
+        # If raw_trades_df is missing `campaign_id` or `side`, fall back to
+        # None for every row — never raise.
+        import position_lock_anchor as pla
+        open_pos = self._df([{"campaign_id": "C1"}])
+        raw_no_side = self._df([{"campaign_id": "C1", "locked_entry_price": 100.0}])
+        out = pla.attach_lock_anchors(open_pos, raw_no_side)
+        assert out["locked_entry_price"].iloc[0] is None
+
+    def test_handles_none_raw_safely(self):
+        import position_lock_anchor as pla
+        open_pos = self._df([{"campaign_id": "C1"}])
+        out = pla.attach_lock_anchors(open_pos, None)
+        assert out["locked_entry_price"].iloc[0] is None
+
+    def test_filters_to_buy_rows_ignoring_sells(self):
+        # SELL rows must NOT enter the lock anchor computation — a SELL
+        # row's `locked_entry_price` is meaningless (the lock anchors the
+        # ENTRY, not the exit).
+        import position_lock_anchor as pla
+        open_pos = self._df([{"campaign_id": "C1", "symbol": "X"}])
+        raw = self._df([
+            {"campaign_id": "C1", "side": "BUY", "locked_entry_price": 100.0, "quantity": 1},
+            # SELL with no lock value — must NOT contaminate the all-locked check.
+            {"campaign_id": "C1", "side": "SELL", "locked_entry_price": None, "quantity": -1},
+        ])
+        out = pla.attach_lock_anchors(open_pos, raw)
+        assert out["locked_entry_price"].iloc[0] == 100.0
+
+
+class TestSurfaceWiringRiskC1:
+    """The 2 display surfaces MUST call attach_lock_anchors right after
+    get_open_positions_campaign — otherwise the bug regresses silently."""
+
+    def test_telegram_portfolio_wires_attach_lock_anchors(self):
+        src = _read("telegram_portfolio.py")
+        # The /portfolio room handler must call the enrichment helper.
+        assert "attach_lock_anchors" in src
+
+    def test_dashboard_wires_attach_lock_anchors(self):
+        src = _read("dashboard.py")
+        assert "attach_lock_anchors" in src
+
+    def test_position_lock_anchor_imports_no_engine_core(self):
+        # Pure helper — must not import engine_core (the byte-locked module
+        # whose limitation this helper exists to work around).
+        src = _read("position_lock_anchor.py")
+        assert "import engine_core" not in src
+        assert "from engine_core" not in src
