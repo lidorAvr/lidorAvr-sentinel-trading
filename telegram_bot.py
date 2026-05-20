@@ -755,6 +755,12 @@ def handle_all_messages(message):
                 trade_id = state.get('t_id')
                 if trade_id:
                     repo.update_trade(supabase, trade_id, {"initial_stop": new_sl, "stop_loss": new_sl})
+                    # RISK-1b — forward-capture wizard lock. Idempotent + fail-soft:
+                    # locks the at-entry price from the trade's existing broker-imported
+                    # `price` field. No-op on already-locked / missing-row / anomalous-price.
+                    # Never raises (logged via audit). Banner for unlocked rows arrives
+                    # in RISK-1d's formatter.
+                    repo.lock_entry_from_trade_price(supabase, trade_id, chat_id=chat_id)
                     bot.send_message(chat_id, f"🚀 *הסטופ ההתחלתי נשמר במערכת: ${new_sl:.2f}*", parse_mode="Markdown")
                 del user_state[chat_id]
                 get_next_missing(chat_id)

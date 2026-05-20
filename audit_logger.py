@@ -34,6 +34,10 @@ ACTION_MANUAL_TRADE      = "manual_trade"
 ACTION_DEPLOY_TRIGGER    = "deploy_trigger"
 ACTION_SETTINGS_CHANGE   = "settings_change"
 ACTION_TELEGRAM_ALERT    = "telegram_alert_send"
+# RISK-1b/1c/1d — at-entry locked-immutable price lifecycle (one row per lock
+# attempt; richer than supabase_repository.set_locked_entry's value-only write):
+ACTION_AT_ENTRY_LOCK     = "at_entry_lock"
+ACTION_AT_ENTRY_SKIP     = "at_entry_skip"
 
 _AUDIT_TABLE = "audit_log"
 

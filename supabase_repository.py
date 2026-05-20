@@ -287,6 +287,105 @@ def set_locked_entry(sb, trade_id: str, *, price: float,
     }).eq("trade_id", trade_id).execute()
 
 
+def lock_entry_from_trade_price(sb, trade_id: str, *,
+                                 chat_id: int | None = None) -> bool:
+    """RISK-1b — forward-capture wizard lock. Idempotent + fail-soft.
+
+    Reads the trade's existing `price` field (the IBKR-Flex-imported broker
+    fill stored by ibkr_sync_runner.py) and writes it to `locked_entry_price`
+    with lock_source='broker_avg_fill', lock_method='wizard'. Audit-logs the
+    outcome.
+
+    Returns True if a new lock was written, False otherwise (already locked,
+    no row, missing/anomalous price). Never raises — the wizard call site
+    must never block on a lock failure.
+
+    Idempotent: if `locked_entry_price` is already non-NULL, the helper
+    no-ops and returns False (no second audit row). Safe to call from
+    multiple wizard steps; only the FIRST call to reach a row locks it.
+
+    Fail-soft skip cases (each writes one ACTION_AT_ENTRY_SKIP audit row
+    with the reason in metadata; the trade row stays NULL-locked, which the
+    RISK-1d formatter banner-flags downstream):
+      - trade_id has no matching row in `trades` (caller bug — but we don't
+        raise; the wizard's other update_trade calls would also no-op)
+      - `price` is None / 0 / negative / non-numeric (broker-data anomaly)
+
+    Success case writes one ACTION_AT_ENTRY_LOCK audit row with the locked
+    price + the legacy `price` value in metadata (defense-in-depth: even
+    if the column-write itself silently fails, the audit row preserves the
+    intent).
+    """
+    try:
+        res = (
+            sb.table("trades")
+            .select("price, locked_entry_price, symbol")
+            .eq("trade_id", trade_id)
+            .limit(1)
+            .execute()
+        )
+        rows = res.data if res and res.data else []
+        if not rows:
+            audit_logger.log_action(
+                sb, audit_logger.ACTION_AT_ENTRY_SKIP,
+                chat_id=chat_id,
+                metadata={"trade_id": trade_id, "reason": "no_trade_row"},
+            )
+            return False
+        row = rows[0]
+        if row.get("locked_entry_price") is not None:
+            return False
+        price = row.get("price")
+        try:
+            price_f = float(price) if price is not None else None
+        except (TypeError, ValueError):
+            price_f = None
+        if price_f is None or price_f <= 0:
+            audit_logger.log_action(
+                sb, audit_logger.ACTION_AT_ENTRY_SKIP,
+                chat_id=chat_id,
+                metadata={
+                    "trade_id": trade_id,
+                    "symbol":   row.get("symbol"),
+                    "reason":   "missing_or_anomalous_price",
+                    "raw_price": price,
+                },
+            )
+            return False
+        set_locked_entry(
+            sb, trade_id,
+            price=price_f, source="broker_avg_fill", method="wizard",
+        )
+        audit_logger.log_action(
+            sb, audit_logger.ACTION_AT_ENTRY_LOCK,
+            chat_id=chat_id,
+            before={"locked_entry_price": None},
+            after={
+                "trade_id":           trade_id,
+                "symbol":             row.get("symbol"),
+                "locked_entry_price": price_f,
+                "lock_source":        "broker_avg_fill",
+                "lock_method":        "wizard",
+                "broker_price_copied_from": price,
+            },
+        )
+        return True
+    except Exception as e:
+        try:
+            audit_logger.log_action(
+                sb, audit_logger.ACTION_AT_ENTRY_SKIP,
+                chat_id=chat_id,
+                metadata={
+                    "trade_id": trade_id,
+                    "reason":   "exception",
+                    "error":    f"{type(e).__name__}: {str(e)[:120]}",
+                },
+            )
+        except Exception:
+            pass
+        return False
+
+
 def get_trades_missing_lock(sb, *, symbol: str | None = None) -> list:
     """Return BUY trades that have no locked_entry_price yet.
 

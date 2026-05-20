@@ -580,3 +580,151 @@ class TestGetTradesMissingLock:
             {"trade_id": "T2", "symbol": "AAPL", "locked_entry_price": 150.0},
         ]
         assert repo.get_trades_missing_lock(sb) == []
+
+
+# ── RISK-1b helpers: lock_entry_from_trade_price ──────────────────────────────
+
+@pytest.mark.unit
+class TestLockEntryFromTradePrice:
+    """
+    RISK-1b — forward-capture wizard lock. Idempotent + fail-soft.
+    Reads `trades.price` (IBKR Flex import) → writes to locked_entry_price
+    with lock_source='broker_avg_fill', lock_method='wizard'. Audit-logs
+    every outcome (LOCK on success, SKIP with reason on every failure mode).
+    """
+
+    def _sb_returning_trade(self, row):
+        sb = MagicMock()
+        sb.table.return_value = sb
+        sb.select.return_value = sb
+        sb.eq.return_value = sb
+        sb.limit.return_value = sb
+        sb.update.return_value = sb
+        sb.insert.return_value = sb
+        sb.execute.return_value.data = [row] if row is not None else []
+        return sb
+
+    def test_returns_true_and_writes_lock_on_happy_path(self):
+        sb = self._sb_returning_trade({
+            "price": 87.25, "locked_entry_price": None, "symbol": "MRVL",
+        })
+        assert repo.lock_entry_from_trade_price(sb, "T1") is True
+        # the update call carries all 4 lock columns
+        update_payloads = [c[0][0] for c in sb.update.call_args_list]
+        lock_payload = next(p for p in update_payloads
+                            if "locked_entry_price" in p)
+        assert lock_payload["locked_entry_price"] == 87.25
+        assert lock_payload["lock_source"] == "broker_avg_fill"
+        assert lock_payload["lock_method"] == "wizard"
+
+    def test_returns_false_when_no_row(self):
+        sb = self._sb_returning_trade(None)
+        assert repo.lock_entry_from_trade_price(sb, "T-MISSING") is False
+        # update() must NOT be called — nothing to lock
+        assert not any("locked_entry_price" in (c[0][0] if c[0] else {})
+                       for c in sb.update.call_args_list)
+
+    def test_idempotent_no_op_when_already_locked(self):
+        """Trade already has locked_entry_price → no-op, no second lock,
+        no audit row (returning False signals 'no action taken')."""
+        sb = self._sb_returning_trade({
+            "price": 87.25, "locked_entry_price": 87.25, "symbol": "MRVL",
+        })
+        assert repo.lock_entry_from_trade_price(sb, "T-ALREADY") is False
+        # No lock-column UPDATE
+        lock_updates = [c for c in sb.update.call_args_list
+                        if c[0] and "locked_entry_price" in c[0][0]]
+        assert lock_updates == []
+
+    def test_returns_false_when_price_is_none(self):
+        sb = self._sb_returning_trade({
+            "price": None, "locked_entry_price": None, "symbol": "MRVL",
+        })
+        assert repo.lock_entry_from_trade_price(sb, "T1") is False
+
+    def test_returns_false_when_price_is_zero(self):
+        sb = self._sb_returning_trade({
+            "price": 0, "locked_entry_price": None, "symbol": "MRVL",
+        })
+        assert repo.lock_entry_from_trade_price(sb, "T1") is False
+
+    def test_returns_false_when_price_is_negative(self):
+        sb = self._sb_returning_trade({
+            "price": -5.0, "locked_entry_price": None, "symbol": "MRVL",
+        })
+        assert repo.lock_entry_from_trade_price(sb, "T1") is False
+
+    def test_returns_false_when_price_is_non_numeric_string(self):
+        sb = self._sb_returning_trade({
+            "price": "not-a-number", "locked_entry_price": None, "symbol": "MRVL",
+        })
+        assert repo.lock_entry_from_trade_price(sb, "T1") is False
+
+    def test_audit_logged_on_lock(self):
+        """Happy path writes one ACTION_AT_ENTRY_LOCK row."""
+        from unittest.mock import patch
+        sb = self._sb_returning_trade({
+            "price": 87.25, "locked_entry_price": None, "symbol": "MRVL",
+        })
+        with patch("supabase_repository.audit_logger.log_action") as m:
+            repo.lock_entry_from_trade_price(sb, "T1", chat_id=12345)
+            # at least one call with ACTION_AT_ENTRY_LOCK
+            actions = [c[0][1] for c in m.call_args_list]
+            assert "at_entry_lock" in actions, f"calls: {m.call_args_list!r}"
+            # chat_id forwarded
+            kwargs = [c.kwargs for c in m.call_args_list if c.args[1] == "at_entry_lock"]
+            assert kwargs[0].get("chat_id") == 12345
+
+    def test_audit_logged_on_skip_no_row(self):
+        from unittest.mock import patch
+        sb = self._sb_returning_trade(None)
+        with patch("supabase_repository.audit_logger.log_action") as m:
+            repo.lock_entry_from_trade_price(sb, "T-MISSING")
+            actions = [c[0][1] for c in m.call_args_list]
+            assert "at_entry_skip" in actions, f"calls: {m.call_args_list!r}"
+            # reason is "no_trade_row"
+            skip_calls = [c for c in m.call_args_list if c.args[1] == "at_entry_skip"]
+            assert skip_calls[0].kwargs["metadata"]["reason"] == "no_trade_row"
+
+    def test_audit_logged_on_skip_missing_price(self):
+        from unittest.mock import patch
+        sb = self._sb_returning_trade({
+            "price": None, "locked_entry_price": None, "symbol": "MRVL",
+        })
+        with patch("supabase_repository.audit_logger.log_action") as m:
+            repo.lock_entry_from_trade_price(sb, "T1")
+            skip_calls = [c for c in m.call_args_list if c.args[1] == "at_entry_skip"]
+            assert len(skip_calls) >= 1
+            assert skip_calls[0].kwargs["metadata"]["reason"] == \
+                "missing_or_anomalous_price"
+
+    def test_no_audit_when_already_locked(self):
+        """Idempotent no-op must NOT spam the audit log with skips for
+        every subsequent call. Already-locked → return False silently."""
+        from unittest.mock import patch
+        sb = self._sb_returning_trade({
+            "price": 87.25, "locked_entry_price": 87.25, "symbol": "MRVL",
+        })
+        with patch("supabase_repository.audit_logger.log_action") as m:
+            repo.lock_entry_from_trade_price(sb, "T1")
+            assert m.call_count == 0, \
+                f"expected zero audit calls for idempotent no-op: {m.call_args_list!r}"
+
+    def test_fail_soft_on_exception_in_read(self):
+        """If the initial SELECT raises, the helper must NOT propagate —
+        return False and log a SKIP with reason='exception'. The wizard
+        call site MUST be unblocked by lock failure."""
+        from unittest.mock import patch
+        sb = MagicMock()
+        sb.table.return_value = sb
+        sb.select.return_value = sb
+        sb.eq.return_value = sb
+        sb.limit.return_value = sb
+        sb.execute.side_effect = RuntimeError("transient supabase error")
+        with patch("supabase_repository.audit_logger.log_action") as m:
+            # MUST NOT raise
+            assert repo.lock_entry_from_trade_price(sb, "T1") is False
+            actions = [c[0][1] for c in m.call_args_list]
+            assert "at_entry_skip" in actions
+            skip_calls = [c for c in m.call_args_list if c.args[1] == "at_entry_skip"]
+            assert skip_calls[0].kwargs["metadata"]["reason"] == "exception"
