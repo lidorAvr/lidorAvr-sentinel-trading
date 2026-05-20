@@ -549,6 +549,51 @@ def evaluate_risk_raise_gate(
     }
 
 
+def build_risk_raise_gate_ctx(
+    *, nav: float, total_deposited: float, closed_campaigns: list,
+    risk_pct: float, nav_source: str = "broker",
+    drawdown_active: bool = False,
+) -> dict:
+    """F1 (Meeting 21/05/2026) — single canonical builder of the
+    ``risk_raise_gate`` ctx dict consumed by ``compute_adaptive_risk``.
+
+    Extracted from report_scheduler.py:312-326 so all live callers
+    (telegram_portfolio handle_market_regime + handle_portfolio_room,
+    dashboard sidebar, risk_monitor proactive alert) share ONE source of
+    truth for G1 (Clean Data — broker-reconciliation band).
+
+    Fail-soft: any failure ⇒ {"recon_band": None, "drawdown_active": ...},
+    which means G1 passes (no FALSE block when the classifier can't reach
+    a verdict). The gate only ever NARROWS — when this helper returns a
+    Critical band, the up-step is blocked; when it returns None, the
+    OTHER gates (G2 sample, G3 expectancy, G4 drawdown) still apply
+    independently.
+
+    Pure: no Supabase / no engine_core / no telebot. The classifier
+    reused (``telegram_formatters.classify_broker_reconciliation``) is
+    itself import-pure (DEC-20260510-005).
+    """
+    ctx: dict = {"recon_band": None, "drawdown_active": bool(drawdown_active)}
+    try:
+        import telegram_formatters as _tf
+        db_net = sum(
+            float(c.get("total_pnl_usd", 0) or 0)
+            for c in (closed_campaigns or [])
+        )
+        recon_gap = float(nav) - (float(total_deposited) + db_net)
+        recon = _tf.classify_broker_reconciliation(
+            float(nav), float(total_deposited), db_net,
+            reconciliation_gap=recon_gap,
+            risk_pct_input=float(risk_pct),
+            nav_source=str(nav_source or "broker"),
+        )
+        ctx["recon_band"] = recon.get("band")
+    except Exception:
+        # Honest fail-soft: leave recon_band=None ⇒ G1 passes by default.
+        pass
+    return ctx
+
+
 def compute_adaptive_risk(
     closed_campaigns: list,
     current_risk_pct: float,

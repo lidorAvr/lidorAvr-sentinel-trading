@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 import xml.etree.ElementTree as ET
 import engine_core as ec
 import adaptive_risk_engine as are
+import audit_logger
 import state_io
 # Phase Arch-F1 (Sprint-25 F1): single shared sentinel_config.json reader.
 # risk_monitor previously kept a byte-identical local get_account_settings
@@ -993,6 +994,30 @@ def main():
         _new_state  = _state_result["state"]
         _prev_state = new_pos_entry.get("position_state", "")
 
+        # F7 (Meeting 21/05/2026) — audit-log every position state transition,
+        # INCLUDING ALGO positions whose Telegram alerts are intentionally
+        # suppressed below (`_mgt_mode != "algo_observed"` gate). Before F7
+        # the CEO had no chronological record of when ALGO went Broken — only
+        # the state_label visible in /portfolio at the moment. The audit row
+        # answers "when did PLTR go to Broken?" in one Supabase query.
+        # Fail-soft per audit_logger contract: never raises into the monitor.
+        if _new_state != _prev_state:
+            _is_algo_state = (_mgt_mode == "algo_observed")
+            audit_logger.log_action(
+                supabase, audit_logger.ACTION_POSITION_STATE_TRANSITION,
+                metadata={
+                    "symbol":             sym,
+                    "campaign_id":        campaign_id,
+                    "setup":              setup,
+                    "prev_state":         _prev_state,
+                    "new_state":          _new_state,
+                    "is_algo":            _is_algo_state,
+                    "telegram_suppressed": _is_algo_state,
+                    "suppression_reason": "algo_observed" if _is_algo_state else None,
+                    "open_r":             round(float(open_r or 0), 2),
+                },
+            )
+
         # Phase 5: state-change alerts with oscillation-safe cooldown
         if _new_state != _prev_state and _mgt_mode != "algo_observed":
             _last_sa_type = new_pos_entry.get("last_state_alert_type", "")
@@ -1166,8 +1191,20 @@ def main():
         current_risk_pct = float(account_settings.get("risk_pct_input", 0.5))
         nav_for_risk = float(account_settings.get("nav", acc_size))
         closed_camps = are.compute_closed_campaigns(df)
+        # F1 (Meeting 21/05/2026) — 4-gate on the risk-RAISE path. The
+        # risk-monitor proactive alert previously fired "up" recommendations
+        # to Telegram without the gate, mismatching the Telegram /portfolio
+        # surface after F1 wired the bot. Now all 4 live callers (Telegram x2,
+        # dashboard, risk-monitor) share the SAME gated recommendation.
+        _gate_ctx_rm = are.build_risk_raise_gate_ctx(
+            nav=nav_for_risk, risk_pct=current_risk_pct,
+            total_deposited=float(account_settings.get("total_deposited", 0) or 0),
+            closed_campaigns=closed_camps,
+            nav_source=str(account_settings.get("nav_source", "broker") or "broker"),
+        )
         risk_rec = are.compute_adaptive_risk(closed_camps, current_risk_pct, nav_for_risk,
-                                             open_positions=open_positions_for_risk)
+                                             open_positions=open_positions_for_risk,
+                                             risk_raise_gate=_gate_ctx_rm)
 
         if risk_rec.get("ok") and risk_rec["direction"] != "hold":
             prev_alert = state.get("risk_alert", {})

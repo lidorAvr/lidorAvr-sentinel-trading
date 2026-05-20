@@ -597,7 +597,20 @@ else:
 
     try:
         _closed_for_rec = are.compute_closed_campaigns(raw_df) if not raw_df.empty else []
-        _risk_rec = are.compute_adaptive_risk(_closed_for_rec, risk_pct_input, current_acc_size)
+        # F1 (Meeting 21/05/2026) — 4-gate on the risk-RAISE path. The
+        # dashboard sidebar previously showed an unguarded recommendation that
+        # could conflict with the Telegram /portfolio output once F1 wired
+        # the bot. Now both surfaces share the SAME gate logic.
+        _gate_ctx_dash = are.build_risk_raise_gate_ctx(
+            nav=current_acc_size, risk_pct=risk_pct_input,
+            total_deposited=float(total_deposited or 0),
+            closed_campaigns=_closed_for_rec,
+            nav_source=str(settings.get("nav_source", "broker") or "broker"),
+        )
+        _risk_rec = are.compute_adaptive_risk(
+            _closed_for_rec, risk_pct_input, current_acc_size,
+            risk_raise_gate=_gate_ctx_dash,
+        )
     except Exception:
         _risk_rec = {"ok": False, "error": "compute_failed"}
 

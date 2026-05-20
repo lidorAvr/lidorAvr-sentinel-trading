@@ -161,3 +161,12 @@ When modifying the repo:
 3. Avoid broad rewrites of long files.
 4. Document assumptions.
 5. Keep rollback simple.
+
+## Mark rulings
+
+Code comments often cite Mark rulings: `# Sprint-12 / Mark §3 ...`,
+`# MARK_SPRINT15_RULINGS.md §1`. The ruling files live at
+`docs/teams/MARK_SPRINT<N>_RULINGS.md`. The discoverable index is
+`docs/markings/INDEX.md` (F12, Meeting 21/05/2026 — added so a future
+agent can answer "what did Mark already rule on?" without grep-guessing
+sprint numbers).

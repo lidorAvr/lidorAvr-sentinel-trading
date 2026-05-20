@@ -64,8 +64,20 @@ def handle_drilldown(chat_id, symbol):
             )
             return
 
-        open_pos = pos_res["data"].iloc[0]
-        entry = float(open_pos['price'])
+        # F4 (Meeting 21/05/2026) — wire RISK-1c.1 enrichment for the
+        # /trade SYMBOL drilldown surface. Without this, the drilldown
+        # showed `avg_price` from row['price'] (could drift on re-sync);
+        # the locked anchor stays put. Also resolves the entry display via
+        # the same canonical resolver as /portfolio so the two surfaces
+        # cannot diverge on the same campaign.
+        import position_lock_anchor as _pla
+        open_pos = _pla.attach_lock_anchors(pos_res["data"], df).iloc[0]
+        _drill_entry = tf.resolve_entry_display(
+            price=open_pos['price'],
+            locked_entry_price=open_pos.get('locked_entry_price'),
+            mode="live",
+        )
+        entry = _drill_entry['entry']
         qty   = float(open_pos['quantity'])
         sl    = float(open_pos['stop_loss'])
         init_sl    = float(open_pos['initial_stop'])
@@ -168,7 +180,13 @@ def handle_market_regime(chat_id):
 
         df = pd.DataFrame(repo.get_all_trades(supabase))
         pos_res = ec.get_open_positions_campaign(df)
-        open_pos = pos_res["data"] if pos_res["ok"] else pd.DataFrame()
+        # F4 (Meeting 21/05/2026) — same RISK-1c.1 enrichment for the
+        # market-regime flow. Read-only — only used here for exposure totals
+        # by setup category, so the lock anchor is informational at this
+        # surface but maintains consistency across the file.
+        import position_lock_anchor as _pla
+        open_pos = (_pla.attach_lock_anchors(pos_res["data"], df)
+                    if pos_res["ok"] else pd.DataFrame())
 
         account_settings = get_account_settings()
         acc_size, _target_risk_usd_regime, nav_stale_label = get_nav_and_risk(account_settings)
@@ -214,9 +232,21 @@ def handle_market_regime(chat_id):
         try:
             current_risk_pct = float(account_settings.get("risk_pct_input", 0.5))
             closed_camps = are.compute_closed_campaigns(df)
+            # F1 (Meeting 21/05/2026) — wire the 4-gate on the risk-RAISE path.
+            # Without this, the founder saw "0.85% / $67" on N=9 statistical
+            # noise. The gate clamps "up" → "hold" when sample < 20 OR
+            # broker-recon is Critical OR expectancy < 0.30R OR loss_streak≥2.
+            # Strictly risk-NARROWING: never weakens the cut/hold paths.
+            _gate_ctx = are.build_risk_raise_gate_ctx(
+                nav=acc_size, risk_pct=current_risk_pct,
+                total_deposited=float(account_settings.get("total_deposited", 0) or 0),
+                closed_campaigns=closed_camps,
+                nav_source=str(account_settings.get("nav_source", "broker") or "broker"),
+            )
             risk_rec = are.compute_adaptive_risk(
                 closed_camps, current_risk_pct, acc_size,
                 open_r_list=open_r_regime or None,
+                risk_raise_gate=_gate_ctx,
             )
             rep += tf.fmt_adaptive_risk_block(risk_rec, settle_info=are.get_risk_settle_info())
         except Exception:
@@ -653,9 +683,19 @@ def handle_portfolio_room(chat_id):
         try:
             current_risk_pct = float(account_settings.get("risk_pct_input", 0.5))
             closed_camps = are.compute_closed_campaigns(df)
+            # F1 (Meeting 21/05/2026) — same 4-gate wiring as handle_market_regime
+            # above. /portfolio is the surface where the founder saw the noisy
+            # "0.85% / $67" recommendation; this is the primary fix point.
+            _gate_ctx = are.build_risk_raise_gate_ctx(
+                nav=acc_size, risk_pct=current_risk_pct,
+                total_deposited=float(account_settings.get("total_deposited", 0) or 0),
+                closed_campaigns=closed_camps,
+                nav_source=str(account_settings.get("nav_source", "broker") or "broker"),
+            )
             risk_rec = are.compute_adaptive_risk(
                 closed_camps, current_risk_pct, acc_size,
                 open_r_list=open_r_vals or None,
+                risk_raise_gate=_gate_ctx,
             )
             msg += tf.fmt_adaptive_risk_block(risk_rec, settle_info=are.get_risk_settle_info())
         except Exception:

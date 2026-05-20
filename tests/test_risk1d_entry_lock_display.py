@@ -528,9 +528,22 @@ class TestSurfaceWiringRiskC1:
     get_open_positions_campaign — otherwise the bug regresses silently."""
 
     def test_telegram_portfolio_wires_attach_lock_anchors(self):
+        # F4 (Meeting 21/05/2026) — ALL THREE telegram_portfolio call sites
+        # of get_open_positions_campaign must call attach_lock_anchors:
+        #   1. handle_drilldown (`/trade SYMBOL`)
+        #   2. handle_market_regime
+        #   3. handle_portfolio_room (`/portfolio`)
+        # Before F4 only #3 was wired (RISK-1c.1) so the same campaign
+        # could show a drifted entry on /trade and a locked entry on
+        # /portfolio. Pin all three so the bug cannot regress silently.
         src = _read("telegram_portfolio.py")
-        # The /portfolio room handler must call the enrichment helper.
-        assert "attach_lock_anchors" in src
+        # Each call site is an `attach_lock_anchors(` invocation.
+        call_count = src.count("attach_lock_anchors(")
+        assert call_count >= 3, (
+            f"Expected >=3 attach_lock_anchors() calls in telegram_portfolio.py "
+            f"(one per get_open_positions_campaign call site); found {call_count}. "
+            f"F4 wiring may have regressed."
+        )
 
     def test_dashboard_wires_attach_lock_anchors(self):
         src = _read("dashboard.py")

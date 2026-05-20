@@ -44,6 +44,13 @@ ACTION_AT_ENTRY_SKIP         = "at_entry_skip"
 # the operator chat_id + summary counts so the audit log answers "when did
 # the founder run backfill, and what happened?" in one query.
 ACTION_AT_ENTRY_BACKFILL_RUN = "at_entry_backfill_run"
+# F7 (Meeting 21/05/2026) — every position state transition is recorded,
+# including ALGO-managed positions whose Telegram alerts are intentionally
+# suppressed (`_mgt_mode == "algo_observed"`). The CEO needed to answer
+# "when did PLTR go to Broken?" — before F7 there was no record, only the
+# state_label visible in /portfolio. metadata: symbol, prev_state, new_state,
+# is_algo (bool), alert_sent (bool), suppression_reason (str or None).
+ACTION_POSITION_STATE_TRANSITION = "position_state_transition"
 
 _AUDIT_TABLE = "audit_log"
 
