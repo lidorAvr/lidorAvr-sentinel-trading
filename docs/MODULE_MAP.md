@@ -213,6 +213,12 @@ Responsibilities:
 - `fmt_regime_report()` — market regime report
 - `fmt_minervini_trend_template()` — 8-criteria output
 - `fmt_adaptive_risk_block()` — adaptive risk recommendation block
+- `resolve_entry_display()` (RISK-1d) — single canonical resolver for the
+  at-entry-price display contract. Consumed by Telegram /portfolio card,
+  AI Master Context Export, and the dashboard Command-Center expander.
+  `mode='historical'` (default) reads `price` byte-identically; `mode='live'`
+  prefers `locked_entry_price` and banner-flags the NULL-locked fallback
+  (`ENTRY_NOT_LOCKED_LABEL`). See `docs/DATA_CONTRACTS.md` for the contract.
 
 Rules:
 - Must not import telebot, supabase, or engine_core.

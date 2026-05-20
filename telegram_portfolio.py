@@ -312,7 +312,20 @@ def handle_portfolio_room(chat_id):
         for i, row in enumerate(user_state[chat_id]['temp_positions'], 1):
             sym = row['symbol']
             active_symbols.append(sym)
-            entry, sl, init_sl = row['price'], row['stop_loss'], row['initial_stop']
+            # RISK-1d: single-source-of-truth at-entry resolver. mode='live'
+            # prefers `locked_entry_price` (RISK-1a immutable column populated
+            # by the RISK-1b wizard / RISK-1c backfill) over the raw `price`
+            # column, which can drift via IBKR re-sync (the MRVL $87→$170
+            # regression that motivated RISK-1). NULL lock ⇒ falls back to
+            # `price` with the not-yet-locked banner. Byte-identical to the
+            # legacy path for any row where locked_entry_price IS NULL
+            # (resolver returns price + banner; the entry NUMBER is unchanged).
+            _entry_disp = tf.resolve_entry_display(
+                price=row['price'],
+                locked_entry_price=row.get('locked_entry_price'),
+                mode="live",
+            )
+            entry, sl, init_sl = _entry_disp['entry'], row['stop_loss'], row['initial_stop']
             setup, qty = row['setup_type'], row['quantity']
             init_qty = row.get('initial_qty', row['quantity'])
             realized_pnl = row.get('realized_pnl', 0)
@@ -518,6 +531,7 @@ def handle_portfolio_room(chat_id):
                     capital_risk=current_open_loss_risk,
                     price_is_fallback=price_is_fallback,
                     dual_r_fragment=_dual_r_frag,
+                    entry_banner=_entry_disp['banner'],
                 ) + "\n"
                 # Phase REPORT-2 (W-R2-1/2) — ONE additive units-lifecycle line
                 # from THE single formatter. Strictly additive: every existing

@@ -169,7 +169,23 @@ def compute_live_portfolio_data(open_trades_dict, _acc_size, _target_risk_usd, _
     # שלב 2: הלולאה הסדרתית — כל קריאה לרשת היא cache hit מיידי
     for row in open_trades_dict:
         sym, setup, qty = row['symbol'], row['setup_type'], row['quantity']
-        entry, sl, init_sl = row['price'], row['stop_loss'], row['initial_stop']
+        # RISK-1d: single-source-of-truth at-entry resolver. mode='live'
+        # prefers `locked_entry_price` (RISK-1a immutable column) over the
+        # raw `price` column — the latter is the surface where the MRVL
+        # $87→$170 drift came from when an IBKR re-sync overwrote `price`
+        # with a mark-to-market value. NULL lock ⇒ falls back to `price` with
+        # the not-yet-locked banner stored in live_df['EntryBanner'] so the
+        # Command-Center expander caption + AI export surface the same
+        # honest disclosure. The downstream engine calls (R, status, sizing)
+        # consume the resolved entry — for any row with locked_entry_price IS
+        # NULL the resolver returns price unchanged ⇒ byte-identical
+        # behaviour to today's live path.
+        _entry_disp = tf.resolve_entry_display(
+            price=row['price'],
+            locked_entry_price=row.get('locked_entry_price'),
+            mode="live",
+        )
+        entry, sl, init_sl = _entry_disp['entry'], row['stop_loss'], row['initial_stop']
         curr = ec.get_live_price(sym) or entry
         open_pnl = (curr - entry) * qty
         pos_value = curr * qty
@@ -253,6 +269,12 @@ def compute_live_portfolio_data(open_trades_dict, _acc_size, _target_risk_usd, _
             'Account_R': (_account_r_dash if _rbasis_dash['account_valid'] else None),
             'R_Basis': _rbasis_dash['primary_basis_label'],
             'Sector': sec_b.get('sector') or "Other", 'Entry': entry, 'Current': curr,
+            # RISK-1d additive column — empty string when the row is already
+            # locked (silent on-locked, by design); the not-yet-locked banner
+            # text when locked_entry_price IS NULL. Read by the Command-Center
+            # expander caption renderer; never replaces any existing column.
+            'EntryBanner': _entry_disp['banner'],
+            'IsEntryLocked': _entry_disp['is_locked'],
             'OriginalRisk': original_campaign_risk, 'GivebackRisk': giveback_risk_usd, 'LockedProfit': locked_profit_usd,
             'CapitalRisk': current_open_loss_risk,
             'CampaignId': row.get('campaign_id'),
@@ -705,7 +727,20 @@ else:
                                if not live_df.empty and 'ActionErr' in live_df else {})
     if not actual_open_trades.empty:
         for _, row in actual_open_trades.iterrows():
-            sym, qty, entry, setup, sl, init_sl = row['symbol'], row['quantity'], row['price'], row['setup_type'], row['stop_loss'], row['initial_stop']
+            sym, qty, setup, sl, init_sl = row['symbol'], row['quantity'], row['setup_type'], row['stop_loss'], row['initial_stop']
+            # RISK-1d: same single-source resolver the Telegram /portfolio
+            # card + Command-Center expander use — produce-once, consume-thrice
+            # across the 3 display surfaces so the AI Master Context Export
+            # cannot show a different entry number than the live dashboard /
+            # Telegram. For any row with locked_entry_price IS NULL the
+            # resolver returns row['price'] unchanged (byte-identical to the
+            # pre-RISK-1d AI export line) and emits the not-yet-locked banner.
+            _entry_disp_ai = tf.resolve_entry_display(
+                price=row['price'],
+                locked_entry_price=row.get('locked_entry_price'),
+                mode="live",
+            )
+            entry = _entry_disp_ai['entry']
             curr_p = _live_price_lookup.get(sym, entry)
             open_pnl = (curr_p - entry) * qty
             base_price = row.get('base_price', entry)
@@ -789,7 +824,12 @@ else:
             # number). risk_basis kept as an internal/runtime field only. The
             # dual labelled R fragment carries the correct basis now.
             ai_str += f"- {sym} [{setup}] | Mode: {mgmt_mode} | Visibility: {risk_vis}/100\n"
-            ai_str += f"  Entry: ${entry:.2f} | Curr: ${curr_p:.2f} | InitStop: {init_stop_str} | CurrStop: {stop_display} | OpenPnL: ${open_pnl:.2f} | {open_r_str}{risk_dev}\n"
+            # RISK-1d: append the not-yet-locked banner after the Entry value
+            # when the resolver flagged it. Empty banner ⇒ byte-identical to
+            # today's line (silent on-locked).
+            _entry_banner_ai = (f" {_entry_disp_ai['banner']}"
+                                if _entry_disp_ai['banner'] else "")
+            ai_str += f"  Entry: ${entry:.2f}{_entry_banner_ai} | Curr: ${curr_p:.2f} | InitStop: {init_stop_str} | CurrStop: {stop_display} | OpenPnL: ${open_pnl:.2f} | {open_r_str}{risk_dev}\n"
             ai_str += f"  Earnings: {earnings_str} | EventRisk: {_ev_str}\n"
             ai_str += f"  State: {_state_str} | Sizing: {_sizing_str}\n"
             # Phase REPORT-3 block 1 — units-lifecycle. Reuses THE single
@@ -1079,6 +1119,14 @@ else:
                     if earnings_info.get('date'):
                         earnings_str += f" ({earnings_info['date'].strftime('%d/%m/%Y')})"
                     st.caption(f"🏷️ Data Quality: {badge_str}   |   📅 דו\"ח רווחים: {earnings_str}")
+                    # RISK-1d: not-yet-locked banner. Empty ⇒ silent (the
+                    # row IS locked, by design — absence of warning is the
+                    # signal). The Telegram /portfolio card + AI export
+                    # surface the SAME banner from the SAME live_df column,
+                    # so all three surfaces stay in sync.
+                    _entry_banner_dash = pos.get('EntryBanner', '') or ''
+                    if _entry_banner_dash:
+                        st.caption(f"🔓 {_entry_banner_dash}")
                     # Phase REPORT-2 (W-R2-1/2) — ONE additive marker-delimited
                     # units-lifecycle element from THE single source-of-truth
                     # formatter (the SAME `position_lifecycle.format_units_lifecycle`

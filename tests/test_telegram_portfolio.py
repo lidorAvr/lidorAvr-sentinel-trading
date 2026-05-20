@@ -362,6 +362,18 @@ def _run_room(chat_id, *, open_positions=None, repo_error=False):
     _ec_mock.generate_minervini_coaching.return_value = []
     _tf_mock.fmt_position_card.return_value = "POSITION_CARD"
     _tf_mock.fmt_adaptive_risk_block.return_value = ""
+    # RISK-1d: tf is wholesale-mocked, so the resolver also needs to behave
+    # like the real one (echo back a real dict with a numeric `entry`).
+    # Without this the production loop would receive a MagicMock for `entry`
+    # and the downstream `init_sl < base_price` comparison would TypeError.
+    _tf_mock.resolve_entry_display.side_effect = (
+        lambda price, locked_entry_price=None, mode="live": {
+            "entry": float(price) if price is not None else 0.0,
+            "banner": "",
+            "is_locked": True,
+            "mode": mode,
+        }
+    )
     _are_mock.compute_closed_campaigns.return_value = []
     _are_mock.compute_adaptive_risk.return_value = {"action": "hold"}
 

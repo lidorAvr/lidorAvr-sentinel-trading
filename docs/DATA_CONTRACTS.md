@@ -66,16 +66,31 @@ legacy display path + surface a banner-flagged 'not yet locked' state". Do
 NOT silently substitute `price` for `locked_entry_price` — that would
 re-introduce the exact display-drift regression RISK-1 exists to fix.
 
-**Read pattern.** A new RISK-1d formatter is the **single source of truth** for
-displaying entry price across all 3 surfaces (Telegram, AI export, dashboard).
-The formatter exposes a `mode` flag:
+**Read pattern (RISK-1d — LANDED).** `telegram_formatters.resolve_entry_display`
+is the **single source of truth** for displaying entry price across all 3
+surfaces (Telegram /portfolio card, AI Master Context Export, dashboard
+Command-Center expander). Pure / read-only — no Supabase, no engine_core,
+no telebot import (DEC-20260510-005). The 3 surfaces each call the resolver
+with `mode='live'` (produce-once-consume-thrice) and pass the resolved
+`entry` value + `banner` string through to their respective renderers.
+`fmt_position_card` gained an `entry_banner: str = ""` kwarg (default →
+byte-identical to pre-RISK-1d output, same defaulted-kwarg pattern as
+Sprint-12 `price_is_fallback` and Sprint-15 `dual_r_fragment`).
+
+The resolver's `mode` flag:
 - `mode='historical'` (default — used by LOCKED-April and every backwards-
   compatible caller): reads `price` exactly as before. NEW lock columns are
   ignored. **April reconciliation is byte-identical by construction** — see
-  `tests/_byte_lock_baselines/`.
-- `mode='live'` (new — opted-in by live-dashboard / Telegram / AI-export
-  callers): reads `locked_entry_price` when non-NULL, falls back to `price`
-  with a banner when NULL.
+  `tests/_byte_lock_baselines/`. analytics_engine never reads the lock
+  columns; the LOCKED-April fixture path is untouched.
+- `mode='live'` (opted-in by the 3 display surfaces): reads
+  `locked_entry_price` when it is a positive number, falls back to `price`
+  with the `ENTRY_NOT_LOCKED_LABEL` banner when NULL / 0 / negative /
+  non-numeric. Silent on locked (absence of warning IS the signal).
+
+The banner string (`telegram_formatters.ENTRY_NOT_LOCKED_LABEL` —
+"‏⚠️ (מחיר לא-נעול — עלול לזוז עם re-sync)") is sourced exactly once;
+wording edits land in one place.
 
 **No SQL CHECK constraint on `lock_source` / `lock_method`.** Validation lives
 in the application layer (`supabase_repository.set_locked_entry`). Phase A

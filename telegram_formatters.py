@@ -14,6 +14,76 @@ SEP = "───────────────"
 # never a guess). One source, reused at every site (like _SNAPSHOT_LABEL).
 PRICE_FALLBACK_LABEL = "‏⚠️ (מחיר לא חי — לפי מחיר כניסה, לא בזמן אמת)"
 
+# ── RISK-1d — single source of truth for at-entry-price display ───────────────
+# Sibling of PRICE_FALLBACK_LABEL above (Mark §3), serving the SEPARATE
+# at-entry-lock surfacing contract documented in docs/DATA_CONTRACTS.md:70-78.
+# Shown ONLY when `locked_entry_price IS NULL` AND mode='live' — the row exists
+# but has not yet been locked (RISK-1b forward-capture, RISK-1c backfill, or
+# admin /at_entry correction will eventually lock it). For mode='historical'
+# (default for byte-locked April / every backwards-compatible caller) the
+# label is NEVER shown — `price` is read exactly as before. AGENTS.md #1:
+# never silently substitute a fallback value for the real one.
+ENTRY_NOT_LOCKED_LABEL = "‏⚠️ (מחיר לא-נעול — עלול לזוז עם re-sync)"
+
+
+def resolve_entry_display(price, locked_entry_price=None, *,
+                          mode: str = "live") -> dict:
+    """Single canonical resolver — given (price, locked_entry_price, mode)
+    decide WHICH number to display as the at-entry anchor and WHETHER the
+    not-yet-locked banner is appended.
+
+    Consumed by THREE surfaces (Telegram /portfolio card, AI Master Context
+    Export, and the dashboard's Command-Center expander) so the same row
+    cannot show different entry numbers across surfaces (anti-drift, the
+    direct fix for the MRVL $87-vs-$170 regression that motivated RISK-1).
+
+    Pure / read-only: no Supabase, no engine_core, no telebot import.
+    Defensive on every input type — non-numeric / None / 0 / negative
+    locked_entry_price all collapse to "not locked" and fall back to price.
+
+    Returns: {"entry": float, "banner": str, "is_locked": bool, "mode": str}
+      • mode='historical' (default for byte-locked April + every legacy
+        caller): always {entry=price, banner="", is_locked=False}. The new
+        lock columns are IGNORED — `price` is read exactly as before, so
+        analytics_engine / the LOCKED-April fixture stay byte-identical.
+      • mode='live' (opt-in by the 3 display surfaces): when
+        locked_entry_price is a positive number → {entry=locked_entry_price,
+        banner="", is_locked=True} (silent on-locked, by design — the
+        absence of warning IS the signal). When locked_entry_price is NULL /
+        0 / negative / non-numeric → {entry=price, banner=
+        ENTRY_NOT_LOCKED_LABEL, is_locked=False} (the legacy `price` is
+        still shown — the banner discloses it is not the canonical at-entry
+        anchor, never a silent substitution).
+    """
+    def _coerce_float(v):
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    if mode == "historical":
+        return {
+            "entry": _coerce_float(price) or 0.0,
+            "banner": "",
+            "is_locked": False,
+            "mode": "historical",
+        }
+
+    locked_f = _coerce_float(locked_entry_price)
+    if locked_f is not None and locked_f > 0:
+        return {
+            "entry": locked_f,
+            "banner": "",
+            "is_locked": True,
+            "mode": "live",
+        }
+    return {
+        "entry": _coerce_float(price) or 0.0,
+        "banner": ENTRY_NOT_LOCKED_LABEL,
+        "is_locked": False,
+        "mode": "live",
+    }
+
 # ── Actionability Layer ────────────────────────────────────────────────────
 # Every alert must declare what the user should do with it.
 ACTIONABILITY_LABELS = {
@@ -172,7 +242,8 @@ def fmt_position_card(i: int, sym: str, setup: str, days_held: int,
                       locked_profit: float = 0, giveback_risk: float = 0,
                       capital_risk: float = 0,
                       price_is_fallback: bool = False,
-                      dual_r_fragment: str | None = None) -> str:
+                      dual_r_fragment: str | None = None,
+                      entry_banner: str = "") -> str:
     """כרטיס פוזיציה אחד — קומפקטי וברור.
 
     ``price_is_fallback`` (Sprint-12 / Mark §3): default ``False`` keeps every
@@ -190,6 +261,12 @@ def fmt_position_card(i: int, sym: str, setup: str, days_held: int,
     it is passed in and REPLACES the silent ``(צף x.xxR)`` open fragment. The
     primary campaign-R number (``total_campaign_r``) stays byte-identical — only
     the open-R sub-fragment is correctly relabelled with the dual metric.
+
+    ``entry_banner`` (RISK-1d): default ``""`` keeps every existing caller/test
+    BYTE-IDENTICAL. When the CALLER built the not-yet-locked banner via
+    ``resolve_entry_display(mode='live')`` and got back a non-empty string, it
+    is appended after the entry price on the same line. Pure rendering — the
+    formatter never decides locked-vs-not-locked; the resolver upstream does.
     """
     pnl_icon = '🟢' if open_pnl >= 0 else '🔴'
     addon_tag = f" +(+{add_on_count})" if add_on_count > 0 else ""
@@ -202,7 +279,10 @@ def fmt_position_card(i: int, sym: str, setup: str, days_held: int,
     if total_campaign_r == 0 and open_r_val == 0 and capital_risk == 0 and locked_profit == 0:
         r_str = "`N/A` ⚠️ חסר סטופ התחלתי"
 
-    curr_line = f"{RTL}  ▸ כניסה: `${entry:.2f}`{base_tag} → נוכחי: `${curr:.2f}`"
+    curr_line = f"{RTL}  ▸ כניסה: `${entry:.2f}`{base_tag}"
+    if entry_banner:
+        curr_line += f" {entry_banner}"
+    curr_line += f" → נוכחי: `${curr:.2f}`"
     if price_is_fallback:
         curr_line += f" {PRICE_FALLBACK_LABEL}"
     lines = [
