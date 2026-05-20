@@ -203,6 +203,32 @@ Rules:
 
 ---
 
+### `risk1c_backfill.py`
+
+RISK-1c — admin-triggered retroactive backfill orchestration for legacy
+BUY rows whose `locked_entry_price` is NULL.
+
+Responsibilities:
+- `preview_missing_locks(sb)` → dict {total, lockable_count, anomalous_count,
+  by_symbol, anomalous_symbols, fetch_error}. Read-only triage; never
+  mutates Supabase.
+- `run_backfill(sb, *, chat_id=None)` → dict {locked, skipped_anomaly,
+  skipped_other, by_symbol, total_processed, fetch_error}. Delegates per-row
+  locking to `supabase_repository.lock_entry_from_trade_price(method='backfill')`,
+  writes ONE `ACTION_AT_ENTRY_BACKFILL_RUN` audit row capturing the operator
+  + summary counts.
+- `format_preview(preview)` / `format_result(result)` — Hebrew RTL
+  operator-facing screens (admin-only, never user-facing).
+
+Rules:
+- Two-step UI mandatory: preview → confirm → run. Never auto-mass-mutates.
+- Idempotent + fail-soft per-row (delegated to the repo helper's own
+  contract). Re-running after a partial batch is safe.
+- Admin-gated by construction: entry point is the developer menu's
+  "🔒 נעילה היסטורית (RISK-1c)" button, behind the existing DEV_PIN session.
+
+---
+
 ### `telegram_formatters.py`
 
 Pure formatting helpers (no Supabase, no bot, no engine_core).

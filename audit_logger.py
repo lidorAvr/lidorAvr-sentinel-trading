@@ -36,8 +36,14 @@ ACTION_SETTINGS_CHANGE   = "settings_change"
 ACTION_TELEGRAM_ALERT    = "telegram_alert_send"
 # RISK-1b/1c/1d — at-entry locked-immutable price lifecycle (one row per lock
 # attempt; richer than supabase_repository.set_locked_entry's value-only write):
-ACTION_AT_ENTRY_LOCK     = "at_entry_lock"
-ACTION_AT_ENTRY_SKIP     = "at_entry_skip"
+ACTION_AT_ENTRY_LOCK         = "at_entry_lock"
+ACTION_AT_ENTRY_SKIP         = "at_entry_skip"
+# RISK-1c — admin-triggered batch backfill. ONE row per batch INVOCATION
+# (in addition to the per-row ACTION_AT_ENTRY_LOCK / ACTION_AT_ENTRY_SKIP
+# rows that lock_entry_from_trade_price writes inside the loop). Captures
+# the operator chat_id + summary counts so the audit log answers "when did
+# the founder run backfill, and what happened?" in one query.
+ACTION_AT_ENTRY_BACKFILL_RUN = "at_entry_backfill_run"
 
 _AUDIT_TABLE = "audit_log"
 

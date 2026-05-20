@@ -288,13 +288,22 @@ def set_locked_entry(sb, trade_id: str, *, price: float,
 
 
 def lock_entry_from_trade_price(sb, trade_id: str, *,
-                                 chat_id: int | None = None) -> bool:
-    """RISK-1b — forward-capture wizard lock. Idempotent + fail-soft.
+                                 chat_id: int | None = None,
+                                 method: str = "wizard") -> bool:
+    """RISK-1b/1c — at-entry-price lock helper. Idempotent + fail-soft.
 
     Reads the trade's existing `price` field (the IBKR-Flex-imported broker
     fill stored by ibkr_sync_runner.py) and writes it to `locked_entry_price`
-    with lock_source='broker_avg_fill', lock_method='wizard'. Audit-logs the
-    outcome.
+    with lock_source='broker_avg_fill'. `method` records WHO triggered the
+    lock:
+      - 'wizard'   (default — RISK-1b forward-capture from the
+                    journal-completion wizard at telegram_bot.py:752+).
+      - 'backfill' (RISK-1c admin-triggered retroactive batch — see
+                    risk1c_backfill.run_backfill).
+      - 'admin_correction' (RISK-1d future /at_entry override).
+    Caller chooses; the helper's behaviour is byte-identical across methods,
+    only the lock_method column + the audit row metadata change. Audit-logs
+    the outcome.
 
     Returns True if a new lock was written, False otherwise (already locked,
     no row, missing/anomalous price). Never raises — the wizard call site
@@ -302,7 +311,8 @@ def lock_entry_from_trade_price(sb, trade_id: str, *,
 
     Idempotent: if `locked_entry_price` is already non-NULL, the helper
     no-ops and returns False (no second audit row). Safe to call from
-    multiple wizard steps; only the FIRST call to reach a row locks it.
+    multiple wizard steps OR re-runs of the RISK-1c batch; only the FIRST
+    call to reach a row locks it.
 
     Fail-soft skip cases (each writes one ACTION_AT_ENTRY_SKIP audit row
     with the reason in metadata; the trade row stays NULL-locked, which the
@@ -312,9 +322,9 @@ def lock_entry_from_trade_price(sb, trade_id: str, *,
       - `price` is None / 0 / negative / non-numeric (broker-data anomaly)
 
     Success case writes one ACTION_AT_ENTRY_LOCK audit row with the locked
-    price + the legacy `price` value in metadata (defense-in-depth: even
-    if the column-write itself silently fails, the audit row preserves the
-    intent).
+    price + the legacy `price` value + the lock_method in metadata
+    (defense-in-depth: even if the column-write itself silently fails, the
+    audit row preserves the intent).
     """
     try:
         res = (
@@ -354,7 +364,7 @@ def lock_entry_from_trade_price(sb, trade_id: str, *,
             return False
         set_locked_entry(
             sb, trade_id,
-            price=price_f, source="broker_avg_fill", method="wizard",
+            price=price_f, source="broker_avg_fill", method=method,
         )
         audit_logger.log_action(
             sb, audit_logger.ACTION_AT_ENTRY_LOCK,
@@ -365,7 +375,7 @@ def lock_entry_from_trade_price(sb, trade_id: str, *,
                 "symbol":             row.get("symbol"),
                 "locked_entry_price": price_f,
                 "lock_source":        "broker_avg_fill",
-                "lock_method":        "wizard",
+                "lock_method":        method,
                 "broker_price_copied_from": price,
             },
         )

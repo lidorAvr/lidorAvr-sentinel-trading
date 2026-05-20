@@ -54,10 +54,10 @@ position rendered as $170 once the symbol ran).
 
 | Column                | Type             | Populated by                                                                             |
 |-----------------------|------------------|------------------------------------------------------------------------------------------|
-| `locked_entry_price`  | `NUMERIC(12,4)`  | RISK-1b wizard (forward) / RISK-1c backfill / RISK-1d `/at_entry_correct`                |
+| `locked_entry_price`  | `NUMERIC(12,4)`  | RISK-1b wizard (forward) / RISK-1c backfill / RISK-1d.4 `/at_entry_correct` (pending)    |
 | `locked_entry_at`     | `TIMESTAMPTZ`    | The same writer, at the moment of the lock (NOT row-insert time)                         |
 | `lock_source`         | `TEXT`           | One of: `broker_avg_fill` \| `reuters_open` \| `declared_by_user` \| `unknown`           |
-| `lock_method`         | `TEXT`           | One of: `wizard` \| `backfill` \| `admin_correction`                                     |
+| `lock_method`         | `TEXT`           | One of: `wizard` (RISK-1b) \| `backfill` (RISK-1c) \| `admin_correction` (RISK-1d.4)     |
 
 **NULL is the legitimate "not-yet-locked" sentinel.** Every row that existed
 before migration 006 was applied has `locked_entry_price IS NULL` until a

@@ -571,6 +571,50 @@ def handle_all_messages(message):
         ).start()
         return
 
+    # ── RISK-1c — admin-triggered at-entry-lock backfill ────────────────────
+    # Two-step flow: this button shows the preview + inline confirm/cancel
+    # keyboard; the actual run happens in the `risk1c|confirm` callback
+    # registered in telegram_callbacks.py. Admin-gated through the existing
+    # dev-PIN session check (`_require_active_dev_session`). All Supabase
+    # mutations + per-row audit rows live inside `risk1c_backfill.run_backfill`;
+    # this surface is thin presentation only. CLAUDE.md "do not rewrite
+    # telegram_bot.py wholesale" — this is the minimum-possible touch.
+    if text == "🔒 נעילה היסטורית (RISK-1c)":
+        if not _require_active_dev_session(chat_id):
+            return
+        try:
+            import risk1c_backfill as _r1c
+            preview = _r1c.preview_missing_locks(supabase)
+            preview_msg = _r1c.format_preview(preview)
+        except Exception as e:
+            bot.send_message(
+                chat_id,
+                f"{RTL}❌ *RISK-1c — שגיאה בהכנת preview:* `{str(e)[:200]}`",
+                reply_markup=get_developer_menu(), parse_mode="Markdown")
+            return
+
+        # No rows to lock → no inline keyboard, just an honest "all clean"
+        # message back into the dev menu. fetch_error → same shape (the
+        # preview already disclosed it in the body).
+        if preview.get("fetch_error") or preview.get("total", 0) == 0 \
+                or preview.get("lockable_count", 0) == 0:
+            return bot.send_message(
+                chat_id, preview_msg,
+                reply_markup=get_developer_menu(), parse_mode="Markdown")
+
+        # Real preview → inline confirm/cancel. The callback IDs are scoped
+        # under `risk1c|` so they cannot collide with other surfaces.
+        kb = types.InlineKeyboardMarkup(row_width=2)
+        kb.add(
+            types.InlineKeyboardButton("✅ אשר ונעל",
+                                       callback_data="risk1c|confirm"),
+            types.InlineKeyboardButton("❌ ביטול",
+                                       callback_data="risk1c|cancel"),
+        )
+        return bot.send_message(
+            chat_id, preview_msg,
+            reply_markup=kb, parse_mode="Markdown")
+
     if text in ["❓ עזרה", "❓ פקודות מערכת", "/help"]:
         help_txt = (
             f"{RTL}🛡️ *Sentinel — מדריך פקודות*\n"

@@ -33,6 +33,11 @@ def get_developer_menu():
     # Re-runs the exact scheduler fetch read-only; NEVER writes/snap_save/
     # mutates state and NEVER prints secrets (MARK_SPRINT21_RULINGS §WS-A).
     markup.add(telebot.types.KeyboardButton("🔬 בדיקת נתוני תקופה (Probe)"))
+    # RISK-1c — admin-triggered retroactive at-entry-lock backfill. Two-step
+    # flow (preview → inline-confirm → run). Admin-only via the existing
+    # dev-menu / PIN gate. The actual orchestration lives in
+    # risk1c_backfill.py; this button is the only entry point.
+    markup.add(telebot.types.KeyboardButton("🔒 נעילה היסטורית (RISK-1c)"))
     markup.add(telebot.types.KeyboardButton("📋 לוגים"), telebot.types.KeyboardButton("⬅️ חזרה לתפריט ראשי"))
     return markup
 

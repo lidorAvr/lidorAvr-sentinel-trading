@@ -40,6 +40,42 @@ def handle_queries(call):
                              reply_markup=get_developer_menu())
         return
 
+    # ── RISK-1c — admin-triggered at-entry-lock backfill confirm/cancel ─────
+    # The preview + inline keyboard are emitted by the developer-menu handler
+    # in telegram_bot.py (`🔒 נעילה היסטורית (RISK-1c)`). The PIN session
+    # check happened there; once the inline buttons are visible, this
+    # callback only fires for the operator who initiated the preview (Telegram
+    # routes callbacks to the same chat). The orchestration + all per-row +
+    # batch-level audit rows live in risk1c_backfill.run_backfill — this
+    # callback is thin presentation only.
+    if data == "risk1c|cancel":
+        bot.answer_callback_query(call.id, text="בוטל.")
+        bot.send_message(
+            chat_id,
+            f"{RTL}❌ *RISK-1c — בוטל*\n"
+            f"{RTL}לא בוצע שינוי. החזרה לתפריט מפתח.",
+            reply_markup=get_developer_menu(), parse_mode="Markdown")
+        return
+
+    if data == "risk1c|confirm":
+        bot.answer_callback_query(call.id, text="מבצע נעילה...")
+        bot.send_message(
+            chat_id,
+            f"{RTL}🔒 *RISK-1c — מבצע נעילה...*\n"
+            f"{RTL}_עד דקה לפי גודל ה-backlog. עדכון יגיע בסיום._",
+            parse_mode="Markdown")
+        try:
+            import risk1c_backfill as _r1c
+            result = _r1c.run_backfill(supabase, chat_id=chat_id)
+            msg = _r1c.format_result(result)
+        except Exception as e:
+            msg = (f"{RTL}❌ *RISK-1c — שגיאה בריצה:* `{str(e)[:300]}`\n"
+                   f"{RTL}_חלק מהשורות אולי ננעלו לפני השגיאה — בדוק את ה-audit log._")
+        bot.send_message(
+            chat_id, msg,
+            reply_markup=get_developer_menu(), parse_mode="Markdown")
+        return
+
     if data.startswith("drill|"):
         symbol = data.split("|")[1]
         bot.answer_callback_query(call.id)
