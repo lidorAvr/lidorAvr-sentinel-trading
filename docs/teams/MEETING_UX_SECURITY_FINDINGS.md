@@ -22,9 +22,13 @@ For a 4-digit PIN (10⁴ keyspace) an attacker who somehow reached the admin cha
 
 ## S-2 (P2) — `SENTINEL_CONFIG_PATH` env-var redirect has no path-traversal validation
 
-`scripts/set_pre_db_pnl_estimate.py:65-69` honours `SENTINEL_CONFIG_PATH` verbatim — no normalisation, no allow-list, no check that the target lives under `/app` or `WORKDIR`. An attacker with shell-as-bot-user could `SENTINEL_CONFIG_PATH=/etc/cron.d/x python3 scripts/set_pre_db_pnl_estimate.py 1` to overwrite arbitrary files **with bot-user permissions**. The `_atomic_write` temp file (`:92-94`) is created in `path.parent.resolve()`, so it also lands in the attacker-chosen directory.
-**Threat-model angle:** post-compromise privilege confinement. Shell access IS the existing trust boundary (the bot user owns `sentinel_config.json`, the venv, and `/app/state/`); the CLI does not weaken that boundary, but it offers an easy generic-file-write gadget for an attacker who already has shell but no exec rights elsewhere.
-**Mitigation (RECOMMEND):** if `SENTINEL_CONFIG_PATH` is set, `resolve()` it and refuse paths outside a fixed allow-list (`/app`, `WORKDIR`, repo root). Refuse symlinks. Refuse paths whose basename is not `sentinel_config.json`.
+`scripts/set_pre_db_pnl_estimate.py:65-69` honours `SENTINEL_CONFIG_PATH` verbatim — no normalisation, no allow-list, no check that the target lives under `/app` or `WORKDIR`. An attacker with shell-as-bot-user could `SENTINEL_CONFIG_PATH=/etc/cron.d/x python3 scripts/set_pre_db_pnl_estimate.py 1` to overwrite arbitrary files **with bot-user permissions**. The `_atomic_write` temp file (`:92-94`) is created in `path.parent.resolve()`, so it also lands in the attacker-chosen directory (so the rename is genuinely cross-fs-safe and atomic, but to whatever target dir the env var picks).
+
+A near-miss mitigation already exists: the JSON shape check at `:81-85` and `:147` requires a valid JSON dict at the target, so the gadget cannot CREATE a new arbitrary file (`_load` refuses `not path.exists()`) — it can only OVERWRITE an existing JSON-dict file. That meaningfully narrows the gadget to "existing JSON config files writable by bot-user" — still a non-zero set on a typical host (other services' `config.json`, lock files).
+
+**Threat-model angle:** post-compromise privilege confinement. Shell access IS the existing trust boundary (the bot user owns `sentinel_config.json`, the venv, and `/app/state/`); the CLI does not weaken that boundary, but it offers a convenient generic-file-overwrite gadget for an attacker who already has shell but limited exec rights elsewhere on the host. Not a vulnerability per se — an arbitrary shell-write gadget — but worth tightening since `mkstemp(dir=parent)` already opens the door to writing outside the repo.
+
+**Mitigation (RECOMMEND):** if `SENTINEL_CONFIG_PATH` is set, `resolve()` it and refuse paths outside a fixed allow-list (`/app`, `WORKDIR`, repo root). Refuse symlinks (`Path.is_symlink()`). Refuse paths whose basename is not `sentinel_config.json`. All checks are pre-existence so they cost nothing on the happy path.
 
 ## S-3 (P3) — CLI has no second-factor / confirmation prompt on a risk-softening write
 
@@ -65,9 +69,10 @@ For a 4-digit PIN (10⁴ keyspace) an attacker who somehow reached the admin cha
 
 ## Out-of-scope but flagged
 
-- **Ops/Infra (S-12 carry-over):** `dashboard.py:8501` exposure means the new disclaimer + raw gap reach the LAN with no app-auth. Adding auth is an ADDITION (out-of-scope per Sprint-25 Ruling 3 #6).
-- **PIN rotation policy:** chat-log evidence (rotation between 19/05 and 21/05) implies a manual rotation cadence. No record of the rotation event in `audit_logger` was inspected. RECOMMEND a periodic rotation reminder + an `ACTION_DEV_PIN_ROTATE` audit row.
-- **Config dump (`⚙️ הצג Config`) value width:** telegram_bot.py:479 truncates to 3000 chars; the new field is short ($XX.XX), so no overflow risk. Confirmed.
+- **Ops/Infra (Sprint-25 S-12 carry-over):** `dashboard.py:8501` exposure means the new disclaimer + raw gap reach the LAN with no app-auth. Adding auth is an ADDITION (out-of-scope per Sprint-25 Ruling 3 #6); flagged to Ops/Infra as a network-boundary control (firewall/VPN/reverse-proxy). The new field's surface here is `dashboard.py:589-602` (sidebar Data Reconciliation block).
+- **PIN rotation policy:** chat-log evidence (rotation between 19/05 23:27 and 21/05 01:30) implies a manual rotation cadence. `dev_pin_activate_session` records `ACTION_DEV_PIN_ACTIVATE` to `audit_logger` (telegram_devops.py:99-103) — good — but there's no `ACTION_DEV_PIN_ROTATE` event, so a rotation is invisible to forensic review. RECOMMEND a periodic rotation reminder + a rotation-audit row.
+- **Config dump (`⚙️ הצג Config`) value width:** telegram_bot.py:479 truncates to 3000 chars; the new field is short ($XX.XX), so no overflow / truncation-of-mask risk. Confirmed.
+- **Scheduler-emitted report:** `report_scheduler.py:318-327` now reads the field and propagates it through `classify_broker_reconciliation`. The scheduler posts to Telegram via its own `TELEGRAM_CHAT_ID` envar (not the same wrapper) — Sprint-25 S-6 confirmed `_notify_error` swallows exceptions so the token URL never leaks. Confirmed not regressed.
 
 ## Sign-off
 

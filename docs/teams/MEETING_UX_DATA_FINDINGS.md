@@ -5,7 +5,7 @@
 
 ## Headline
 
-The YTD-scope contract is the right shape (honest, additive, defensive-invariant clamped). It is **shipped with one self-contradicting sign convention in the data-contract example** that, taken literally, would WORSEN the gap rather than soften it (the founder's actual session used the opposite sign and got the right result — so the doc example is wrong, not the code). Forensic reconstruction is intact on /portfolio + AI export; default-0 path is byte-identical. Three medium-impact data risks remain: example/sign drift (P1), G1-gate vs display-band gap-formula divergence (P2), and CLI/bot config-path mismatch (P2).
+The YTD-scope contract is the right shape (honest, additive, defensive-invariant clamped). It is **shipped with one self-contradicting sign convention in the data-contract example** that, taken literally, would WORSEN the gap rather than soften it (the founder's actual 04:10 session used the opposite sign and got the right result — so the doc example is wrong, not the code). Forensic reconstruction is intact on /portfolio + AI Master Context Export; default-0 path is byte-identical; Mark §3 verbatim wording correctly persists for Critical residual. Three medium-impact data risks remain: example/sign drift (P1), G1-gate vs display-band gap-formula divergence (P2), CLI/bot config-path mismatch (P2), and disclaimer-has-no-audit-trail (P2 — silent re-escalation risk on re-sync). Recommend landing the P1 doc-fix in the same edit that ships F2/F3/F7 mitigations.
 
 ---
 
@@ -48,26 +48,41 @@ The YTD-scope contract is the right shape (honest, additive, defensive-invariant
 ## Cross-cut convergence
 
 - **F1 (sign) ↔ F4 (no-op trigger):** both surface the same root — the disclaimer mechanism is a SIGNED arithmetic adjustment, and the documentation+UI both gloss the sign and the activation condition. Fix together: one paragraph in DATA_CONTRACTS.md "Sign rule + when the disclaimer is operationally a no-op."
-- **F2 (gap formula split) ↔ F6 (key drift):** both are pre-existing data-contract drifts that F-YTD now AMPLIFIES because the same disclaimer flows through both legs. Pin both in `DATA_CONTRACTS.md` §"Data history scope" before the next pre-DB feature lands.
-- **F3 (config path) ↔ F1 (sign):** combined, these are the two ways the operator can apply the new feature and get a wrong-looking output for a CORRECT reason — high frustration risk if either lands without the other being clean.
+- **F2 (gap formula split) ↔ F6 (key drift):** both are pre-existing data-contract drifts that F-YTD now AMPLIFIES because the same disclaimer flows through both legs. Pin both in `DATA_CONTRACTS.md` §"Data history scope" before the next pre-DB feature lands. F2 alone is the only one of these capable of changing a risk-RAISE allow/block decision.
+- **F3 (config path) ↔ F1 (sign):** combined, these are the two ways the operator can apply the new feature and get a wrong-looking output for a CORRECT reason — high frustration risk if either lands without the other being clean. F3 in particular is the kind of "wrote-the-file-but-bot-didn't-see-it" trap that erodes trust in subsequent fixes.
+- **F7 (no audit trail) ↔ F1 (sign):** if the field reverts unnoticed (re-sync wipes it), the founder may re-enter it from memory and pick the wrong sign — and now there's no record of either the original or the corrected value. Audit-logging on set/clear closes both holes with one change.
 
 ## Data invariants preserved
 
-- **Default-0 byte-identical:** verified via `tests/test_meeting_fytd_pre_db_history.py:72-88` (TestClassifierSignature) + `:202-212` (default-0 line has no disclaimer text). Confirmed in source: `agap_for_band = abs(gap)` branch at `telegram_formatters.py:1005` when `pre_db_adj == 0`. ✅
-- **Defensive `min(|raw|,|adjusted|)`:** correctly clamps over-disclaim (`telegram_formatters.py:1005`, pinned by `TestDefensiveInvariant` at `tests/test_meeting_fytd_pre_db_history.py:154-183`). ✅
-- **Raw gap preserved in display:** both the softened line (`telegram_formatters.py:1099-1102`) and the breakdown (`:1215`) carry `gap` (raw) verbatim; operator can reconstruct $495.67 from the message alone. ✅
-- **Mark §3 verbatim wording on Critical residual:** `band_softened = adjustment_applied AND band != "Critical Data Gap"` at `telegram_formatters.py:1079-1080`; the verbose preamble persists when `Critical` survives the disclaimer, per the spec. ✅
-- **CLI atomic write + 2dp rounding:** `scripts/set_pre_db_pnl_estimate.py:88-106` (atomic) + `:149` (`round(..., 2)`) + persistence pinned by `tests/test_scripts_set_pre_db_pnl_estimate.py:105-108`. ✅
-- **CLAUDE.md #1 (no fallback as truth):** disclaimer is explicitly labelled "הצהרת היסטוריה לפני-DB" / "pre-DB history disclaimer", never asserted as a fact. The raw gap stays visible; the band shows "✅ אחרי הצהרת..." not "the gap was X" alone. Honest. ✅
+- **Default-0 byte-identical:** verified via `tests/test_meeting_fytd_pre_db_history.py:72-88`
+  (TestClassifierSignature) + `:202-212` (default-0 line has no disclaimer text). Confirmed in
+  source: `agap_for_band = abs(gap)` branch at `telegram_formatters.py:1005` when `pre_db_adj == 0`. ✅
+- **Defensive `min(|raw|,|adjusted|)`:** correctly clamps over-disclaim (`telegram_formatters.py:1005`,
+  pinned by `TestDefensiveInvariant` at `tests/test_meeting_fytd_pre_db_history.py:154-183`). ✅
+- **Raw gap preserved in display:** both the softened line (`telegram_formatters.py:1099-1102`) and
+  the breakdown (`:1215`) carry `gap` (raw) verbatim; operator can reconstruct $495.67 from the
+  message alone. ✅
+- **Mark §3 verbatim wording on Critical residual:** `band_softened = adjustment_applied AND
+  band != "Critical Data Gap"` at `telegram_formatters.py:1079-1080`; the verbose preamble persists
+  when `Critical` survives the disclaimer, per the spec. ✅
+- **CLI atomic write + 2dp rounding:** `scripts/set_pre_db_pnl_estimate.py:88-106` (atomic) + `:149`
+  (`round(..., 2)`) + persistence pinned by `tests/test_scripts_set_pre_db_pnl_estimate.py:105-108`. ✅
+- **CLAUDE.md #1 (no fallback as truth):** disclaimer is explicitly labelled "הצהרת היסטוריה לפני-DB" /
+  "pre-DB history disclaimer", never asserted as a fact. The raw gap stays visible; the band shows
+  "✅ אחרי הצהרת..." not "the gap was X" alone. Honest. ✅
+- **Round-tripping the field through the CLI is idempotent on identical input:** atomic-write +
+  `round(value, 2)` at `set_pre_db_pnl_estimate.py:149` ⇒ re-setting `495.6789` twice produces the
+  same file bytes (`tests/test_scripts_set_pre_db_pnl_estimate.py:105-108` pins the rounding). ✅
 
 ## Out-of-scope but flagged
 
-- `pre_db_realized_pnl_estimate` is gitignored (lives only in `sentinel_config.json`, which `.gitignore:3` excludes). There is no audit trail of when the founder set/changed/cleared the value — if a re-sync ever overwrites the file (or a fresh deploy starts with `pre_db_realized_pnl_estimate=0`), the band would silently re-escalate from Balanced → Critical and the operator might not remember they had calibrated it. Mitigation candidate: log the field's value on each `/portfolio` to the existing audit_log table (one INSERT, idempotent on identical value).
-- F-YTD does not interact with `unlinked_pnl` (WS-B). A pre-deploy SELL that arrived post-deploy via a manual journal and lost its `campaign_id` is still in WS-B; the disclaimer covers the realized-PnL row that DOESN'T exist, not the orphan that DOES. No conflict, but worth noting in the contract so a future operator doesn't double-count.
+- F-YTD does not interact with `unlinked_pnl` (WS-B). A pre-deploy SELL that arrived post-deploy via a manual journal and lost its `campaign_id` is still in WS-B; the disclaimer covers the realized-PnL row that DOESN'T exist in `trades`, not the orphan that DOES. No conflict, but worth noting in the contract so a future operator does not double-count (subtract estimate AND see the orphan in WS-B as if both were missing).
 - The L50 partial-sample line (R-ALGO-3 / W-A3) already discloses sample shortage for adaptive-risk windows — the F-YTD section in `DATA_CONTRACTS.md:495-499` correctly cross-references this. Honest.
+- The weekly/monthly report path (`report_renderer.build_summary_text`) does NOT carry the F-YTD disclaimer. The Sprint-25 F1 carry-over (Telegram summary has no NAV source/freshness disclosure) is a related blind spot; the pre-deploy PnL estimate is also absent there. Period-bound report KPIs (WR/Expectancy/PF) are correctly scoped to in-window trades so the omission is consistent — but a Telegram-summary reader scanning realized PnL against deposits could draw a false reconciliation conclusion if the F-YTD calibration is not in their working memory.
+- The breakdown surface (AI Master Context Export) is the only place the operator sees BOTH raw and adjusted side-by-side. /portfolio (the founder's primary surface) shows only the combined "raw $+495 → adjusted $0" inside one sentence; if that single sentence is later truncated by Telegram's 4096-char limit, the raw figure could be the part that gets cut. Worth a follow-up to confirm Telegram-split logic at `telegram_bot.py:send_long_message` does not bisect this line.
 
 ## Sign-off
 
-DATA discipline can ship the three commits with **F1 (sign convention example) as a P1 blocker** — leaving the doc example inverted will produce a believable "I did what the doc said and it got worse" loop. F2 (gate gap formula split) should land as a `DATA_CONTRACTS.md` annotation in the same edit; the code split itself is pre-existing and amplified by F-YTD but does not need a code patch this round. F3 (CLI config-path) is a "next pass" polish but operator-visible enough to be worth raising at the meeting. F4–F6 are P3 polish, document-and-defer.
+DATA discipline can ship the three commits **with F1 (sign convention example) gated as a P1 blocker** — leaving the doc example inverted will produce a believable "I did what the doc said and it got worse" support loop. F2 (gate gap formula split) should land as a `DATA_CONTRACTS.md` annotation in the same edit; the code split itself is pre-existing and amplified by F-YTD but does not need a code patch this round (founder-gated, per the deferred Arch-F1 pattern). F3 (CLI config-path) and F7 (no audit trail) are "next pass" closure work but operator-visible enough to be raised at the meeting — both prevent silent re-escalation scenarios. F4–F6 are P3 polish, document-and-defer.
 
-The default-0 byte-identity, the `min(|raw|,|adjusted|)` clamp, the forensic visibility of the raw gap, and the Critical-residual Mark §3 preamble are all correctly preserved. The honesty contract (CLAUDE.md #1) is intact: the disclaimer is explicitly labelled as a human assertion, never as a system-verified truth.
+The default-0 byte-identity, the `min(|raw|,|adjusted|)` clamp, the forensic visibility of the raw gap, the Critical-residual Mark §3 preamble, and the AGENTS.md / CLAUDE.md honesty contract are all correctly preserved. The disclaimer is explicitly labelled as a human assertion ("הצהרת היסטוריה לפני-DB") at every surface, never as a system-verified truth — the field's design respects the no-fallback-as-truth red-line and lands as the cleanest example of "operator-asserted data" in the contract to date. The single visible drift this review surfaces is the documentation/example layer, not the math.
