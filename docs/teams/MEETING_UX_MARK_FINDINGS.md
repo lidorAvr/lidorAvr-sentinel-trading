@@ -5,9 +5,8 @@
 (F-YTD contract+classifier), `fdd4e84` (CLI helper), `e9872f8` (recon line +
 adaptive block cleanup) — UX variant-branching vs the Mark §3 verbatim
 invariant (`MARK_SPRINT15_RULINGS.md §3`, lines 62–67). **Bar:** Sprint-25
-Ruling 2 polish↔CLOSURE-FIX boundary; "when unsure whether a change is
-cleanup or behavior, it is behavior" (`MARK_SPRINT24_RULINGS.md` Ruling 1,
-lines 21–58 / CLAUDE.md).
+Ruling 2 polish↔CLOSURE-FIX; "when unsure, it is behavior"
+(`MARK_SPRINT24_RULINGS.md` Ruling 1, lines 21–58 / CLAUDE.md).
 
 ---
 
@@ -90,7 +89,7 @@ surfaces (the "R changes depending on which screen" defect flagged in
 ## New rulings (proposed)
 
 - **§X1 (followup, P2).** When a softened-band recon variant is emitted, the
-  AI export breakdown (`fmt_broker_reconciliation_breakdown`,
+  AI breakdown (`fmt_broker_reconciliation_breakdown`,
   `telegram_formatters.py:1127+`) MUST continue to carry both the raw and
   adjusted gap and the disclaimer source. Already true (`:1160-1179`); pin
   as binding so a future "simplify breakdown" cleanup cannot delete it.
