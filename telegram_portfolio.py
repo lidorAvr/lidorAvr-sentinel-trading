@@ -97,8 +97,20 @@ def handle_drilldown(chat_id, symbol):
         base_price = open_pos.get('base_price', entry)
         base_qty   = open_pos.get('base_qty', qty)
 
-        init_sl_clean = init_sl if (init_sl > 0 and init_sl < base_price) else 0
-        original_campaign_risk = (base_price - init_sl_clean) * base_qty if init_sl_clean > 0 else 0
+        # F5 (Wave 2 / Meeting 21/05/2026): drift-resistant base for R math.
+        # `base_price` from engine_core is computed off the raw `price`
+        # column which can drift on IBKR re-sync. The first-day locked
+        # anchor (from position_lock_anchor.attach_lock_anchors) is the
+        # immutable equivalent — adopt it when all first-day BUYs are
+        # locked, fall back to `base_price` otherwise (unlocked rows or
+        # LOCKED-April fixture). For non-drifted locked rows the two
+        # values are byte-identical (`locked_entry_price` is a copy of
+        # `price` at lock-time); the resistance kicks in only after drift.
+        _lbp = open_pos.get('locked_base_price')
+        base_price_eff = float(_lbp) if _lbp is not None else float(base_price)
+
+        init_sl_clean = init_sl if (init_sl > 0 and init_sl < base_price_eff) else 0
+        original_campaign_risk = (base_price_eff - init_sl_clean) * base_qty if init_sl_clean > 0 else 0
 
         engine_res = ec.evaluate_position_engine(
             symbol=symbol, entry_price=entry, entry_date_str=entry_date,
@@ -213,7 +225,12 @@ def handle_market_regime(chat_id):
                 init_sl = float(row.get("initial_stop", 0))
                 base_price = float(row.get("base_price", row["price"]))
                 base_qty = float(row.get("base_qty", row["quantity"]))
-                orig_risk = (base_price - init_sl) * base_qty if init_sl > 0 and init_sl < base_price else 0
+                # F5 (Wave 2): drift-resistant base for orig_risk in the
+                # regime exposure totals. Falls back to base_price for
+                # unlocked / LOCKED-April ⇒ byte-identical.
+                _lbp = row.get("locked_base_price")
+                base_price_eff = float(_lbp) if _lbp is not None else base_price
+                orig_risk = (base_price_eff - init_sl) * base_qty if init_sl > 0 and init_sl < base_price_eff else 0
                 if orig_risk > 0:
                     open_r_regime.append(open_pnl / orig_risk)
 
@@ -372,6 +389,11 @@ def handle_portfolio_room(chat_id):
             base_price = row.get('base_price', entry)
             base_qty   = row.get('base_qty', init_qty)
 
+            # F5 (Wave 2): drift-resistant first-day-locked base for R math
+            # (see telegram_portfolio.py:97-105 for the canonical comment).
+            _lbp = row.get('locked_base_price')
+            base_price_eff = float(_lbp) if _lbp is not None else float(base_price)
+
             curr = ec.get_live_price(sym)
             price_is_fallback = curr is None
             if price_is_fallback:
@@ -383,8 +405,8 @@ def handle_portfolio_room(chat_id):
             total_pos_profit = open_pnl_usd + realized_pnl
             weight_pct = (pos_value / acc_size) * 100 if acc_size > 0 else 0
 
-            init_sl_clean = init_sl if (init_sl > 0 and init_sl < base_price) else 0
-            original_campaign_risk = (base_price - init_sl_clean) * base_qty if init_sl_clean > 0 else 0
+            init_sl_clean = init_sl if (init_sl > 0 and init_sl < base_price_eff) else 0
+            original_campaign_risk = (base_price_eff - init_sl_clean) * base_qty if init_sl_clean > 0 else 0
             # R-ALGO-2 (Sprint-30 G1): mirror dashboard.py:452's
             # `live_df["OriginalRisk"].max()` — the exact same per-open-position
             # `original_campaign_risk` quantity, max-reduced for the recon
@@ -392,12 +414,12 @@ def handle_portfolio_room(chat_id):
             if original_campaign_risk > _max_open_campaign_risk:
                 _max_open_campaign_risk = float(original_campaign_risk)
 
-            if sl > base_price:
+            if sl > base_price_eff:
                 current_open_loss_risk = 0
-                locked_profit_usd = (sl - base_price) * qty
+                locked_profit_usd = (sl - base_price_eff) * qty
                 giveback_risk_usd = (curr - sl) * qty if curr > sl else 0
             else:
-                current_open_loss_risk = (base_price - sl) * qty if sl > 0 else 0
+                current_open_loss_risk = (base_price_eff - sl) * qty if sl > 0 else 0
                 locked_profit_usd = 0
                 giveback_risk_usd = 0
 
@@ -654,6 +676,13 @@ def handle_portfolio_room(chat_id):
                 max_open_campaign_risk=_max_open_campaign_risk,
             )
             msg += f"{tf.fmt_broker_reconciliation(_recon)}\n"
+            # F2 (Wave 2 / Meeting 21/05/2026) — per-component breakdown
+            # showing WHERE the gap came from arithmetically. The Mark §3
+            # line above stays verbatim (honest, no-asserted-cause); this
+            # block adds the math + a SIGN-directional hypothesis list so
+            # the founder can narrow the investigation from "5 possible
+            # causes" to "2-3 in this direction".
+            msg += f"{tf.fmt_broker_reconciliation_breakdown(nav=acc_size, total_deposited=_total_deposited, db_net_pnl=_db_net_pnl, open_pnl=total_open_pnl, status=_recon)}\n"
         except Exception:
             pass
 

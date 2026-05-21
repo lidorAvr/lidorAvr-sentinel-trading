@@ -968,7 +968,14 @@ def classify_broker_reconciliation(nav: float, base_capital: float,
 
 def fmt_broker_reconciliation(status: dict, *, ai_copy: bool = False) -> str:
     """Mark §3 verbatim honesty wording — NEVER asserts a single cause.
-    Consumes ``classify_broker_reconciliation`` output (produce-once)."""
+    Consumes ``classify_broker_reconciliation`` output (produce-once).
+
+    F2 (Meeting 21/05/2026 Wave 2) — see fmt_broker_reconciliation_breakdown
+    below for the per-component breakdown that complements this single-line
+    summary. The breakdown does NOT replace this line (Mark §3 wording stays
+    verbatim) — both fire together for the founder to see the math AND the
+    honest "cause unverified" disclosure.
+    """
     band = status["band"]
     gap = status["gap"]
     if ai_copy:
@@ -987,6 +994,97 @@ def fmt_broker_reconciliation(status: dict, *, ai_copy: bool = False) -> str:
             line += (f" ‏⚠️ (צד ה-NAV עצמו {status['nav_source']} — "
                      f"לא NAV חי; ההתאמה זמנית)")
     return line
+
+
+# ── F2 (Meeting 21/05/2026 Wave 2) — recon per-component breakdown ──────────
+# The Mark §3 line above is honest but vague: it lists 5 possible causes
+# without pointing at any. The founder asked "$495.67 — למה?" and the
+# system couldn't help narrow. F2 adds a sibling formatter that shows
+# the EXISTING reconciliation gap as a per-component arithmetic split
+# (NAV, deposits, realized PnL, open PnL → expected → actual gap), plus
+# DIRECTIONAL hypothesis lists narrowed by the gap's SIGN. Still honest:
+# both hypothesis lists are framed "ייתכן ...", not asserted causes
+# (Mark §3 contract preserved).
+
+def fmt_broker_reconciliation_breakdown(
+    *, nav: float, total_deposited: float, db_net_pnl: float,
+    open_pnl: float, status: dict, ai_copy: bool = False,
+) -> str:
+    """Return the per-component arithmetic breakdown of the reconciliation
+    gap. Designed to be appended AFTER ``fmt_broker_reconciliation`` —
+    never replaces the Mark §3 honesty line.
+
+    The math is the same as everywhere else in the codebase:
+       db_equity_expected = total_deposited + db_net_pnl + open_pnl
+       gap = nav - db_equity_expected
+
+    Hypothesis narrowing by sign:
+      gap > 0 ⇒ NAV is HIGHER than expected. Hypotheses (not asserted):
+        dividend/refund/transfer-in not recorded in the trade journal;
+        manual deposit since last sync; broker bonus/cashback;
+        commission rebate accrued.
+      gap < 0 ⇒ NAV is LOWER than expected. Hypotheses (not asserted):
+        unrecorded commission/fee; tax-at-source; withdrawal since last
+        sync; FX-conversion loss; assignment/exercise fee.
+      |gap| ≤ $10 ⇒ balanced — no hypothesis listed.
+
+    ``status`` is the dict returned by ``classify_broker_reconciliation``;
+    we read its band classification + caveat. Every number passed in is
+    used as-is (no recompute).
+    """
+    expected = float(total_deposited) + float(db_net_pnl) + float(open_pnl)
+    gap = float(nav) - expected
+    agap = abs(gap)
+
+    if ai_copy:
+        # English breakdown for the AI Master Context Export — Claude
+        # consumes the numbers, the directional hypothesis is the
+        # actionable signal.
+        lines = [
+            f"  Reconciliation Breakdown:",
+            f"    Broker NAV:           ${float(nav):,.2f}",
+            f"    Deposits (lifetime):  ${float(total_deposited):,.2f}",
+            f"    Realized PnL (DB):    ${float(db_net_pnl):+,.2f}",
+            f"    Open PnL:             ${float(open_pnl):+,.2f}",
+            f"    Expected equity:      ${expected:,.2f}",
+            f"    Gap:                  ${gap:+,.2f}",
+        ]
+        if agap > 10.0:
+            if gap > 0:
+                lines.append(
+                    "    Direction: NAV exceeds expected. Possible causes "
+                    "(unverified): unrecorded dividend / deposit / refund / "
+                    "broker bonus / commission rebate."
+                )
+            else:
+                lines.append(
+                    "    Direction: NAV below expected. Possible causes "
+                    "(unverified): unrecorded commission/fee / tax at "
+                    "source / withdrawal / FX loss / assignment fee."
+                )
+        return "\n".join(lines)
+
+    # Telegram (Hebrew, RTL).
+    lines = [
+        f"{RTL}  ▸ NAV ברוקר: `${float(nav):,.2f}`",
+        f"{RTL}  ▸ מופקד מצטבר: `${float(total_deposited):,.2f}`",
+        f"{RTL}  ▸ PnL ממומש (DB): `${float(db_net_pnl):+,.2f}`",
+        f"{RTL}  ▸ PnL פתוח: `${float(open_pnl):+,.2f}`",
+        f"{RTL}  ▸ צפי הון: `${expected:,.2f}`",
+        f"{RTL}  ▸ פער: `${gap:+,.2f}`",
+    ]
+    if agap > 10.0:
+        if gap > 0:
+            lines.append(
+                f"{RTL}  📈 ה-NAV גבוה מהצפי. ייתכן (לא מאומת): דיבידנד "
+                f"לא רשום, הפקדה לא מתועדת, החזר ברוקר, או החזר עמלה."
+            )
+        else:
+            lines.append(
+                f"{RTL}  📉 ה-NAV נמוך מהצפי. ייתכן (לא מאומת): עמלה/אגרה "
+                f"לא רשומה, מס במקור, משיכה לא מתועדת, או הפסדי המרת מטבע."
+            )
+    return "\n".join(lines)
 
 
 # ── Sprint-15 / Mark §5 — BLOCKED #4/#5 framework ONLY (NO ALGO threshold) ───

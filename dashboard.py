@@ -193,15 +193,24 @@ def compute_live_portfolio_data(open_trades_dict, _acc_size, _target_risk_usd, _
         
         base_price = row.get('base_price', entry)
         base_qty = row.get('base_qty', qty)
-        
-        original_campaign_risk = (base_price - init_sl) * base_qty if (init_sl > 0 and init_sl < base_price) else 0
-        
-        if sl > base_price: 
+
+        # F5 (Wave 2 / Meeting 21/05/2026) — drift-resistant first-day-locked
+        # base for R math (same contract as telegram_portfolio.py:97-105).
+        # When all first-day BUYs have locked_entry_price (post-RISK-1c),
+        # adopt the locked anchor; otherwise base_price (LOCKED-April /
+        # unlocked positions ⇒ byte-identical). The drift fix kicks in when
+        # IBKR later corrupts `price` for an already-locked campaign.
+        _lbp = row.get('locked_base_price')
+        base_price_eff = float(_lbp) if _lbp is not None else float(base_price)
+
+        original_campaign_risk = (base_price_eff - init_sl) * base_qty if (init_sl > 0 and init_sl < base_price_eff) else 0
+
+        if sl > base_price_eff:
             current_open_loss_risk = 0
-            locked_profit_usd = (sl - base_price) * qty
+            locked_profit_usd = (sl - base_price_eff) * qty
             giveback_risk_usd = (curr - sl) * qty if curr > sl else 0
         else:
-            current_open_loss_risk = (base_price - sl) * qty if sl > 0 else 0
+            current_open_loss_risk = (base_price_eff - sl) * qty if sl > 0 else 0
             locked_profit_usd = 0
             giveback_risk_usd = 0
 
@@ -715,6 +724,20 @@ else:
     # same dashboard.py:404-405 gap; non-asserting wording, Mark §3).
     try:
         ai_str += f"- {tf.fmt_broker_reconciliation(_recon_status, ai_copy=True)}\n"
+        # F2 (Wave 2 / Meeting 21/05/2026) — per-component breakdown for the
+        # AI export. The Mark §3 line above is honest but vague; the
+        # breakdown narrows the investigation by SIGN-directional
+        # hypothesis. The sidebar deliberately does NOT show the
+        # breakdown (sidebar real estate is tight; Telegram /portfolio
+        # surface carries it).
+        ai_str += tf.fmt_broker_reconciliation_breakdown(
+            nav=current_acc_size,
+            total_deposited=float(total_deposited or 0),
+            db_net_pnl=float(total_pnl_net or 0),
+            open_pnl=float(total_open_pnl or 0),
+            status=_recon_status,
+            ai_copy=True,
+        ) + "\n"
     except Exception:
         pass
     ai_str += f"- Expectancy: {expectancy_r:.2f}R per trade | Adjusted R/R: {adj_rr:.2f}:1\n\n"
@@ -769,9 +792,13 @@ else:
             open_pnl = (curr_p - entry) * qty
             base_price = row.get('base_price', entry)
             base_qty = row.get('base_qty', qty)
-            
-            init_sl_clean = init_sl if (init_sl > 0 and init_sl < base_price) else 0
-            original_campaign_risk = (base_price - init_sl_clean) * base_qty if init_sl_clean > 0 else 0
+
+            # F5 (Wave 2): drift-resistant first-day-locked base for R math.
+            _lbp = row.get('locked_base_price')
+            base_price_eff = float(_lbp) if _lbp is not None else float(base_price)
+
+            init_sl_clean = init_sl if (init_sl > 0 and init_sl < base_price_eff) else 0
+            original_campaign_risk = (base_price_eff - init_sl_clean) * base_qty if init_sl_clean > 0 else 0
             
             is_algo_pos = str(setup).upper() == 'ALGO'
             # Sprint-15 / Mark §1 — the conflated single OpenR + standalone

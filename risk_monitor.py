@@ -688,15 +688,47 @@ def check_position_risk_thresholds(sym, setup, open_r, open_pnl_usd, target_risk
     return alerts, updates
 
 
+def _audit_telegram_send_failure(helper_name: str, text: str, exc: Exception) -> None:
+    """F8 (Meeting 21/05/2026 Wave 2) — deadletter audit on Telegram send
+    failure. Writes ONE audit_log row capturing helper origin + error
+    + a SHORT preview of the failed text (first 80 chars; full message
+    is NOT logged to avoid leaking sensitive content / market positions
+    into the audit trail).
+
+    Never raises — audit_logger.log_action is fail-open, this wrapper is
+    just defense in depth so the catch site stays clean.
+    """
+    try:
+        audit_logger.log_action(
+            supabase, audit_logger.ACTION_TELEGRAM_SEND_FAILED,
+            metadata={
+                "helper":        helper_name,
+                "error_type":    type(exc).__name__,
+                "error_message": str(exc)[:200],
+                # Preview only — full message could contain symbol/PnL data
+                # that the audit log doesn't need a permanent copy of.
+                "text_preview":  (text or "")[:80],
+            },
+        )
+    except Exception:
+        pass  # Audit must NEVER block business logic.
+
+
 def send_telegram(text):
     if not ADMIN_ID: return
-    try: bot.send_message(ADMIN_ID, text, parse_mode="Markdown")
-    except Exception as e: print(f"Telegram send failed: {e}")
+    try:
+        bot.send_message(ADMIN_ID, text, parse_mode="Markdown")
+    except Exception as e:
+        print(f"Telegram send failed: {e}")
+        _audit_telegram_send_failure("send_telegram", text, e)
 
 def send_telegram_with_keyboard(text, markup):
     if not ADMIN_ID: return
-    try: bot.send_message(ADMIN_ID, text, parse_mode="Markdown", reply_markup=markup)
-    except Exception as e: print(f"Telegram send_keyboard failed: {e}")
+    try:
+        bot.send_message(ADMIN_ID, text, parse_mode="Markdown", reply_markup=markup)
+    except Exception as e:
+        print(f"Telegram send_keyboard failed: {e}")
+        _audit_telegram_send_failure("send_telegram_with_keyboard", text, e)
 
 _KNOWN_RISK_PCT_KEY = "last_known_risk_pct"
 

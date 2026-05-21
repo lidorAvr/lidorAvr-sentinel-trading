@@ -51,6 +51,15 @@ ACTION_AT_ENTRY_BACKFILL_RUN = "at_entry_backfill_run"
 # state_label visible in /portfolio. metadata: symbol, prev_state, new_state,
 # is_algo (bool), alert_sent (bool), suppression_reason (str or None).
 ACTION_POSITION_STATE_TRANSITION = "position_state_transition"
+# F8 (Meeting 21/05/2026 Wave 2) — deadletter for risk-monitor's Telegram
+# sends. Before F8 a failed send (network blip / rate limit / bot down) was
+# only logged to stderr. The CEO couldn't tell which alerts had silently
+# dropped. F8 writes one row per send failure with: text_preview (first 80
+# chars, no full message — defense in depth against accidental secret leak),
+# error type, error message (truncated), source helper name (send_telegram
+# vs send_telegram_with_keyboard). The audit log answers "did any
+# state/digest alert silently fail in the last 24h?" in one query.
+ACTION_TELEGRAM_SEND_FAILED = "telegram_send_failed"
 
 _AUDIT_TABLE = "audit_log"
 
