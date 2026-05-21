@@ -206,6 +206,32 @@ def target_risk_usd(account: dict) -> float:
     return account["nav"] * account["risk_pct_input"] / 100
 
 
+def pre_db_realized_pnl_estimate(account: dict) -> float:
+    """Single-source reader for the founder-asserted F-YTD disclaimer
+    (founder note 21/05/2026, see docs/DATA_CONTRACTS.md
+    §"Data history scope").
+
+    Closes ARCH F1 (Meeting 21/05/2026 — five callers previously ran
+    `float(account.get(..., 0) or 0)` ad-hoc) and TESTING T3 (a
+    corrupt non-numeric value would have raised ValueError at every
+    caller; now it is caught and returns 0.0).
+
+    Returns 0.0 on missing / null / non-numeric — fail-safe by design
+    so an operator typo in sentinel_config.json can never cascade into
+    a hard failure on /portfolio, /tasks, the dashboard or the
+    reporting service. The CLI helper at
+    `scripts/set_pre_db_pnl_estimate.py` validates the input on write,
+    so this is defence-in-depth, not a primary input gate.
+    """
+    raw = account.get("pre_db_realized_pnl_estimate", 0)
+    if raw is None:
+        return 0.0
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 # ── internals ──────────────────────────────────────────────────────────────────
 
 def _find_config() -> Optional[str]:

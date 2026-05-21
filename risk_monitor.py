@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 import engine_core as ec
 import adaptive_risk_engine as are
 import audit_logger
+import account_state
 import state_io
 # Phase Arch-F1 (Sprint-25 F1): single shared sentinel_config.json reader.
 # risk_monitor previously kept a byte-identical local get_account_settings
@@ -1233,7 +1234,7 @@ def main():
             total_deposited=float(account_settings.get("total_deposited", 0) or 0),
             closed_campaigns=closed_camps,
             nav_source=str(account_settings.get("nav_source", "broker") or "broker"),
-            pre_db_realized_pnl_estimate=float(account_settings.get("pre_db_realized_pnl_estimate", 0) or 0),
+            pre_db_realized_pnl_estimate=account_state.pre_db_realized_pnl_estimate(account_settings),
         )
         risk_rec = are.compute_adaptive_risk(closed_camps, current_risk_pct, nav_for_risk,
                                              open_positions=open_positions_for_risk,

@@ -411,10 +411,25 @@ def fmt_adaptive_risk_block(risk_rec: dict, settle_info: dict | None = None) -> 
             f"(`${curr_usd:,.0f}` לעסקה)",
         ]
         # The gate-blocking reason lives in heat_factors with ⛔ prefix.
+        # T2 fallback (Meeting 21/05/2026 — TESTING T2): if heat_factors is
+        # empty OR contains no ⛔ line (e.g. an alert builder constructed
+        # the rec without populating heat_factors), surface the gate's own
+        # `reason` field as the ⛔ line. Mark §X2 requires the blocking
+        # reason to survive — silently emitting a 3-line block with no ⛔
+        # would violate the compact-on-system-decision-against predicate.
         factors = risk_rec.get("heat_factors", []) or []
+        gate_reason_surfaced = False
         for f_line in factors:
             if "⛔" in str(f_line):
                 lines.append(f"{RTL}  ▸ {f_line}")
+                gate_reason_surfaced = True
+        if not gate_reason_surfaced:
+            gate_reason = str(gate_info.get("reason", "") or "").strip()
+            if gate_reason:
+                # Prefix ⛔ ourselves so the compact path always renders
+                # the blocking reason in the canonical shape.
+                prefix = "⛔ " if not gate_reason.startswith("⛔") else ""
+                lines.append(f"{RTL}  ▸ {prefix}{gate_reason}")
         # Settle period note — still relevant on hold (user just changed).
         if settle_info and settle_info.get("active") and settle_info.get("dir") == direction:
             hrs = settle_info["hours_remaining"]

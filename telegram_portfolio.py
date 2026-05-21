@@ -14,6 +14,7 @@ import engine_core as ec
 import supabase_repository as repo
 import telegram_formatters as tf
 import adaptive_risk_engine as are
+import account_state
 import position_lifecycle as plc
 from bot_core import bot, supabase, user_state, RTL
 from bot_helpers import get_account_settings, get_nav_and_risk
@@ -259,7 +260,7 @@ def handle_market_regime(chat_id):
                 total_deposited=float(account_settings.get("total_deposited", 0) or 0),
                 closed_campaigns=closed_camps,
                 nav_source=str(account_settings.get("nav_source", "broker") or "broker"),
-                pre_db_realized_pnl_estimate=float(account_settings.get("pre_db_realized_pnl_estimate", 0) or 0),
+                pre_db_realized_pnl_estimate=account_state.pre_db_realized_pnl_estimate(account_settings),
             )
             risk_rec = are.compute_adaptive_risk(
                 closed_camps, current_risk_pct, acc_size,
@@ -676,8 +677,7 @@ def handle_portfolio_room(chat_id):
             # disclaiming pre-DB closed-campaign PnL. Defaults to 0 ⇒
             # byte-identical behaviour for any deployment that doesn't
             # opt in. See docs/DATA_CONTRACTS.md "Data history scope".
-            _pre_db_est = float(account_settings.get(
-                "pre_db_realized_pnl_estimate", 0) or 0)
+            _pre_db_est = account_state.pre_db_realized_pnl_estimate(account_settings)
             _recon = tf.classify_broker_reconciliation(
                 acc_size, _total_deposited, _db_net_pnl,
                 reconciliation_gap=_recon_gap,
@@ -729,7 +729,7 @@ def handle_portfolio_room(chat_id):
                 total_deposited=float(account_settings.get("total_deposited", 0) or 0),
                 closed_campaigns=closed_camps,
                 nav_source=str(account_settings.get("nav_source", "broker") or "broker"),
-                pre_db_realized_pnl_estimate=float(account_settings.get("pre_db_realized_pnl_estimate", 0) or 0),
+                pre_db_realized_pnl_estimate=account_state.pre_db_realized_pnl_estimate(account_settings),
             )
             risk_rec = are.compute_adaptive_risk(
                 closed_camps, current_risk_pct, acc_size,

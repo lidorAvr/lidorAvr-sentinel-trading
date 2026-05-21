@@ -592,7 +592,7 @@ else:
     # sentinel_config.json, the classifier subtracts it from the raw
     # gap. Defaults to 0 ⇒ byte-identical behaviour for any deployment
     # that doesn't opt in.
-    _pre_db_est_dash = float(settings.get("pre_db_realized_pnl_estimate", 0) or 0)
+    _pre_db_est_dash = acc_state.pre_db_realized_pnl_estimate(settings)
     _recon_status = tf.classify_broker_reconciliation(
         current_acc_size, total_deposited, total_pnl_net,
         reconciliation_gap=reconciliation_gap,
@@ -623,7 +623,7 @@ else:
             total_deposited=float(total_deposited or 0),
             closed_campaigns=_closed_for_rec,
             nav_source=str(settings.get("nav_source", "broker") or "broker"),
-            pre_db_realized_pnl_estimate=float(settings.get("pre_db_realized_pnl_estimate", 0) or 0),
+            pre_db_realized_pnl_estimate=acc_state.pre_db_realized_pnl_estimate(settings),
         )
         _risk_rec = are.compute_adaptive_risk(
             _closed_for_rec, risk_pct_input, current_acc_size,

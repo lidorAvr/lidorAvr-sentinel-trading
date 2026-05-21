@@ -12,6 +12,8 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Optional
 
+import account_state
+
 ISRAEL_TZ   = ZoneInfo("Asia/Jerusalem")
 LOG_FILE    = "/app/logs/sentinel_report.log"
 LOG_MAX_LINES = 2000
@@ -318,7 +320,7 @@ def _compute_risk_rec(df, account: dict) -> dict:
             # YTD-history adjustment (founder note 21/05/2026) — same
             # contract as telegram_portfolio + dashboard; see
             # docs/DATA_CONTRACTS.md "Data history scope".
-            _pre_db_est_sched = float(account.get("pre_db_realized_pnl_estimate", 0) or 0)
+            _pre_db_est_sched = account_state.pre_db_realized_pnl_estimate(account)
             _recon = _tf.classify_broker_reconciliation(
                 nav, deposited, db_net,
                 reconciliation_gap=recon_gap,
