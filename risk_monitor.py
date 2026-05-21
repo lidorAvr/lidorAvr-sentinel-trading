@@ -8,6 +8,7 @@ import engine_core as ec
 import adaptive_risk_engine as are
 import audit_logger
 import account_state
+import telegram_formatters as tf
 import state_io
 # Phase Arch-F1 (Sprint-25 F1): single shared sentinel_config.json reader.
 # risk_monitor previously kept a byte-identical local get_account_settings
@@ -1273,39 +1274,23 @@ def main():
             if not same_direction_recently and not in_settle:
                 rec_pct = risk_rec["recommended_risk_pct"]
                 curr_pct = risk_rec["current_risk_pct"]
-                curr_usd = risk_rec["current_risk_usd"]
-                rec_usd = risk_rec["recommended_risk_usd"]
-                arrow = "⬆️" if risk_rec["direction"] == "up" else "⬇️⬇️"
-                heat  = risk_rec["heat_score"]
-                step  = risk_rec["step_type"]
-                s9_sc  = risk_rec.get("s9_score",  heat)
-                m21_sc = risk_rec.get("m21_score", heat)
-                l50_sc = risk_rec.get("l50_score", heat)
-
+                # Engagement Wave-3A.3 (UX U1 closure):
+                # Delegate the full adaptive-risk block to the SAME formatter
+                # used by /portfolio (`fmt_adaptive_risk_block`). Closes the
+                # 14-line inline duplicate that yesterday's UX team flagged
+                # (U1 P1) as the regression vector — every cleanup fix to
+                # fmt_adaptive_risk_block (compact-on-clamp, heat_factors
+                # fallback, §X2 binding) now applies to BOTH surfaces.
+                # The alert framing is the SUFFIX prompt + keyboard; the
+                # header ("המלצת סיכון אדפטיבי") is the SAME on push and
+                # pull surfaces — same surface, same wording, push vs pull
+                # is a delivery-mode distinction, not a content distinction.
+                _block_text = tf.fmt_adaptive_risk_block(
+                    risk_rec, settle_info=settle
+                ).lstrip("\n")
                 alert_text = (
-                    f"{RTL}🎯 *התראת סיכון אדפטיבי*\n"
-                    f"{RTL}───────────────\n"
-                    f"{RTL}חום מסחר: {risk_rec['heat_color']} `{heat:.0f}/100` | {step}\n"
-                    f"{RTL}  ▸ ציון (0-100) לפי טווח: S9(9 עסקאות)=`{s9_sc:.0f}` | M21(21)=`{m21_sc:.0f}` | L50(50)=`{l50_sc:.0f}`\n"
+                    f"{_block_text}\n\n{RTL}האם לאשר שינוי סיכון?"
                 )
-                factors = risk_rec.get("heat_factors", [])
-                if factors:
-                    alert_text += f"{RTL}\n{RTL}📊 גורמים מרכזיים:\n"
-                    for f_line in factors[:3]:
-                        alert_text += f"{RTL}  {f_line}\n"
-                if rec_pct == curr_pct:
-                    alert_text += f"{RTL}\n{RTL}סיכון נוכחי: `{curr_pct:.2f}%` (`${curr_usd:,.0f}` לעסקה) — *ללא שינוי*\n"
-                else:
-                    alert_text += (
-                        f"{RTL}\n{RTL}סיכון נוכחי: `{curr_pct:.2f}%` (`${curr_usd:,.0f}` לעסקה)\n"
-                        f"{RTL}{arrow} *סיכון מוצע:* `{rec_pct:.2f}%` (`${rec_usd:,.0f}` לעסקה)\n"
-                    )
-                improve = risk_rec.get("what_to_improve", [])
-                if improve:
-                    alert_text += f"{RTL}\n{RTL}🔼 לשיפור:\n"
-                    for imp in improve[:3]:
-                        alert_text += f"{RTL}  → {imp}\n"
-                alert_text += f"\n{RTL}האם לאשר שינוי סיכון?"
                 markup = telebot.types.InlineKeyboardMarkup(row_width=2)
                 markup.add(
                     telebot.types.InlineKeyboardButton(

@@ -374,3 +374,56 @@ class TestX4StorageVerbatim:
         # Rendered escaped.
         assert rendered != original
         assert rendered == r"a\_b \*c\*"
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# A1 — U1 closure: risk_monitor delegates to fmt_adaptive_risk_block
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestRiskMonitorRoutesThroughFormatter:
+    """UX U1 P1 closure: risk_monitor's push alert MUST delegate to the
+    same fmt_adaptive_risk_block used by /portfolio (the pull surface).
+    Pin by static-analysis so a future inline-rebuilder regression
+    surfaces in CI before the founder sees the 14-line shape again."""
+
+    def _read(self, relative_path):
+        path = os.path.join(os.path.dirname(__file__), "..", relative_path)
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    def test_risk_monitor_imports_formatter(self):
+        src = self._read("risk_monitor.py")
+        # Must import the formatter under the `tf` alias (same as other
+        # call sites). A future drift back to inline-builder MUST first
+        # remove this import — and the next pin will fail loudly.
+        assert "import telegram_formatters as tf" in src
+
+    def test_risk_monitor_calls_fmt_adaptive_risk_block(self):
+        src = self._read("risk_monitor.py")
+        # The exact callsite — `tf.fmt_adaptive_risk_block(`. Catches a
+        # regression to `risk_monitor`-local re-implementation.
+        assert "tf.fmt_adaptive_risk_block(" in src
+
+    def test_risk_monitor_does_not_contain_inline_14_line_shape(self):
+        """The yesterday's UX U1 finding said the 14-line inline shape
+        would recur on any direction-change rec. After U1 closure, the
+        signature inline phrases that ONLY existed in the inline builder
+        must be GONE — they live now only inside the formatter."""
+        src = self._read("risk_monitor.py")
+        # Signature substrings that lived in the old inline builder only.
+        forbidden_substrings = [
+            "*התראת סיכון אדפטיבי*",     # alert-specific header
+            "📊 גורמים מרכזיים:",        # inline factors heading
+            "🔼 לשיפור:",                 # inline improve heading
+        ]
+        for needle in forbidden_substrings:
+            assert needle not in src, (
+                f"UX U1 regression: inline builder reintroduced phrase "
+                f"{needle!r} — route through fmt_adaptive_risk_block instead."
+            )
+
+    def test_risk_monitor_keyboard_prompt_preserved(self):
+        # The alert-specific prompt (the keyboard ask) MUST stay in
+        # risk_monitor — the formatter does not emit it.
+        src = self._read("risk_monitor.py")
+        assert "האם לאשר שינוי סיכון?" in src
