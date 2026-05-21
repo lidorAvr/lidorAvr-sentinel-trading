@@ -247,6 +247,24 @@ def handle_queries(call):
         if chat_id in user_state: del user_state[chat_id]
         bot.answer_callback_query(call.id)
 
+    elif data.startswith("backfill_add|"):
+        # Engagement Wave-3B B4 — C1-S1 callback to enter reason-collection
+        # state. The next text from the founder is the verbatim reason
+        # (§X4 honored at storage).
+        from telegram_engagement import handle_backfill_add
+        entry_ts = data.split("|", 1)[1]
+        handle_backfill_add(chat_id, call.message.message_id, entry_ts)
+        bot.answer_callback_query(call.id)
+
+    elif data.startswith("backfill_skip|"):
+        # Engagement Wave-3B B4 — C1-S1 deliberate-skip callback. Marks
+        # the candidate as backfill_skipped=True without fabricating a
+        # reason. Mark §3 honesty: silence stays labeled as silence.
+        from telegram_engagement import handle_backfill_skip
+        entry_ts = data.split("|", 1)[1]
+        handle_backfill_skip(chat_id, call.message.message_id, entry_ts)
+        bot.answer_callback_query(call.id)
+
     elif data.startswith("risk_confirm|"):
         bot.answer_callback_query(call.id)
         parts = data.split("|")

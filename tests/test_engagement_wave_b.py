@@ -344,3 +344,328 @@ class TestB3HandlerEmptyState:
             src = f.read()
         assert "/gate_receipt" in src
         assert "handle_gate_receipt(" in src
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# B4 — C1-S1 backfill prompt (find_backfill_candidate + apply + skip)
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestB4BackfillCandidate:
+    """Engine: find_backfill_candidate — Mark §C1 binding (min 14
+    days old + max 180 days + skip already-backfilled / skipped)."""
+
+    def setup_method(self):
+        import json
+        import tempfile
+        import adaptive_risk_engine as are
+        self._are = are
+        self._json = json
+        self._tmp_dir = tempfile.mkdtemp()
+        import os as _os
+        self._tmp_journal = _os.path.join(self._tmp_dir, "test_journal.json")
+
+    def teardown_method(self):
+        import os as _os
+        try:
+            _os.unlink(self._tmp_journal)
+        except (FileNotFoundError, OSError):
+            pass
+
+    def _write(self, entries):
+        with open(self._tmp_journal, "w", encoding="utf-8") as f:
+            self._json.dump(entries, f, ensure_ascii=False)
+
+    def test_missing_journal_returns_empty(self):
+        import os as _os
+        bogus = _os.path.join(self._tmp_dir, "missing.json")
+        c = self._are.find_backfill_candidate(journal_path=bogus)
+        assert c == {}
+
+    def test_corrupt_journal_returns_empty(self):
+        with open(self._tmp_journal, "w", encoding="utf-8") as f:
+            f.write("{ not json")
+        c = self._are.find_backfill_candidate(journal_path=self._tmp_journal)
+        assert c == {}
+
+    def test_only_rejected_entries_are_candidates(self):
+        from datetime import datetime, timedelta
+        old = (datetime.now() - timedelta(days=20)).isoformat()
+        self._write([
+            # Confirmed entry — not a candidate.
+            {"ts": old, "action": "confirmed", "reason": ""},
+        ])
+        c = self._are.find_backfill_candidate(journal_path=self._tmp_journal)
+        assert c == {}
+
+    def test_already_has_reason_not_a_candidate(self):
+        from datetime import datetime, timedelta
+        old = (datetime.now() - timedelta(days=20)).isoformat()
+        self._write([
+            {"ts": old, "action": "rejected",
+             "reason": "מדגם קטן מדי", "recommended_risk_pct": 0.85},
+        ])
+        c = self._are.find_backfill_candidate(journal_path=self._tmp_journal)
+        assert c == {}
+
+    def test_too_fresh_not_a_candidate(self):
+        from datetime import datetime, timedelta
+        fresh = (datetime.now() - timedelta(days=7)).isoformat()
+        self._write([
+            {"ts": fresh, "action": "rejected", "reason": "",
+             "recommended_risk_pct": 0.85},
+        ])
+        c = self._are.find_backfill_candidate(
+            min_age_days=14, journal_path=self._tmp_journal,
+        )
+        assert c == {}
+
+    def test_too_old_not_a_candidate(self):
+        from datetime import datetime, timedelta
+        ancient = (datetime.now() - timedelta(days=200)).isoformat()
+        self._write([
+            {"ts": ancient, "action": "rejected", "reason": "",
+             "recommended_risk_pct": 0.85},
+        ])
+        c = self._are.find_backfill_candidate(
+            max_age_days=180, journal_path=self._tmp_journal,
+        )
+        assert c == {}
+
+    def test_oldest_in_window_wins(self):
+        from datetime import datetime, timedelta
+        # Both in window; oldest must be returned.
+        a = (datetime.now() - timedelta(days=20)).isoformat()
+        b = (datetime.now() - timedelta(days=40)).isoformat()
+        self._write([
+            {"ts": a, "action": "rejected", "reason": "",
+             "recommended_risk_pct": 0.85},
+            {"ts": b, "action": "rejected", "reason": "",
+             "recommended_risk_pct": 0.85},
+        ])
+        c = self._are.find_backfill_candidate(
+            min_age_days=14, max_age_days=180,
+            journal_path=self._tmp_journal,
+        )
+        assert c["ts"] == b
+
+    def test_already_skipped_not_a_candidate(self):
+        from datetime import datetime, timedelta
+        old = (datetime.now() - timedelta(days=20)).isoformat()
+        self._write([
+            {"ts": old, "action": "rejected", "reason": "",
+             "backfill_skipped": True,
+             "recommended_risk_pct": 0.85},
+        ])
+        c = self._are.find_backfill_candidate(
+            min_age_days=14, journal_path=self._tmp_journal,
+        )
+        assert c == {}
+
+
+class TestB4ApplyBackfillReason:
+    """apply_backfill_reason: writes the §X4 verbatim reason back to
+    the matching journal entry. Returns False on miss / I/O error;
+    never raises."""
+
+    def setup_method(self):
+        import json
+        import tempfile
+        import adaptive_risk_engine as are
+        self._are = are
+        self._json = json
+        self._tmp_dir = tempfile.mkdtemp()
+        import os as _os
+        self._tmp_journal = _os.path.join(self._tmp_dir, "test_journal.json")
+
+    def teardown_method(self):
+        import os as _os
+        try:
+            _os.unlink(self._tmp_journal)
+        except (FileNotFoundError, OSError):
+            pass
+
+    def _write(self, entries):
+        with open(self._tmp_journal, "w", encoding="utf-8") as f:
+            self._json.dump(entries, f, ensure_ascii=False)
+
+    def _read(self):
+        with open(self._tmp_journal, "r", encoding="utf-8") as f:
+            return self._json.load(f)
+
+    def test_apply_writes_verbatim_reason(self):
+        # §X4 binding: bytes-on-disk identity is the foundation of the
+        # day-60 Callback's mirror function.
+        verbatim = "*חזק* `chop` [bear] _hesitation_"
+        self._write([{"ts": "2026-05-01T10:00:00",
+                      "action": "rejected", "reason": ""}])
+        ok = self._are.apply_backfill_reason(
+            "2026-05-01T10:00:00", verbatim,
+            journal_path=self._tmp_journal,
+        )
+        assert ok is True
+        log = self._read()
+        assert log[0]["reason"] == verbatim
+        assert "backfill_filled_ts" in log[0]
+
+    def test_apply_misses_unknown_ts(self):
+        self._write([{"ts": "2026-05-01T10:00:00",
+                      "action": "rejected", "reason": ""}])
+        ok = self._are.apply_backfill_reason(
+            "1999-01-01T00:00:00", "any reason",
+            journal_path=self._tmp_journal,
+        )
+        assert ok is False
+
+    def test_apply_rejects_empty_reason(self):
+        self._write([{"ts": "2026-05-01T10:00:00",
+                      "action": "rejected", "reason": ""}])
+        ok = self._are.apply_backfill_reason(
+            "2026-05-01T10:00:00", "   ",
+            journal_path=self._tmp_journal,
+        )
+        assert ok is False
+
+    def test_apply_missing_journal_returns_false(self):
+        import os as _os
+        bogus = _os.path.join(self._tmp_dir, "missing.json")
+        ok = self._are.apply_backfill_reason(
+            "any-ts", "reason", journal_path=bogus,
+        )
+        assert ok is False
+
+
+class TestB4MarkBackfillSkipped:
+    """mark_backfill_skipped sets backfill_skipped=True; no reason
+    fabricated. Honest §3 semantics."""
+
+    def setup_method(self):
+        import json
+        import tempfile
+        import adaptive_risk_engine as are
+        self._are = are
+        self._json = json
+        self._tmp_dir = tempfile.mkdtemp()
+        import os as _os
+        self._tmp_journal = _os.path.join(self._tmp_dir, "test_journal.json")
+
+    def teardown_method(self):
+        import os as _os
+        try:
+            _os.unlink(self._tmp_journal)
+        except (FileNotFoundError, OSError):
+            pass
+
+    def test_mark_sets_skipped_flag(self):
+        with open(self._tmp_journal, "w", encoding="utf-8") as f:
+            import json as _j
+            _j.dump([{"ts": "2026-05-01T10:00:00",
+                      "action": "rejected", "reason": ""}], f)
+        ok = self._are.mark_backfill_skipped(
+            "2026-05-01T10:00:00", journal_path=self._tmp_journal,
+        )
+        assert ok is True
+        with open(self._tmp_journal, "r", encoding="utf-8") as f:
+            import json as _j
+            log = _j.load(f)
+        assert log[0]["backfill_skipped"] is True
+        assert log[0]["reason"] == ""  # NOT fabricated
+
+    def test_mark_misses_unknown_ts(self):
+        with open(self._tmp_journal, "w", encoding="utf-8") as f:
+            import json as _j
+            _j.dump([{"ts": "2026-05-01T10:00:00",
+                      "action": "rejected", "reason": ""}], f)
+        ok = self._are.mark_backfill_skipped(
+            "1999-01-01T00:00:00", journal_path=self._tmp_journal,
+        )
+        assert ok is False
+
+
+class TestB4BackfillPromptFormatter:
+    """fmt_backfill_prompt — Mark §3 anti-list (invitation not
+    directive); §X4 prep (anchor verbatim); §X5 silence on empty."""
+
+    def setup_method(self):
+        from telegram_formatters import fmt_backfill_prompt
+        self._fmt = fmt_backfill_prompt
+
+    def test_empty_candidate_returns_empty(self):
+        # §X5 silence: no candidate → no surface.
+        assert self._fmt({}) == ""
+
+    def test_renders_recommended_pct(self):
+        out = self._fmt({
+            "ts": "2026-04-15T14:00:00",
+            "action": "rejected",
+            "recommended_risk_pct": 0.85,
+            "direction": "up",
+        })
+        assert "0.85" in out
+
+    def test_renders_date_not_just_iso(self):
+        # Founder-readable date (D/M/YYYY), never raw ISO.
+        out = self._fmt({
+            "ts": "2026-04-15T14:00:00",
+            "action": "rejected",
+            "recommended_risk_pct": 0.85,
+            "direction": "up",
+        })
+        assert "15/04/2026" in out
+        assert "2026-04-15T14:00:00" not in out
+
+    def test_no_directive_verbs(self):
+        # Mark §3 anti-list — invitation, not command.
+        out = self._fmt({
+            "ts": "2026-04-15T14:00:00",
+            "action": "rejected",
+            "recommended_risk_pct": 0.85,
+            "direction": "up",
+        })
+        for forbidden in ("חובה", "אסור", "תכתוב!", "מה אתה חושב!",
+                          "אתה חייב"):
+            assert forbidden not in out, (
+                f"§3 anti-list violation: directive substring {forbidden!r}"
+            )
+
+    def test_no_market_commentary(self):
+        # §X6 fence.
+        out = self._fmt({
+            "ts": "2026-04-15T14:00:00",
+            "action": "rejected",
+            "recommended_risk_pct": 0.85,
+            "direction": "up",
+        })
+        for forbidden in ("SPY", "QQQ", "השוק", "המגזר"):
+            assert forbidden not in out
+
+
+class TestB4HandlerWiring:
+    """Static-analysis pins for the bot wiring of B4."""
+
+    def _read(self, relative_path):
+        import os as _os
+        path = _os.path.join(_os.path.dirname(__file__), "..", relative_path)
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    def test_telegram_engagement_exposes_b4_handlers(self):
+        import telegram_engagement
+        assert hasattr(telegram_engagement, "handle_backfill_prompt")
+        assert hasattr(telegram_engagement, "handle_backfill_add")
+        assert hasattr(telegram_engagement, "handle_backfill_skip")
+        assert hasattr(telegram_engagement, "handle_backfill_collect_reason")
+
+    def test_telegram_bot_registers_backfill_command(self):
+        src = self._read("telegram_bot.py")
+        assert "/backfill_prompt" in src
+        assert "handle_backfill_prompt(" in src
+
+    def test_telegram_bot_dispatches_collect_reason_state(self):
+        src = self._read("telegram_bot.py")
+        assert '"backfill_collect_reason"' in src
+        assert "handle_backfill_collect_reason(" in src
+
+    def test_telegram_callbacks_dispatches_add_and_skip(self):
+        src = self._read("telegram_callbacks.py")
+        assert "backfill_add|" in src
+        assert "backfill_skip|" in src

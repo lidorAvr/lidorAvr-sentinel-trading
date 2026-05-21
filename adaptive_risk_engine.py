@@ -899,6 +899,167 @@ def _log_recommendation(rec: dict) -> None:
         pass
 
 
+def find_backfill_candidate(
+    *,
+    min_age_days: int = 14,
+    max_age_days: int = 180,
+    journal_path: str = None,
+) -> dict:
+    """Engagement Wave-3B B4 — C1-S1 backfill prompt candidate finder.
+
+    Returns the OLDEST null-reason rejection in the [min_age_days,
+    max_age_days] window that has NOT yet been backfill-prompted
+    (`backfill_skipped != True`).
+
+    `min_age_days=14` is binding (Mark §C1 / E1-#9): a too-fresh
+    rejection isn't ready — the founder hasn't yet seen the outcome
+    of the trades that followed. `max_age_days=180` bounds the search;
+    older silent rejections are no longer emotionally retrievable.
+
+    Returns:
+        {entry-dict} on hit (includes 'ts' which is the candidate's
+        anchor id) OR {} on no candidate.
+
+    Honest fallback (Mark §3): missing/corrupt journal → {}. Never
+    raises.
+    """
+    from datetime import datetime, timedelta
+    path = journal_path or RISK_JOURNAL_FILE
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            log = json.load(f)
+    except Exception:
+        return {}
+    if not isinstance(log, list):
+        return {}
+
+    now = datetime.now()
+    min_cutoff = now - timedelta(days=int(min_age_days))
+    max_cutoff = now - timedelta(days=int(max_age_days))
+
+    oldest_candidate = None
+    oldest_ts = None
+    for entry in log:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("action") != "rejected":
+            continue
+        # Already backfilled OR explicitly skipped → not a candidate.
+        if entry.get("backfill_skipped"):
+            continue
+        reason = entry.get("reason")
+        reason_str = str(reason).strip() if reason else ""
+        if reason_str:
+            continue  # already has a reason
+        ts_str = entry.get("ts")
+        if not ts_str:
+            continue
+        try:
+            ts = datetime.fromisoformat(str(ts_str))
+        except (TypeError, ValueError):
+            continue
+        if ts > min_cutoff:
+            continue  # too fresh
+        if ts < max_cutoff:
+            continue  # too old
+        if oldest_ts is None or ts < oldest_ts:
+            oldest_ts = ts
+            oldest_candidate = entry
+    return dict(oldest_candidate) if oldest_candidate else {}
+
+
+def apply_backfill_reason(
+    entry_ts: str,
+    reason: str,
+    *,
+    journal_path: str = None,
+) -> bool:
+    """Engagement Wave-3B B4 — write the operator-typed reason back to
+    the matching `risk_journal.json` entry.
+
+    §X4 binding: the reason is stored VERBATIM. No normalization, no
+    paraphrase. The bytes-on-disk identity is the key to the day-60
+    Callback's mirror function — the founder must recognize his own
+    past words.
+
+    Returns True on success, False on miss / I/O error. Never raises.
+    """
+    path = journal_path or RISK_JOURNAL_FILE
+    if not os.path.exists(path):
+        return False
+    if reason is None:
+        return False
+    reason_str = str(reason)
+    if not reason_str.strip():
+        return False
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            log = json.load(f)
+    except Exception:
+        return False
+    if not isinstance(log, list):
+        return False
+    hit = False
+    for entry in log:
+        if isinstance(entry, dict) and entry.get("ts") == entry_ts:
+            entry["reason"] = reason_str  # §X4 verbatim
+            entry["backfill_filled_ts"] = __import__("datetime").datetime.now().isoformat()
+            hit = True
+            break
+    if not hit:
+        return False
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(log, f, ensure_ascii=False, indent=2)
+    except Exception:
+        return False
+    return True
+
+
+def mark_backfill_skipped(
+    entry_ts: str,
+    *,
+    journal_path: str = None,
+) -> bool:
+    """Engagement Wave-3B B4 — mark a backfill candidate as deliberately
+    skipped so the prompt does not re-fire on the same anchor.
+
+    Honest semantics: the entry stays REJECTED with reason=""; the
+    `backfill_skipped=True` flag means "the founder chose silence here".
+    The journal still tells the truth — the rejection was silent and
+    the founder declined to label it. No reason is fabricated (Mark §3).
+
+    Returns True on success, False on miss / I/O error.
+    """
+    path = journal_path or RISK_JOURNAL_FILE
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            log = json.load(f)
+    except Exception:
+        return False
+    if not isinstance(log, list):
+        return False
+    hit = False
+    for entry in log:
+        if isinstance(entry, dict) and entry.get("ts") == entry_ts:
+            entry["backfill_skipped"] = True
+            entry["backfill_skipped_ts"] = __import__("datetime").datetime.now().isoformat()
+            hit = True
+            break
+    if not hit:
+        return False
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(log, f, ensure_ascii=False, indent=2)
+    except Exception:
+        return False
+    return True
+
+
 def compute_gate_clamp_summary(n_days: int = 90,
                                log_path: str = None) -> dict:
     """Engagement Wave-3B B3 — C4 "Gate Receipt" count-only Phase-1.

@@ -55,7 +55,7 @@ from telegram_tasks import (handle_open_tasks_entry,  # noqa: E402 — re-export
                             handle_task_add_note)
 
 from telegram_audit_review import handle_my_actions  # noqa: E402 — re-exported for telegram_callbacks lazy import
-from telegram_engagement import handle_gate_receipt  # noqa: E402 — engagement Wave-3B B3
+from telegram_engagement import handle_gate_receipt, handle_backfill_prompt, handle_backfill_collect_reason  # noqa: E402 — engagement Wave-3B B3+B4
 
 from telegram_clean_gate import (handle_clean_entry,  # noqa: E402 — re-exported for telegram_callbacks lazy import
                                  finalize_pending_clean)
@@ -262,6 +262,12 @@ def handle_all_messages(message):
 
     if active_state.get("action") == "task_add_note":
         handle_task_add_note(chat_id, text)
+        return
+
+    if active_state.get("action") == "backfill_collect_reason":
+        # Engagement Wave-3B B4 — C1-S1 reason capture. §X4 verbatim
+        # storage; render-safe via render_journal_text in the handler.
+        handle_backfill_collect_reason(chat_id, text)
         return
 
     if active_state.get("action") == "risk_reject_reason":
@@ -761,6 +767,15 @@ def handle_all_messages(message):
         # saved) will graduate to a menu entry once symmetric framing
         # data is available.
         handle_gate_receipt(chat_id)
+        return
+
+    if text == "/backfill_prompt":
+        # Engagement Wave-3B B4 — C1-S1 backfill prompt pull surface.
+        # Finds the oldest null-reason rejection ≥14 days old and
+        # invites the founder to add a verbatim reason (§X4) OR mark
+        # it deliberately skipped. The corpus this builds is the raw
+        # material for the day-60 Callback (C1-S2, Phase-3).
+        handle_backfill_prompt(chat_id)
         return
 
     if text in ["🎯 קידום סטופ", "/promote"]:

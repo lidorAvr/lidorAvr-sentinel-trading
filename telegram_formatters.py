@@ -157,6 +157,51 @@ _GATE_LABELS_HE = {
 }
 
 
+def fmt_backfill_prompt(candidate: dict) -> str:
+    """Engagement Wave-3B B4 — C1-S1 backfill prompt surface.
+
+    Renders the Hebrew backfill prompt for a candidate rejection
+    returned by ``adaptive_risk_engine.find_backfill_candidate``.
+
+    Mark §X4 prep: the candidate's verbatim metadata (recommended_pct,
+    direction, ts) is surfaced character-faithfully so the day-60
+    Callback can later quote the SAME anchor.
+
+    Mark §3 anti-list: the prompt is *invitation*, never directive
+    ("רשום סיבה!" was banned by Wave-2C's UX-U3 finding). The
+    quick-pick chips are added at the HANDLER layer (keyboard markup);
+    the formatter only renders the explanatory body.
+
+    Empty candidate → empty string (§X5 silence-as-surface: if no
+    candidate exists, the prompt is not emitted).
+    """
+    if not candidate:
+        return ""
+    from datetime import datetime
+    ts_str = str(candidate.get("ts") or "")
+    rec_pct = candidate.get("recommended_risk_pct")
+    direction = candidate.get("direction", "")
+    # Render the date (D/M/YYYY) so the founder can place the moment
+    # without parsing ISO. Never invent a date when missing.
+    date_label = "—"
+    days_ago_label = ""
+    try:
+        ts = datetime.fromisoformat(ts_str)
+        date_label = ts.strftime("%d/%m/%Y")
+        delta_days = (datetime.now() - ts).days
+        days_ago_label = f"({delta_days} ימים)"
+    except (TypeError, ValueError):
+        pass
+    direction_word = {"up": "העלאה", "down_fast": "הורדה"}.get(direction, "שינוי")
+    rec_label = f"`{float(rec_pct):.2f}%`" if rec_pct is not None else "—"
+    return (
+        f"{RTL}📖 *הספר זוכר*\n"
+        f"{RTL}ב-{date_label} {days_ago_label} דחית {direction_word} סיכון "
+        f"ל-{rec_label} בלי לרשום סיבה.\n"
+        f"{RTL}השאלה לא אם צדקת — אם תזכור למה."
+    )
+
+
 def fmt_gate_receipt(summary: dict) -> str:
     """Engagement Wave-3B B3 — C4 "Gate Receipt" count-only surface.
 

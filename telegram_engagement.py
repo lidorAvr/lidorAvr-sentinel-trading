@@ -19,10 +19,154 @@ Module discipline (mirrors `telegram_audit_review.py`):
     "great work" celebration (§C4 R1).
   - Pull-only — no push path here. §X5 silence-as-surface honored.
 """
-from bot_core import bot, RTL
+from telebot import types
 
+from bot_core import bot, supabase, user_state, RTL
+
+import audit_logger
 import adaptive_risk_engine as are
 import telegram_formatters as tf
+
+
+def handle_backfill_prompt(chat_id):
+    """`/backfill_prompt` — C1-S1 Phase-1 pull surface.
+
+    Finds the oldest null-reason rejection ≥14 days old (Mark §C1
+    binding), surfaces it as `fmt_backfill_prompt`, and offers two
+    inline-keyboard choices:
+        ✏️ הוסף סיבה  — sets user_state to collect the typed reason
+        🙈 דלג         — marks the entry as deliberately skipped
+
+    §X5 silence-as-surface: if no candidate exists (no null-reason
+    rejection in window), emit an honest empty-state line — never a
+    "great work, your journal is full" celebration.
+    """
+    candidate = are.find_backfill_candidate()
+    if not candidate:
+        bot.send_message(
+            chat_id,
+            f"{RTL}📖 *הספר*\n"
+            f"{RTL}אין דחיות חסרות-נימוק מתוך 14 הימים האחרונים. "
+            f"כל הדחיות מתועדות עם סיבה.",
+            parse_mode="Markdown",
+        )
+        return
+    body = tf.fmt_backfill_prompt(candidate)
+    ts = str(candidate.get("ts") or "")
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton(
+            "✏️ הוסף סיבה",
+            callback_data=f"backfill_add|{ts}",
+        ),
+        types.InlineKeyboardButton(
+            "🙈 דלג",
+            callback_data=f"backfill_skip|{ts}",
+        ),
+    )
+    bot.send_message(chat_id, body, reply_markup=markup, parse_mode="Markdown")
+
+
+def handle_backfill_add(chat_id, message_id, entry_ts):
+    """Callback for `backfill_add|{ts}` — enter the reason-collection
+    state. The next text from the founder is captured as the
+    rejection's verbatim reason (§X4)."""
+    user_state[chat_id] = {
+        "action": "backfill_collect_reason",
+        "entry_ts": entry_ts,
+        "original_msg_id": message_id,
+    }
+    try:
+        bot.edit_message_text(
+            f"{RTL}📖 *הספר ממתין*\n"
+            f"{RTL}כתוב במשפט אחד את הסיבה לדחייה. הטקסט יישמר verbatim — "
+            f"זאת המילה שלך, לא ניסוח שלי.",
+            chat_id, message_id, parse_mode="Markdown",
+        )
+    except Exception:
+        bot.send_message(
+            chat_id,
+            f"{RTL}📖 כתוב במשפט אחד את הסיבה לדחייה.",
+            parse_mode="Markdown",
+        )
+
+
+def handle_backfill_skip(chat_id, message_id, entry_ts):
+    """Callback for `backfill_skip|{ts}` — mark the candidate as
+    deliberately skipped and confirm. Honest semantics: the rejection
+    stays reason="" in the journal; the new `backfill_skipped=True`
+    flag means "the founder chose silence here". No reason fabricated.
+    """
+    ok = are.mark_backfill_skipped(entry_ts)
+    audit_logger.log_action(
+        supabase, audit_logger.ACTION_SETTINGS_CHANGE,
+        chat_id=chat_id,
+        before={"backfill_status": "candidate"},
+        after={"backfill_status": "skipped"},
+        metadata={
+            "kind": "backfill_skipped",
+            "entry_ts": entry_ts,
+        },
+    )
+    msg = (
+        f"{RTL}📖 *הספר רושם — דלגת על הסבר*\n"
+        f"{RTL}הדחייה נשארת ללא ניסוח. הספר לא ימציא לך אחד."
+        if ok else
+        f"{RTL}📖 לא הצלחתי למצוא את הרשומה. ייתכן שכבר עודכנה."
+    )
+    try:
+        bot.edit_message_text(msg, chat_id, message_id, parse_mode="Markdown")
+    except Exception:
+        bot.send_message(chat_id, msg, parse_mode="Markdown")
+
+
+def handle_backfill_collect_reason(chat_id, text):
+    """Text-collection handler invoked when user_state.action ==
+    'backfill_collect_reason'. Writes the typed reason §X4 verbatim
+    to the original risk_journal.json entry + an audit row, then
+    confirms."""
+    state = user_state.get(chat_id, {}) or {}
+    entry_ts = str(state.get("entry_ts") or "")
+    if not entry_ts:
+        bot.send_message(
+            chat_id,
+            f"{RTL}📖 הקשר אבד. נסה שוב מ-/backfill_prompt.",
+            parse_mode="Markdown",
+        )
+        user_state.pop(chat_id, None)
+        return
+    reason_text = (text or "").strip()
+    if not reason_text:
+        bot.send_message(
+            chat_id,
+            f"{RTL}📖 שורה ריקה אינה ניסוח. כתוב משפט אחד או בטל.",
+            parse_mode="Markdown",
+        )
+        return
+    ok = are.apply_backfill_reason(entry_ts, reason_text)
+    audit_logger.log_action(
+        supabase, audit_logger.ACTION_SETTINGS_CHANGE,
+        chat_id=chat_id,
+        before={"reason": ""},
+        after={"reason": reason_text},  # §X4 verbatim
+        metadata={
+            "kind": "backfill_reason_added",
+            "entry_ts": entry_ts,
+        },
+    )
+    user_state.pop(chat_id, None)
+    # S-ENGAGE-1 boundary: escape Markdown specials in the rendered
+    # reason. Stored bytes stay verbatim (§X4); only the render is
+    # escaped.
+    safe_reason = tf.render_journal_text(reason_text)
+    msg = (
+        f"{RTL}📖 *הספר רשם*\n"
+        f"{RTL}\"_{safe_reason}_\"\n"
+        f"{RTL}נשמר verbatim על הדחייה מ-{entry_ts[:10]}."
+        if ok else
+        f"{RTL}📖 לא הצלחתי למצוא את הרשומה. ייתכן שכבר עודכנה."
+    )
+    bot.send_message(chat_id, msg, parse_mode="Markdown")
 
 
 def handle_gate_receipt(chat_id, n_days: int = 90):
