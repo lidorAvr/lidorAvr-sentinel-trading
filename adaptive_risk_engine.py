@@ -899,6 +899,92 @@ def _log_recommendation(rec: dict) -> None:
         pass
 
 
+def compute_gate_clamp_summary(n_days: int = 90,
+                               log_path: str = None) -> dict:
+    """Engagement Wave-3B B3 — C4 "Gate Receipt" count-only Phase-1.
+
+    Reads ``risk_recommendations.json`` (the same log A3 just extended
+    with ``gate_result``) and counts entries within the last ``n_days``
+    where the 4-gate REFUSED a would-have-been raise (``gate_result.
+    evaluated=True AND gate_result.allow_raise=False``).
+
+    Returns:
+        {
+            'n_days': int,         # the window queried
+            'total_clamps': int,   # COUNT of refusals in the window
+            'by_gate': dict,       # gate_id (str) -> count (int)
+            'first_clamp_ts': str or None,  # ISO timestamp of the oldest
+                                            # in-window clamp (forensic
+                                            # anchor for Phase-2 D11)
+        }
+
+    HONEST fallbacks (Mark §3): an unreadable / missing / corrupted log
+    returns ``{'total_clamps': 0, ...}`` — never a fabricated count.
+    A future ``gate_result``-aware reader that finds NO log → returns
+    zero, not raises.
+
+    No I/O is performed beyond the single read of ``risk_recommendations.
+    json``. Pure-function aside from that one read; suitable for the
+    pull surfaces (``/gate_receipt`` slash, future ``/portfolio``
+    integration).
+
+    Mark §C4 binding (one-sided celebration ban): Phase-1 returns the
+    raw counts only — the FORMATTER is responsible for symmetric
+    framing. The Phase-2 D11 (dollar-value-saved) extension lives on
+    a separate, founder-gated branch.
+    """
+    from datetime import datetime, timedelta
+    path = log_path or RECOMMENDATIONS_LOG_FILE
+    summary = {
+        "n_days": int(n_days),
+        "total_clamps": 0,
+        "by_gate": {},
+        "first_clamp_ts": None,
+    }
+    if not os.path.exists(path):
+        return summary
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            log = json.load(f)
+    except Exception:
+        return summary
+    if not isinstance(log, list):
+        return summary
+
+    cutoff = datetime.now() - timedelta(days=int(n_days))
+    oldest_in_window = None
+    for entry in log:
+        if not isinstance(entry, dict):
+            continue
+        gate = entry.get("gate_result")
+        if not isinstance(gate, dict):
+            continue
+        if not gate.get("evaluated"):
+            continue
+        if gate.get("allow_raise"):
+            continue
+        ts_str = entry.get("ts")
+        if not ts_str:
+            continue
+        try:
+            ts = datetime.fromisoformat(str(ts_str))
+        except (TypeError, ValueError):
+            continue
+        if ts < cutoff:
+            continue
+        summary["total_clamps"] += 1
+        for failed in (gate.get("failed") or []):
+            key = str(failed)
+            summary["by_gate"][key] = summary["by_gate"].get(key, 0) + 1
+        if oldest_in_window is None or ts < oldest_in_window:
+            oldest_in_window = ts
+    if oldest_in_window is not None:
+        summary["first_clamp_ts"] = oldest_in_window.isoformat(
+            timespec="seconds"
+        )
+    return summary
+
+
 def mark_adherence(recommended_pct: float, actual_pct: float,
                    followed: bool, reason: str = "") -> None:
     """

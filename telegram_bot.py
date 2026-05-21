@@ -55,6 +55,7 @@ from telegram_tasks import (handle_open_tasks_entry,  # noqa: E402 — re-export
                             handle_task_add_note)
 
 from telegram_audit_review import handle_my_actions  # noqa: E402 — re-exported for telegram_callbacks lazy import
+from telegram_engagement import handle_gate_receipt  # noqa: E402 — engagement Wave-3B B3
 
 from telegram_clean_gate import (handle_clean_entry,  # noqa: E402 — re-exported for telegram_callbacks lazy import
                                  finalize_pending_clean)
@@ -751,6 +752,15 @@ def handle_all_messages(message):
 
     if text in ["🧾 הפעולות שלי", "/myactions"]:
         handle_my_actions(chat_id)
+        return
+
+    if text == "/gate_receipt":
+        # Engagement Wave-3B B3 — C4-S1 Gate Receipt count-only Phase-1.
+        # Slash-only (no menu button) — advanced pull surface; the
+        # founder discovers it via the docs. Phase-2 (D11 dollar-value
+        # saved) will graduate to a menu entry once symmetric framing
+        # data is available.
+        handle_gate_receipt(chat_id)
         return
 
     if text in ["🎯 קידום סטופ", "/promote"]:

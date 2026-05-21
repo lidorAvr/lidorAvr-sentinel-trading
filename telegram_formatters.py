@@ -144,6 +144,64 @@ def fmt_actionability(level: str) -> str:
     return f"{RTL}▸ סוג התרעה: *{label}*"
 
 
+# ── Gate name labels (Mark §3 named-gate registry) ─────────────────────────
+# Stable Hebrew labels for the 4-gate ids. Used by `fmt_gate_receipt`
+# (B3) AND (future) any other surface that explains WHICH gate clamped.
+# Constant rather than dict-literal in the formatter so a relabel is
+# one-change-one-place.
+_GATE_LABELS_HE = {
+    "G1_recon": "G1 איכות נתונים",
+    "G2_sample": "G2 גודל מדגם",
+    "G3_expectancy": "G3 תוחלת",
+    "G4_drawdown": "G4 תקופת drawdown",
+}
+
+
+def fmt_gate_receipt(summary: dict) -> str:
+    """Engagement Wave-3B B3 — C4 "Gate Receipt" count-only surface.
+
+    Renders the 4-gate clamp count summary returned by
+    ``adaptive_risk_engine.compute_gate_clamp_summary``.
+
+    Mark §C4 binding (one-sided celebration ban + Phase-1 count-only):
+      - Stating-fact framing, NOT celebration.
+      - ``total_clamps == 0`` → empty string (§X5 "absence IS the
+        surface" applies even on the pull surface — a zero-count line
+        would be tone-deaf engagement-mining).
+      - Per-gate breakdown surfaces each gate's Hebrew label + count.
+
+    §X6 fence: zero market commentary. The receipt is a record of
+    *the founder's own decisions*, not of the market's behavior.
+    """
+    n = int(summary.get("total_clamps", 0) or 0)
+    days = int(summary.get("n_days", 90) or 90)
+    if n <= 0:
+        # Silence-as-surface. No "no clamps yet" tone-deaf push.
+        return ""
+    by_gate = summary.get("by_gate") or {}
+    lines = [
+        f"\n{RTL}{SEP}",
+        f"{RTL}🛡️ *קבלה מהשער*",
+        f"{RTL}השער חסם `{n}` העלאות סיכון ב-`{days}` הימים האחרונים.",
+    ]
+    if by_gate:
+        # Stable ordering: G1 → G2 → G3 → G4 (the gate-id sort handles
+        # this for the canonical ids; unknown gates land last
+        # alphabetically).
+        def _order_key(g):
+            known = ("G1_recon", "G2_sample", "G3_expectancy", "G4_drawdown")
+            return (known.index(g) if g in known else len(known), g)
+
+        pieces = []
+        for gate_id in sorted(by_gate.keys(), key=_order_key):
+            label = _GATE_LABELS_HE.get(gate_id, gate_id)
+            pieces.append(f"{label} `{int(by_gate[gate_id])}`")
+        lines.append(f"{RTL}פירוט: " + " · ".join(pieces))
+    # Mark §C4: no celebration vocabulary. The "save you X times" line
+    # is intentionally NOT here — the count alone is the receipt.
+    return "\n".join(lines)
+
+
 def fmt_data_quality_badge(primary: str, risk_badge: str, label: str) -> str:
     """Return a compact badge string for inline display."""
     parts = [primary]

@@ -146,3 +146,201 @@ class TestB2DedupKeyByteIdentical:
                 f"§X6 violation: voice change introduced market "
                 f"commentary substring {forbidden!r}"
             )
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# B3 — C4-S1 Gate Receipt (compute_gate_clamp_summary + fmt_gate_receipt)
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestB3GateClampSummary:
+    """Engine function: reads risk_recommendations.json, returns
+    {n_days, total_clamps, by_gate, first_clamp_ts}. Mark §3 honesty:
+    a missing log returns zero, never raises."""
+
+    def setup_method(self):
+        import json
+        import tempfile
+        import adaptive_risk_engine as are
+        self._are = are
+        self._json = json
+        self._tmp_dir = tempfile.mkdtemp()
+        import os as _os
+        self._tmp_log = _os.path.join(self._tmp_dir, "test_rec.json")
+
+    def teardown_method(self):
+        import os as _os
+        try:
+            _os.unlink(self._tmp_log)
+        except (FileNotFoundError, OSError):
+            pass
+
+    def _write_log(self, entries):
+        with open(self._tmp_log, "w", encoding="utf-8") as f:
+            self._json.dump(entries, f, ensure_ascii=False)
+
+    def test_missing_log_returns_zero(self):
+        import os as _os
+        bogus = _os.path.join(self._tmp_dir, "does_not_exist.json")
+        s = self._are.compute_gate_clamp_summary(n_days=90, log_path=bogus)
+        assert s["total_clamps"] == 0
+        assert s["by_gate"] == {}
+        assert s["first_clamp_ts"] is None
+        assert s["n_days"] == 90
+
+    def test_corrupt_log_returns_zero(self):
+        with open(self._tmp_log, "w", encoding="utf-8") as f:
+            f.write("not valid json {{{")
+        s = self._are.compute_gate_clamp_summary(n_days=90, log_path=self._tmp_log)
+        assert s["total_clamps"] == 0
+
+    def test_counts_only_clamps(self):
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        self._write_log([
+            # Approved raise (allow_raise=True) → NOT a clamp.
+            {"ts": (now - timedelta(days=1)).isoformat(),
+             "gate_result": {"evaluated": True, "allow_raise": True,
+                             "failed": [], "reason": ""}},
+            # Clamp on G2.
+            {"ts": (now - timedelta(days=2)).isoformat(),
+             "gate_result": {"evaluated": True, "allow_raise": False,
+                             "failed": ["G2_sample"], "reason": "מדגם קטן"}},
+            # Clamp on G1.
+            {"ts": (now - timedelta(days=3)).isoformat(),
+             "gate_result": {"evaluated": True, "allow_raise": False,
+                             "failed": ["G1_recon"], "reason": "נתונים"}},
+            # No gate_result (pre-engagement entry) → ignored.
+            {"ts": (now - timedelta(days=4)).isoformat()},
+        ])
+        s = self._are.compute_gate_clamp_summary(n_days=90, log_path=self._tmp_log)
+        assert s["total_clamps"] == 2
+        assert s["by_gate"] == {"G1_recon": 1, "G2_sample": 1}
+
+    def test_filters_by_n_days_window(self):
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        self._write_log([
+            # In-window.
+            {"ts": (now - timedelta(days=10)).isoformat(),
+             "gate_result": {"evaluated": True, "allow_raise": False,
+                             "failed": ["G2_sample"]}},
+            # Out-of-window (older than 90 days).
+            {"ts": (now - timedelta(days=120)).isoformat(),
+             "gate_result": {"evaluated": True, "allow_raise": False,
+                             "failed": ["G1_recon"]}},
+        ])
+        s = self._are.compute_gate_clamp_summary(n_days=90, log_path=self._tmp_log)
+        assert s["total_clamps"] == 1
+        assert "G1_recon" not in s["by_gate"]
+
+    def test_first_clamp_ts_is_oldest_in_window(self):
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        ts_old = (now - timedelta(days=5)).isoformat()
+        ts_recent = (now - timedelta(days=1)).isoformat()
+        self._write_log([
+            {"ts": ts_recent,
+             "gate_result": {"evaluated": True, "allow_raise": False,
+                             "failed": ["G2_sample"]}},
+            {"ts": ts_old,
+             "gate_result": {"evaluated": True, "allow_raise": False,
+                             "failed": ["G1_recon"]}},
+        ])
+        s = self._are.compute_gate_clamp_summary(n_days=90, log_path=self._tmp_log)
+        assert s["first_clamp_ts"] is not None
+        assert s["first_clamp_ts"].startswith(ts_old[:10])
+
+    def test_zero_clamps_first_ts_is_none(self):
+        self._write_log([])
+        s = self._are.compute_gate_clamp_summary(n_days=90, log_path=self._tmp_log)
+        assert s["first_clamp_ts"] is None
+
+    def test_n_days_round_trips(self):
+        self._write_log([])
+        s = self._are.compute_gate_clamp_summary(n_days=30, log_path=self._tmp_log)
+        assert s["n_days"] == 30
+
+
+class TestB3GateReceiptFormatter:
+    """Mark §C4 binding: count-only Phase-1, no celebration vocabulary.
+    Zero clamps → empty string (§X5 silence-as-surface). Non-zero →
+    fact-stating Hebrew line + per-gate breakdown."""
+
+    def setup_method(self):
+        from telegram_formatters import fmt_gate_receipt
+        self._fmt = fmt_gate_receipt
+
+    def test_zero_clamps_returns_empty(self):
+        # §X5: silence-as-surface. Tone-deaf "great work, no clamps"
+        # banned at the formatter layer.
+        out = self._fmt({"n_days": 90, "total_clamps": 0,
+                          "by_gate": {}, "first_clamp_ts": None})
+        assert out == ""
+
+    def test_non_zero_clamps_render_with_count(self):
+        out = self._fmt({"n_days": 90, "total_clamps": 7,
+                          "by_gate": {"G2_sample": 4, "G1_recon": 3},
+                          "first_clamp_ts": "2026-02-21T16:30:00"})
+        assert "קבלה מהשער" in out
+        assert "`7`" in out
+        assert "`90`" in out
+
+    def test_per_gate_breakdown_in_canonical_order(self):
+        out = self._fmt({
+            "n_days": 90, "total_clamps": 10,
+            "by_gate": {"G4_drawdown": 1, "G2_sample": 5,
+                        "G1_recon": 3, "G3_expectancy": 1},
+            "first_clamp_ts": None,
+        })
+        # Stable G1 → G2 → G3 → G4 ordering.
+        i1 = out.index("G1")
+        i2 = out.index("G2")
+        i3 = out.index("G3")
+        i4 = out.index("G4")
+        assert i1 < i2 < i3 < i4
+
+    def test_no_celebration_vocabulary(self):
+        # Mark §C4 R1: "saved you", "great", "excellent", "כל הכבוד"
+        # all banned. The receipt is a record, not applause.
+        out = self._fmt({"n_days": 90, "total_clamps": 7,
+                          "by_gate": {"G2_sample": 7}, "first_clamp_ts": None})
+        for forbidden in ("saved you", "great", "excellent",
+                          "כל הכבוד", "כל הכבוד!", "מצוין"):
+            assert forbidden.lower() not in out.lower(), (
+                f"§C4 R1 violation: celebration substring {forbidden!r}"
+            )
+
+    def test_no_market_commentary(self):
+        # §X6 fence.
+        out = self._fmt({"n_days": 90, "total_clamps": 7,
+                          "by_gate": {"G2_sample": 7}, "first_clamp_ts": None})
+        for forbidden in ("SPY", "QQQ", "השוק", "המגזר"):
+            assert forbidden not in out
+
+    def test_unknown_gate_id_renders_with_id_as_label(self):
+        # Defensive: a future gate G5 / typo gate name should not crash
+        # — render the raw id and land at the end of the ordering.
+        out = self._fmt({"n_days": 90, "total_clamps": 2,
+                          "by_gate": {"G2_sample": 1, "G99_future": 1},
+                          "first_clamp_ts": None})
+        assert "G99_future" in out
+        # Known gate label still resolves.
+        assert "G2 גודל מדגם" in out
+
+
+class TestB3HandlerEmptyState:
+    """Honest empty-state on /gate_receipt: when there are no in-window
+    clamps, emit an HONEST 'no clamps' line — NEVER a celebration."""
+
+    def test_handler_module_imports(self):
+        # Smoke: the engagement handler module is wired in.
+        import telegram_engagement
+        assert hasattr(telegram_engagement, "handle_gate_receipt")
+
+    def test_telegram_bot_registers_gate_receipt_command(self):
+        import os as _os
+        path = _os.path.join(_os.path.dirname(__file__), "..", "telegram_bot.py")
+        with open(path, "r", encoding="utf-8") as f:
+            src = f.read()
+        assert "/gate_receipt" in src
+        assert "handle_gate_receipt(" in src
