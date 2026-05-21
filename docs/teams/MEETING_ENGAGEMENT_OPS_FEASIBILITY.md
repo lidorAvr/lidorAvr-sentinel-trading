@@ -39,18 +39,12 @@ capacity. §X5 demands a new fail-safe helper EVERY emitter consults first.
 ## Push-rate budget + cooldown
 
 Ceiling 8/60s → 90s cooldown (`telegram_bot_secure_runner.py:49-51`). The
-21/05 msg-18799 trip was interactive burst, not push — but budget is
-shared. Worst-case:
-
-| Window | Existing | Phase-1 new | Risk |
-|---|---|---|---|
-| Mon 16:08 (cron alone) | 0 | 3 | safe |
-| Mon 16:08 + `/portfolio` render (4 msgs) | 4 | +3 | 7/60 — close |
-| `risk_monitor` burst (3-5) coincident w/ cron | 3-5 | +3 | 6-8/60 — collision class |
-
-**New cooldown rule.** Monday-cron emitter sleeps 5s between messages
-(spreads burst). §X5 suppression is the primary defense — silence-as-beat
-doubles as rate-limit defense.
+21/05 msg-18799 trip was interactive burst, but budget is shared.
+Worst-case: Mon 16:08 cron alone = 3 (safe); cron + simultaneous
+`/portfolio` (4 msgs) = 7/60 (close); cron + `risk_monitor` burst (3-5) =
+**6-8/60 collision class**. **New rule:** Monday-cron emitter sleeps 5s
+between messages (spreads burst). §X5 suppression is the primary defense —
+silence-as-beat doubles as rate-limit defense.
 
 ## §X5 Silence-As-Beat ops implementation
 
@@ -76,14 +70,13 @@ is on-brand; "we noticed" is the §X5 violation. Pin at
 
 **Coordinated — full-stack recreate.** Chain at `RULINGS.md:223-235` spans
 three services: U1 (`risk-monitor`), U4 (`telegram-bot`), `gate_result` +
-`ACTION_CALLBACK_FIRED` + `engagement_suppression.py` (ALL — shared
-modules), C5/C4/C1 cron (`reporting-service`), C2 voice (`risk-monitor`).
-Per `DEPLOYMENT_RUNBOOK.md:42-45` ("recreate ALL affected services") use
-`docker compose up -d --force-recreate` whole-stack. **NO schema migration
-Phase-1** (D10 = Phase-2); rollback stays code-only per
-`SAFE_CHANGE_PROTOCOL`. Incremental ship would leave
-`ACTION_CALLBACK_FIRED` on one service and missing on another → audit-row
-crash class.
+`ACTION_CALLBACK_FIRED` + suppression helper (ALL — shared), C5/C4/C1 cron
+(`reporting-service`), C2 voice (`risk-monitor`). Per
+`DEPLOYMENT_RUNBOOK.md:42-45` use `docker compose up -d --force-recreate`
+whole-stack. **No schema migration Phase-1** (D10 = Phase-2); rollback
+code-only per `SAFE_CHANGE_PROTOCOL`. Incremental would leave
+`ACTION_CALLBACK_FIRED` defined on one service, missing on another →
+audit-row crash class.
 
 ## Risks from existing OPS findings
 
