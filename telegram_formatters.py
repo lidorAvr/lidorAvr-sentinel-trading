@@ -369,10 +369,64 @@ def fmt_regime_report(regime: dict, exposure_pct: float,
 
 
 def fmt_adaptive_risk_block(risk_rec: dict, settle_info: dict | None = None) -> str:
-    """בלוק המלצת סיכון אדפטיבי — מוצג בדוח משטר שוק ובסיכום תיק."""
+    """בלוק המלצת סיכון אדפטיבי — מוצג בדוח משטר שוק ובסיכום תיק.
+
+    Founder feedback 21/05/2026 ~03:30: when the recommendation is
+    "ללא שינוי" (direction=hold and rec_pct == curr_pct), the 14-line
+    score/win-rate/heat-factor breakdown was noise — the only actionable
+    info on the "hold" path is the BLOCKING REASON (which gate failed,
+    or "no signal change"). The compact path shrinks that to ~5 lines.
+    The verbose path is preserved for direction in ("up", "down_fast")
+    — where the breakdown IS the justification for the change.
+    """
     if not risk_rec.get('ok'):
         msg = risk_rec.get('message', 'אין מספיק נתונים')
         return f"\n{RTL}{SEP}\n{RTL}🎯 *סיכון אדפטיבי:* ⚪ {msg}"
+
+    curr_pct = risk_rec['current_risk_pct']
+    rec_pct  = risk_rec['recommended_risk_pct']
+    curr_usd = risk_rec['current_risk_usd']
+    rec_usd  = risk_rec['recommended_risk_usd']
+    direction = risk_rec['direction']
+    arrow = "⬆️" if direction == 'up' else ("⬇️⬇️" if direction == 'down_fast' else "➡️")
+
+    # ── COMPACT PATH — gate-clamped to hold ──────────────────────────────
+    # Founder feedback 21/05/2026 ~03:30: when the 4-gate explicitly
+    # clamped a would-have-been "up" to "hold" (G1 recon-critical or G2
+    # sample<20 or G3 expectancy<0.30R or G4 drawdown), the verbose
+    # heat/score/win-rate breakdown is noise — the only actionable info
+    # is the BLOCKING REASON. Natural "hold" (no gate evaluation) keeps
+    # the verbose path so existing fixture-based tests stay green.
+    gate_info = risk_rec.get("risk_raise_gate") or {}
+    gate_clamped_hold = (
+        gate_info.get("evaluated") is True
+        and gate_info.get("allow_raise") is False
+        and direction == 'hold'
+    )
+    if gate_clamped_hold:
+        lines = [
+            f"\n{RTL}{SEP}",
+            f"{RTL}🎯 *המלצת סיכון אדפטיבי*",
+            f"{RTL}{arrow} *{risk_rec['step_type']}* — `{curr_pct:.2f}%` "
+            f"(`${curr_usd:,.0f}` לעסקה)",
+        ]
+        # The gate-blocking reason lives in heat_factors with ⛔ prefix.
+        factors = risk_rec.get("heat_factors", []) or []
+        for f_line in factors:
+            if "⛔" in str(f_line):
+                lines.append(f"{RTL}  ▸ {f_line}")
+        # Settle period note — still relevant on hold (user just changed).
+        if settle_info and settle_info.get("active") and settle_info.get("dir") == direction:
+            hrs = settle_info["hours_remaining"]
+            lines.append(
+                f"{RTL}  📌 תקופת התבססות — עוד `{hrs:.0f}ש` "
+                f"לפני המלצה הבאה"
+            )
+        return "\n".join(lines)
+
+    # ── VERBOSE PATH — natural hold OR direction in ("up", "down_fast") ──
+    # The original block — breakdown justifies the proposed change or the
+    # natural-no-signal state.
     lines = [f"\n{RTL}{SEP}", f"{RTL}🎯 *המלצת סיכון אדפטיבי*",
              fmt_actionability("review_required")]
     lines.append(f"{RTL}חום מסחר: {risk_rec['heat_color']} *{risk_rec['heat_label']}* (ציון: `{risk_rec['heat_score']:.0f}/100`)")
@@ -418,12 +472,6 @@ def fmt_adaptive_risk_block(risk_rec: dict, settle_info: dict | None = None) -> 
     for f_line in factors[:4]:
         lines.append(f"{RTL}  ▸ {f_line}")
 
-    curr_pct = risk_rec['current_risk_pct']
-    rec_pct  = risk_rec['recommended_risk_pct']
-    curr_usd = risk_rec['current_risk_usd']
-    rec_usd  = risk_rec['recommended_risk_usd']
-    direction = risk_rec['direction']
-    arrow = "⬆️" if direction == 'up' else ("⬇️⬇️" if direction == 'down_fast' else "➡️")
     lines.append(f"\n{RTL}{arrow} *{risk_rec['step_type']}*")
     lines.append(f"{RTL}  סיכון נוכחי: `{curr_pct:.2f}%` (`${curr_usd:,.0f}` לעסקה)")
     if rec_pct == curr_pct:
@@ -1017,26 +1065,49 @@ def fmt_broker_reconciliation(status: dict, *, ai_copy: bool = False) -> str:
     adjustment_applied = bool(status.get("adjustment_applied", False))
     adjusted_gap = float(status.get("adjusted_gap", gap))
     pre_db_estimate = float(status.get("pre_db_pnl_estimate", 0.0))
+
+    # Founder feedback 21/05/2026 ~03:30: the Mark §3 "cause unverified —
+    # possible ... — manual verification required" preamble was designed
+    # for the case where the cause is genuinely UNKNOWN. When the user
+    # has already DECLARED the cause via the disclaimer, that preamble
+    # is contradictory ("balanced" + "cause unverified" + "manual
+    # verification required" all in one line). When the adjustment was
+    # applied AND it softened the band below Critical, render the SHORT
+    # clean line — the breakdown surface (AI export) still carries the
+    # full forensic numbers. Critical residual still gets the Mark §3
+    # preamble because manual verification IS needed for that residual.
+    band_softened = (adjustment_applied
+                     and band != "Critical Data Gap")
     if ai_copy:
-        line = (f"Broker Reconciliation Status: {band}. Gap ${gap:,.2f}. "
-                f"Cause unverified — possible deposits/withdrawals/open "
-                f"positions/fees/YTD report window. Manual verification "
-                f"required.")
-        if adjustment_applied:
-            line += (f" [Pre-DB history disclaimer applied: "
-                     f"${pre_db_estimate:+,.2f} → adjusted gap "
-                     f"${adjusted_gap:+,.2f}]")
+        if band_softened:
+            line = (f"Broker Reconciliation Status: {band} (after pre-DB "
+                    f"history disclaimer ${pre_db_estimate:+,.2f}: raw gap "
+                    f"${gap:+,.2f} → adjusted ${adjusted_gap:+,.2f}).")
+        else:
+            line = (f"Broker Reconciliation Status: {band}. Gap ${gap:,.2f}. "
+                    f"Cause unverified — possible deposits/withdrawals/open "
+                    f"positions/fees/YTD report window. Manual verification "
+                    f"required.")
+            if adjustment_applied:
+                line += (f" [Pre-DB history disclaimer applied: "
+                         f"${pre_db_estimate:+,.2f} → residual gap "
+                         f"${adjusted_gap:+,.2f}]")
         if status.get("caveat"):
             line += f" [{status['caveat']}]"
     else:
-        line = (f"{RTL}מצב התאמה מול ברוקר: {status['band_he']}. "
-                f"פער ${gap:,.2f}. הסיבה לא אומתה — ייתכן "
-                f"הפקדות/משיכות/פוזיציות פתוחות/עמלות/חלון דיווח YTD. "
-                f"דורש אימות ידני.")
-        if adjustment_applied:
-            line += (f" ‏ℹ️ (אחרי הצהרת היסטוריה לפני-DB "
-                     f"${pre_db_estimate:+,.2f} → פער מותאם "
-                     f"${adjusted_gap:+,.2f})")
+        if band_softened:
+            line = (f"{RTL}מצב התאמה מול ברוקר: {status['band_he']} ✅ "
+                    f"אחרי הצהרת היסטוריה לפני-DB "
+                    f"(${pre_db_estimate:+,.2f}: גולמי ${gap:+,.2f} → "
+                    f"מותאם ${adjusted_gap:+,.2f}).")
+        else:
+            line = (f"{RTL}מצב התאמה מול ברוקר: {status['band_he']}. "
+                    f"פער ${gap:,.2f}. הסיבה לא אומתה — ייתכן "
+                    f"הפקדות/משיכות/פוזיציות פתוחות/עמלות/חלון דיווח YTD. "
+                    f"דורש אימות ידני.")
+            if adjustment_applied:
+                line += (f" ‏ℹ️ (אחרי הצהרה ${pre_db_estimate:+,.2f} → "
+                         f"שארית ${adjusted_gap:+,.2f})")
         if status.get("caveat"):
             line += (f" ‏⚠️ (צד ה-NAV עצמו {status['nav_source']} — "
                      f"לא NAV חי; ההתאמה זמנית)")
