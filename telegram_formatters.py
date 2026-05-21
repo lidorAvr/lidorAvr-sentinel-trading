@@ -7,6 +7,49 @@ telegram_formatters.py
 RTL = "‏"
 SEP = "───────────────"
 
+# Engagement-meeting Wave-3A (21/05/2026) — S-ENGAGE-1 closure.
+# Telegram Markdown special characters that must be escaped when surfacing
+# operator-typed text (rejection reasons, journal lines, Callback quotes).
+# Five chars per Telegram Bot API legacy-Markdown spec: `_` italics, `*`
+# bold, `` ` `` mono, `[` link-start, `]` link-end. We escape with `\` —
+# Telegram's documented escape. Unescaped, a reason containing `_` either
+# renders with unintended formatting OR triggers a 400 ("can't parse
+# entities"); the §X4 Callback quote 60 days later would re-hit the same
+# defect with even lower observability.
+_MD_LEGACY_SPECIALS = ("_", "*", "`", "[", "]")
+
+
+def render_journal_text(s: str) -> str:
+    """Escape Telegram-Markdown specials in operator-typed text for safe
+    rendering inside a `parse_mode="Markdown"` envelope.
+
+    §X4 verbatim is honored at the STORAGE layer — `risk_journal.json` /
+    `audit_log` rows keep the original bytes character-for-character. This
+    helper is the RENDER-time boundary only: same bytes go to disk, escape
+    only at the Telegram send site.
+
+    Idempotency: applying it twice yields the same output as once (each
+    escape adds exactly one backslash; a pre-escaped char is left alone).
+    Empty / non-str inputs round-trip cleanly to "".
+    """
+    if not s:
+        return ""
+    s = str(s)
+    out_chars = []
+    i = 0
+    while i < len(s):
+        ch = s[i]
+        if ch == "\\" and i + 1 < len(s) and s[i + 1] in _MD_LEGACY_SPECIALS:
+            out_chars.append(ch)
+            out_chars.append(s[i + 1])
+            i += 2
+            continue
+        if ch in _MD_LEGACY_SPECIALS:
+            out_chars.append("\\")
+        out_chars.append(ch)
+        i += 1
+    return "".join(out_chars)
+
 # Sprint-12 / Mark §3 — the SINGLE canonical honest price-fallback label.
 # VERBATIM from MARK_SPRINT12_RULINGS.md §3 (engineering invents no wording).
 # Shown ONLY when ec.get_live_price() returned None for that figure and the

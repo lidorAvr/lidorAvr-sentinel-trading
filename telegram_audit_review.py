@@ -40,9 +40,11 @@ from telegram_menus import get_portfolio_menu
 # D3/D4). New constants default to OMIT until explicitly classified here.
 _SURFACE_ACTIONS = [
     audit_logger.ACTION_RISK_PCT_CHANGE,
+    audit_logger.ACTION_RISK_REJECT,       # Engagement Wave-3A — U4 closure.
     audit_logger.ACTION_ADDON_CONFIRM,
     audit_logger.ACTION_MANUAL_TRADE,
     audit_logger.ACTION_SETTINGS_CHANGE,  # open-task lifecycle + stop-loosen
+    audit_logger.ACTION_CALLBACK_FIRED,    # Engagement C1 — Phase-3 day-60+.
 ]
 
 _DEFAULT_LIMIT = 20
@@ -87,6 +89,28 @@ def _friendly_line(row: dict) -> str:
         b = before.get("risk_pct")
         a = after.get("risk_pct")
         return f"🎚️ שינוי % סיכון: {b}%→{a}%"
+
+    if action == audit_logger.ACTION_RISK_REJECT:
+        # Engagement Wave-3A — U4 closure: a dismissed adaptive-risk rec.
+        # Render the operator's typed reason VERBATIM (§X4 honesty). Empty
+        # / null-reason rows show "(ללא הסבר)" — the literal absence-marker
+        # that triggered the engagement phase in the first place. NEVER
+        # invent a reason for a missing one (Mark §3 / §X1).
+        rec_pct = meta.get("recommended_pct")
+        raw_reason = meta.get("reason")
+        reason_str = str(raw_reason).strip() if raw_reason else ""
+        reason_render = reason_str if reason_str else "(ללא הסבר)"
+        return f"❌ דחיית המלצת סיכון `{rec_pct}%` — {reason_render}"
+
+    if action == audit_logger.ACTION_CALLBACK_FIRED:
+        # Engagement C1 — Phase-3 day-60+ Callback. §X4 verbatim: quoted
+        # text is stored character-for-character. Surface shows the date
+        # the original journal line was authored + a truncated preview of
+        # the verbatim quote (never normalize / paraphrase).
+        anchor_date = meta.get("anchor_date") or "—"
+        quoted = str(meta.get("quoted_text", "") or "").strip()
+        preview = quoted if len(quoted) <= 60 else quoted[:57] + "…"
+        return f"📖 הספר הזכיר ({anchor_date}): \"{preview}\""
 
     if action == audit_logger.ACTION_SETTINGS_CHANGE:
         kind = str(meta.get("kind", ""))

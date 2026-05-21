@@ -275,8 +275,11 @@ class TestRiskJournalMirroredToAuditLog:
         src = self._read("telegram_bot.py")
         assert "import audit_logger" in src
         assert "audit_logger.log_action(" in src
-        assert "audit_logger.ACTION_RISK_PCT_CHANGE" in src
-        assert '"action": "rejected"' in src
+        # Engagement Wave-3A (U4 full closure): rejection now uses the
+        # DISTINCT ACTION_RISK_REJECT constant — not ACTION_RISK_PCT_CHANGE
+        # — so /myactions renders the dismissal with the reason verbatim
+        # rather than a misleading "0.60%→0.60%" line.
+        assert "audit_logger.ACTION_RISK_REJECT" in src
         # The user's rejection reason is preserved in the audit row.
         assert '"reason": reason' in src
 

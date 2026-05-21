@@ -279,27 +279,31 @@ def handle_all_messages(message):
             "actual_pct_set": curr_pct,
             "nav": nav,
         })
-        # B3 (Meeting 21/05/2026 — UX U4 P1 closure): mirror the
-        # rejection on Supabase audit_log so `/myactions` surfaces the
-        # user's dismissal (was previously logged only to risk_journal.json
-        # — the audit-review reader does not see that file, so msg 18964
-        # "אין פעולות מתועדות עדיין" was a label-vs-storage divergence).
-        # Fail-open: audit_logger never raises.
+        # B3 (Meeting 21/05/2026 — UX U4 P1 closure) + Engagement Wave-3A
+        # U4 full-closure: mirror the rejection to Supabase audit_log via the
+        # DISTINCT ACTION_RISK_REJECT constant (not ACTION_RISK_PCT_CHANGE)
+        # so `/myactions` renders the dismissal with the operator's reason
+        # text rather than the misleading "0.60%→0.60%" line a same-pct row
+        # would produce. Fail-open: audit_logger never raises.
         audit_logger.log_action(
-            supabase, audit_logger.ACTION_RISK_PCT_CHANGE,
+            supabase, audit_logger.ACTION_RISK_REJECT,
             chat_id=chat_id,
             before={"risk_pct": curr_pct},
             after={"risk_pct": curr_pct},  # no actual change — rejected
-            metadata={"action": "rejected",
-                      "recommended_pct": rec_pct,
+            metadata={"recommended_pct": rec_pct,
                       "direction": "up" if rec_pct > curr_pct else "down_fast",
                       "reason": reason,
                       "nav": nav},
         )
         del user_state[chat_id]
+        # S-ENGAGE-1 closure: escape Markdown specials in the operator-typed
+        # reason before rendering inside the Markdown envelope. Bytes on
+        # disk stay verbatim (§X4); escape lives at the render boundary.
+        from telegram_formatters import render_journal_text
+        _reason_render = render_journal_text(reason)
         bot.send_message(
             chat_id,
-            f"{RTL}📝 *הדחייה נרשמה ביומן הסיכון*\n{RTL}המלצה `{rec_pct:.2f}%` נדחתה.\n{RTL}סיבה: _{reason}_",
+            f"{RTL}📝 *הדחייה נרשמה ביומן הסיכון*\n{RTL}המלצה `{rec_pct:.2f}%` נדחתה.\n{RTL}סיבה: _{_reason_render}_",
             reply_markup=get_main_menu(), parse_mode="Markdown"
         )
         return

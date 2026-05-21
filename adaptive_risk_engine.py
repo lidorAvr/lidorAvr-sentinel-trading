@@ -865,6 +865,31 @@ def _log_recommendation(rec: dict) -> None:
         "followed": None,
         "reason": None,
     }
+    # Engagement Wave-3A (DATA F1 + ENGINE F2 closure):
+    # Capture the full risk_raise_gate dict + nav_at_eval so C4 "Gate
+    # Receipt" can later count refusals + (Phase-2 D11) compute the
+    # dollar-value saved. ADDITIVE keys — back-compat automatic (old rows
+    # simply lack these keys, surface skips them). nav_at_eval avoids the
+    # precision loss in back-computing NAV from recommended_risk_usd /
+    # (pct/100) post-hoc at round(. ,0).
+    gate = rec.get("risk_raise_gate")
+    if gate is not None:
+        entry["gate_result"] = {
+            "evaluated": bool(gate.get("evaluated")),
+            "allow_raise": bool(gate.get("allow_raise")),
+            "failed": list(gate.get("failed") or []),
+            "reason": str(gate.get("reason") or ""),
+        }
+    # NAV at evaluation time. The math: nav = recommended_risk_usd /
+    # (recommended_risk_pct / 100). We capture both terms additively for
+    # forensic audit — even when downstream consumers don't need NAV.
+    rec_pct = rec.get("recommended_risk_pct")
+    rec_usd = rec.get("recommended_risk_usd")
+    if rec_pct is not None and rec_usd is not None and rec_pct > 0:
+        try:
+            entry["nav_at_eval"] = round(float(rec_usd) / (float(rec_pct) / 100.0), 2)
+        except (TypeError, ValueError, ZeroDivisionError):
+            entry["nav_at_eval"] = None
     log.insert(0, entry)
     log = log[:200]
     try:

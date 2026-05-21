@@ -60,6 +60,18 @@ ACTION_POSITION_STATE_TRANSITION = "position_state_transition"
 # vs send_telegram_with_keyboard). The audit log answers "did any
 # state/digest alert silently fail in the last 24h?" in one query.
 ACTION_TELEGRAM_SEND_FAILED = "telegram_send_failed"
+# Engagement-meeting (21/05/2026 Wave-3A): rejection of an adaptive-risk
+# recommendation. Distinct from ACTION_RISK_PCT_CHANGE so `/myactions` can
+# render the dismissal with the operator's reason text rather than the
+# misleading "0.60%→0.60%" line that ACTION_RISK_PCT_CHANGE produces on a
+# rejection (where before == after). Pinned by Mark+Research rulings.
+# Surfaces in telegram_audit_review with the reason verbatim (§X4).
+ACTION_RISK_REJECT = "risk_reject"
+# Engagement-meeting C1 "הספר מדבר חזרה": one row per Callback fire —
+# Sentinel quoted the founder's own past journal line back to him at a
+# near-identical setup. metadata: anchor_journal_id, surface_id, quoted_text
+# (verbatim, §X4). Day-60+ first-fire; max 1 per fortnight per reason-bucket.
+ACTION_CALLBACK_FIRED = "callback_fired"
 
 _AUDIT_TABLE = "audit_log"
 
