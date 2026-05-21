@@ -496,14 +496,24 @@ def _algo_visibility_alert(visibility_avg, n_positions):
 
 
 def _sizing_leak_alert(sym, setup, sizing_ratio, target_risk_usd, original_campaign_risk):
+    """Engagement Wave-3B B2 (C2-S1 voice change, Mark binding):
+    Tier-A voice-only refactor on the EXISTING sizing-leak path. The MATH
+    (sizing_ratio = original_campaign_risk / target_risk_usd) and the DEDUP
+    KEY (`sizing_leak_alerted` flag in `new_pos_entry`, set at the call
+    site risk_monitor.py:1175) are byte-identical to pre-engagement. Only
+    the COPY changes — from foreign-language "Sizing Leak" + generic
+    "rashum kalakh" to the E3 register: אצלך + escape-hatch, the
+    brother-voice E3-#3 codified. Mark §3 anti-list preserved (no
+    push-up-size verb); §X6 self-data only; no market commentary."""
     RTL_M = "‏"
     return (
-        f"{RTL_M}⚖️ *Sizing Leak — {sym}*\n"
-        f"{RTL_M}סטאפ: `{setup}` | נלקח ב-`{sizing_ratio:.2f}x` סיכון יעד\n"
-        f"{RTL_M}יעד: `${target_risk_usd:.0f}` | בפועל: `${original_campaign_risk:.0f}`\n"
+        f"{RTL_M}⚖️ *פער סיזינג — {sym}*\n"
+        f"{RTL_M}נכנסת ב-`{sizing_ratio:.2f}x` מסיכון היעד שלך "
+        f"(יעד `${target_risk_usd:.0f}`, בפועל `${original_campaign_risk:.0f}`).\n"
+        f"{RTL_M}סטאפ: `{setup}`.\n"
         f"{RTL_M}─────────────────\n"
-        f"{RTL_M}המשמעות: ה-Edge קיים, אבל ההון לא מנוצל מספיק.\n"
-        f"{RTL_M}לא לפעול עכשיו — לרשום כלקח לטרייד הבא מאותו Setup."
+        f"{RTL_M}זה דפוס שחוזר אצלך. הפעם הבאה שתיכנס לסטאפ הזה — תכניס "
+        f"את הסייז שאתה באמת מאמין בו, או אל תיכנס."
     )
 
 
