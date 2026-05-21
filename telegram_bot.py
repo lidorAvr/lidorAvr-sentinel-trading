@@ -55,7 +55,7 @@ from telegram_tasks import (handle_open_tasks_entry,  # noqa: E402 — re-export
                             handle_task_add_note)
 
 from telegram_audit_review import handle_my_actions  # noqa: E402 — re-exported for telegram_callbacks lazy import
-from telegram_engagement import handle_gate_receipt, handle_backfill_prompt, handle_backfill_collect_reason  # noqa: E402 — engagement Wave-3B B3+B4
+from telegram_engagement import handle_gate_receipt, handle_backfill_prompt, handle_backfill_collect_reason, handle_eod_check  # noqa: E402 — engagement Wave-3B B3/B4/B5
 
 from telegram_clean_gate import (handle_clean_entry,  # noqa: E402 — re-exported for telegram_callbacks lazy import
                                  finalize_pending_clean)
@@ -776,6 +776,14 @@ def handle_all_messages(message):
         # it deliberately skipped. The corpus this builds is the raw
         # material for the day-60 Callback (C1-S2, Phase-3).
         handle_backfill_prompt(chat_id)
+        return
+
+    if text == "/eod_check":
+        # Engagement Wave-3B B5 — EOD verdict pull surface. Reports
+        # today's R + frames it per §X5 (TWO_R_DOWN respectful, SETTLE
+        # contained, normal day plain). Phase-1 minimum: no process
+        # verdict (D9 disposition is Phase-2 founder-gated).
+        handle_eod_check(chat_id)
         return
 
     if text in ["🎯 קידום סטופ", "/promote"]:

@@ -19,12 +19,15 @@ Module discipline (mirrors `telegram_audit_review.py`):
     "great work" celebration (§C4 R1).
   - Pull-only — no push path here. §X5 silence-as-surface honored.
 """
+import pandas as pd
 from telebot import types
 
 from bot_core import bot, supabase, user_state, RTL
 
 import audit_logger
 import adaptive_risk_engine as are
+import engagement_suppression as es
+import supabase_repository as repo
 import telegram_formatters as tf
 
 
@@ -167,6 +170,34 @@ def handle_backfill_collect_reason(chat_id, text):
         f"{RTL}📖 לא הצלחתי למצוא את הרשומה. ייתכן שכבר עודכנה."
     )
     bot.send_message(chat_id, msg, parse_mode="Markdown")
+
+
+def handle_eod_check(chat_id):
+    """`/eod_check` — B5 EOD verdict pull surface.
+
+    Computes today's closed R (calendar day in IL time) + checks §X5
+    suppression rules (TWO_R_DOWN / SETTLE) for the FRAMING. Renders
+    via fmt_eod_verdict.
+
+    Mark §3 honesty: if Supabase is unreachable / no trades data, the
+    surface honestly says "לא נסגרו עסקאות היום" — never invent an R.
+    """
+    try:
+        df = pd.DataFrame(repo.get_all_trades(supabase))
+    except Exception:
+        df = pd.DataFrame()
+    closed = are.compute_closed_campaigns(df) if not df.empty else []
+    todays = are.compute_todays_R_summary(closed)
+    settle = are.get_risk_settle_info() if hasattr(are, "get_risk_settle_info") else {}
+    # Only check the suppression's frame when there IS a real R for
+    # today (todays_R when n_trades==0 is meaningless for the rule).
+    sup_todays_R = todays["total_R"] if todays.get("n_trades", 0) > 0 else None
+    sup = es.should_suppress_engagement(
+        todays_R=sup_todays_R,
+        settle_info=settle,
+    )
+    body = tf.fmt_eod_verdict(todays, sup).lstrip("\n")
+    bot.send_message(chat_id, body, parse_mode="Markdown")
 
 
 def handle_gate_receipt(chat_id, n_days: int = 90):

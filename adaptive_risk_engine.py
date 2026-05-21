@@ -899,6 +899,72 @@ def _log_recommendation(rec: dict) -> None:
         pass
 
 
+def compute_todays_R_summary(closed_campaigns: list, *, now=None) -> dict:
+    """Engagement Wave-3B B5 — EOD verdict ingredient.
+
+    Sum R-multiples of trades closed in TODAY's calendar day in
+    Asia/Jerusalem time (the founder's clock).
+
+    Returns:
+        {
+            'n_trades': int,           # how many campaigns closed today
+            'total_R': float,          # sum of R-multiples
+            'today_start_iso': str,    # the IL midnight boundary used
+        }
+
+    Mark §3 honesty: a campaign with `original_campaign_risk <= 0`
+    cannot produce an R-multiple — it is COUNTED in `n_trades` but
+    contributes 0 to `total_R` (never fabricate an R when the risk
+    denominator is missing).
+    """
+    from datetime import datetime
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("Asia/Jerusalem")
+    except Exception:
+        tz = None
+    if now is None:
+        now = datetime.now(tz) if tz else datetime.now()
+    if tz and now.tzinfo is None:
+        now = now.replace(tzinfo=tz)
+    today_start_il = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    total_R = 0.0
+    n_trades = 0
+    for c in closed_campaigns or []:
+        cd = c.get("close_date")
+        if cd is None:
+            continue
+        # close_date may be pandas.Timestamp, datetime, or str.
+        try:
+            if hasattr(cd, "to_pydatetime"):
+                cd_dt = cd.to_pydatetime()
+            elif isinstance(cd, str):
+                cd_dt = datetime.fromisoformat(cd)
+            else:
+                cd_dt = cd
+            if tz and cd_dt.tzinfo is None:
+                cd_il = cd_dt.replace(tzinfo=tz)
+            elif tz:
+                cd_il = cd_dt.astimezone(tz)
+            else:
+                cd_il = cd_dt
+        except Exception:
+            continue
+        if cd_il < today_start_il:
+            continue
+        n_trades += 1
+        pnl = float(c.get("total_pnl_usd", 0) or 0)
+        risk = float(c.get("original_campaign_risk", 0) or 0)
+        if risk > 0:
+            total_R += pnl / risk
+    return {
+        "n_trades": n_trades,
+        "total_R": round(total_R, 2),
+        "today_start_iso": today_start_il.isoformat(),
+    }
+
+
 def find_backfill_candidate(
     *,
     min_age_days: int = 14,

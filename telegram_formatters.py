@@ -157,6 +157,70 @@ _GATE_LABELS_HE = {
 }
 
 
+def fmt_eod_verdict(todays_R_summary: dict,
+                    suppression_decision: dict = None) -> str:
+    """Engagement Wave-3B B5 — EOD verdict surface.
+
+    Renders a Hebrew end-of-day reflection that:
+      - reports today's R-multiple sum (Mark §3 honest fact-stating)
+      - frames the day in E3 register (אצלך-personal, never generic)
+      - respects §X5 suppression rules for the FRAMING (a -2R day gets
+        respectful framing; a settle-period gets settle framing) —
+        but the verdict itself is ALWAYS surfaced on a pull (the
+        founder asked, so the founder gets a response)
+      - is silent about process quality at Phase-1 (the process-score
+        derivation is Phase-2 work — D9 disposition gating)
+
+    Mark §X6 fence: zero market commentary; this is the founder's R
+    in his own day, never the market's day.
+
+    Empty / null inputs return an honest "no trades today" line —
+    never invent an R.
+    """
+    n = int((todays_R_summary or {}).get("n_trades", 0) or 0)
+    total_R = float((todays_R_summary or {}).get("total_R", 0.0) or 0.0)
+    rule = ""
+    if suppression_decision:
+        rule = str(suppression_decision.get("rule_id", "") or "")
+
+    if n == 0:
+        # Mark §3: an empty day is an honest empty day. No fabrication,
+        # no spin into "rest day" or "patience pays".
+        return (
+            f"\n{RTL}{SEP}\n"
+            f"{RTL}📖 *סגירה היום*\n"
+            f"{RTL}לא נסגרו עסקאות היום."
+        )
+
+    R_label = f"{total_R:+.2f}R"
+    trade_word = "עסקה" if n == 1 else "עסקאות"
+
+    if rule == "TWO_R_DOWN":
+        # -2R day. Honor the loss. Mark §X5 + E4 binding: do NOT
+        # coach. No "tomorrow is new", no "you can make it back". One
+        # short message; the silence does the rest.
+        return (
+            f"\n{RTL}{SEP}\n"
+            f"{RTL}📖 *סגירה היום: {R_label}*\n"
+            f"{RTL}{n} {trade_word}. הספר רושם. שקט עד מחר ב-16:00."
+        )
+
+    if rule == "SETTLE":
+        return (
+            f"\n{RTL}{SEP}\n"
+            f"{RTL}📖 *סגירה היום: {R_label}*\n"
+            f"{RTL}{n} {trade_word}. בתקופת התבססות — הספר רושם, ממתין."
+        )
+
+    # Normal-day framing. No celebration vocabulary; no process verdict
+    # at Phase-1.
+    return (
+        f"\n{RTL}{SEP}\n"
+        f"{RTL}📖 *סגירה היום: {R_label}*\n"
+        f"{RTL}{n} {trade_word} נסגרו. נתראה מחר ב-16:00."
+    )
+
+
 def fmt_backfill_prompt(candidate: dict) -> str:
     """Engagement Wave-3B B4 — C1-S1 backfill prompt surface.
 

@@ -669,3 +669,177 @@ class TestB4HandlerWiring:
         src = self._read("telegram_callbacks.py")
         assert "backfill_add|" in src
         assert "backfill_skip|" in src
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# B5 — EOD verdict (compute_todays_R_summary + fmt_eod_verdict + handler)
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestB5TodaysRSummary:
+    """compute_todays_R_summary — IL-calendar-day boundary; only
+    today's trades counted; no fabricated R for zero-risk campaigns."""
+
+    def setup_method(self):
+        from datetime import datetime
+        try:
+            from zoneinfo import ZoneInfo
+            self._tz = ZoneInfo("Asia/Jerusalem")
+        except Exception:
+            self._tz = None
+        import adaptive_risk_engine as are
+        self._are = are
+        # Anchor "now" deterministically for tests.
+        if self._tz:
+            self._now = datetime(2026, 5, 21, 22, 30, 0, tzinfo=self._tz)
+        else:
+            self._now = datetime(2026, 5, 21, 22, 30, 0)
+
+    def _campaign(self, close_dt, pnl, risk):
+        # close_date in the engine is usually pandas.Timestamp but the
+        # function tolerates plain datetime.
+        return {
+            "campaign_id": "test",
+            "symbol": "TEST",
+            "total_pnl_usd": pnl,
+            "original_campaign_risk": risk,
+            "close_date": close_dt,
+        }
+
+    def test_no_campaigns_zero(self):
+        s = self._are.compute_todays_R_summary([], now=self._now)
+        assert s["n_trades"] == 0
+        assert s["total_R"] == 0.0
+
+    def test_only_todays_count(self):
+        from datetime import timedelta
+        today_morning = self._now.replace(hour=10, minute=0)
+        yesterday = self._now - timedelta(days=1)
+        s = self._are.compute_todays_R_summary([
+            self._campaign(today_morning, pnl=100.0, risk=50.0),
+            self._campaign(yesterday,     pnl=200.0, risk=50.0),
+        ], now=self._now)
+        assert s["n_trades"] == 1
+        assert s["total_R"] == 2.0
+
+    def test_zero_risk_does_not_fabricate_R(self):
+        # Mark §3 binding: a campaign with risk=0 cannot produce an R.
+        # It counts in n_trades (it was a closed trade today) but
+        # contributes 0 to total_R — NEVER invent an R via div-by-eps.
+        s = self._are.compute_todays_R_summary([
+            self._campaign(self._now, pnl=100.0, risk=0.0),
+        ], now=self._now)
+        assert s["n_trades"] == 1
+        assert s["total_R"] == 0.0
+
+    def test_negative_R_is_negative(self):
+        s = self._are.compute_todays_R_summary([
+            self._campaign(self._now, pnl=-150.0, risk=50.0),
+        ], now=self._now)
+        assert s["total_R"] == -3.0
+
+    def test_mixed_day_sums_correctly(self):
+        s = self._are.compute_todays_R_summary([
+            self._campaign(self._now, pnl=+100.0, risk=50.0),  # +2R
+            self._campaign(self._now, pnl=-50.0,  risk=50.0),  # -1R
+            self._campaign(self._now, pnl=+25.0,  risk=50.0),  # +0.5R
+        ], now=self._now)
+        assert s["n_trades"] == 3
+        assert s["total_R"] == 1.5
+
+    def test_returned_today_start_is_il_midnight(self):
+        s = self._are.compute_todays_R_summary([], now=self._now)
+        assert "2026-05-21T00:00:00" in s["today_start_iso"]
+
+
+class TestB5EodVerdictFormatter:
+    """fmt_eod_verdict — Mark §3 honest empty, §X5 respectful framing
+    for -2R / settle, no celebration, §X6 fence."""
+
+    def setup_method(self):
+        from telegram_formatters import fmt_eod_verdict
+        self._fmt = fmt_eod_verdict
+
+    def test_empty_day_honest(self):
+        out = self._fmt({"n_trades": 0, "total_R": 0.0,
+                          "today_start_iso": "2026-05-21T00:00:00"})
+        assert "לא נסגרו עסקאות" in out
+        # No fabrication / spin.
+        for forbidden in ("יום מנוחה", "סבלנות", "שקט יקר"):
+            assert forbidden not in out
+
+    def test_normal_day_includes_R_and_count(self):
+        sup = {"suppress": False, "rule_id": "NONE", "reason": ""}
+        out = self._fmt({"n_trades": 3, "total_R": 1.5,
+                          "today_start_iso": "..."}, sup)
+        assert "+1.50R" in out
+        assert "3" in out
+        assert "מחר" in out
+
+    def test_two_r_down_day_respectful_no_coaching(self):
+        # §X5 + E4: -2R day gets "הספר רושם, שקט עד מחר ב-16:00"
+        # NEVER "tomorrow is new" / "you can make it back".
+        sup = {"suppress": True, "rule_id": "TWO_R_DOWN",
+               "reason": "-2R day floor"}
+        out = self._fmt({"n_trades": 2, "total_R": -2.5,
+                          "today_start_iso": "..."}, sup)
+        assert "-2.50R" in out
+        assert "הספר רושם" in out
+        assert "שקט" in out
+        # No coaching verbs.
+        for forbidden in ("מחר זה יום חדש", "אתה יכול להחזיר",
+                          "תחשוב", "השב את ההפסד"):
+            assert forbidden not in out
+
+    def test_settle_period_framing(self):
+        sup = {"suppress": True, "rule_id": "SETTLE",
+               "reason": "Settle-period active"}
+        out = self._fmt({"n_trades": 1, "total_R": 0.5,
+                          "today_start_iso": "..."}, sup)
+        assert "בתקופת התבססות" in out
+        assert "+0.50R" in out
+
+    def test_no_celebration_on_positive_day(self):
+        # Even on a green day, no celebration vocabulary (§C4 R1
+        # precedent applies — we report fact, not applaud).
+        sup = {"suppress": False, "rule_id": "NONE", "reason": ""}
+        out = self._fmt({"n_trades": 5, "total_R": 4.2,
+                          "today_start_iso": "..."}, sup)
+        for forbidden in ("יום מצוין", "כל הכבוד", "מהמם",
+                          "great day", "let's go"):
+            assert forbidden.lower() not in out.lower()
+
+    def test_no_market_commentary(self):
+        sup = {"suppress": False, "rule_id": "NONE", "reason": ""}
+        out = self._fmt({"n_trades": 3, "total_R": 1.5,
+                          "today_start_iso": "..."}, sup)
+        # §X6 fence.
+        for forbidden in ("SPY", "QQQ", "השוק היה", "המגזר"):
+            assert forbidden not in out
+
+    def test_singular_vs_plural_trade_word(self):
+        sup = {"suppress": False, "rule_id": "NONE", "reason": ""}
+        # 1 trade.
+        out_one = self._fmt({"n_trades": 1, "total_R": 1.0,
+                              "today_start_iso": "..."}, sup)
+        assert "1 עסקה" in out_one
+        # 3 trades.
+        out_many = self._fmt({"n_trades": 3, "total_R": 1.5,
+                               "today_start_iso": "..."}, sup)
+        assert "3 עסקאות" in out_many
+
+
+class TestB5HandlerWiring:
+    def _read(self, relative_path):
+        import os as _os
+        path = _os.path.join(_os.path.dirname(__file__), "..", relative_path)
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    def test_telegram_engagement_exposes_handler(self):
+        import telegram_engagement
+        assert hasattr(telegram_engagement, "handle_eod_check")
+
+    def test_telegram_bot_registers_eod_check_command(self):
+        src = self._read("telegram_bot.py")
+        assert "/eod_check" in src
+        assert "handle_eod_check(" in src
