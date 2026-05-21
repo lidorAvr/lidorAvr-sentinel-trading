@@ -1,17 +1,16 @@
 # MEETING_ENGAGEMENT_SECURITY_FEASIBILITY — Wave-4 SECURITY ruling
 
 > SECURITY, engagement-phase feasibility. 21/05/2026. Read-only.
-> Inputs: `MEETING_ENGAGEMENT_UX_SYNTHESIS.md`, `MEETING_ENGAGEMENT_MARK_RESEARCH_RULINGS.md`,
-> `audit_logger.py`, `telegram_bot.py`, `telegram_bot_secure_runner.py`,
-> `adaptive_risk_engine.py`, CLAUDE.md.
+> Inputs: `MEETING_ENGAGEMENT_UX_SYNTHESIS.md`,
+> `MEETING_ENGAGEMENT_MARK_RESEARCH_RULINGS.md`, `audit_logger.py`,
+> `telegram_bot.py`, `telegram_bot_secure_runner.py`, `adaptive_risk_engine.py`, CLAUDE.md.
 
 ## Headline verdict
 
-**APPROVE_WITH_CONDITIONS** for C1/C2/C4/C5 Phase-1. **No new auth flow, no
-new secret, no public-readable surface.** One sub-S-complexity must-fix
+**APPROVE_WITH_CONDITIONS** for C1/C2/C4/C5 Phase-1. **No new auth flow,
+no new secret, no public-readable surface.** One sub-S-complexity must-fix
 before C1 Phase-1: Markdown sanitisation at the journal-text render
-boundary (**S-ENGAGE-1**). C3 DEFER inherited from Mark, no security
-disagreement.
+boundary (**S-ENGAGE-1**). C3 DEFER inherited from Mark.
 
 ## Auth boundary per concept
 
@@ -36,26 +35,23 @@ N/A — confirmed not required.**
 
 ## §X4 verbatim-quote injection vector
 
-The only non-trivial finding of the wave.
-
-**Store: safe.** Journal text persisted verbatim via `json.dump` with
-`ensure_ascii=False` (`adaptive_risk_engine.py:127-130`); write neither
-parses nor evaluates the string.
-
-**Render: unsafe today.** `telegram_bot.py:300-304` wraps the reason in
-single-underscore italics: `f"{RTL}סיבה: _{reason}_", parse_mode="Markdown"`.
-A founder-typed reason containing `_`, `*`, `` ` ``, `[` either renders
-with unintended formatting OR triggers Telegram-400 "can't parse
-entities" and the user sees no confirmation. The C1 Callback (S2) plans
-to re-surface the SAME verbatim text 60 days later inside a Markdown
-envelope — same defect, lower observability.
+The only non-trivial finding of the wave. **Store: safe** — journal
+text persisted verbatim via `json.dump` with `ensure_ascii=False`
+(`adaptive_risk_engine.py:127-130`); write neither parses nor evaluates
+the string. **Render: unsafe today.** `telegram_bot.py:300-304` wraps
+the reason in single-underscore italics: `f"{RTL}סיבה: _{reason}_",
+parse_mode="Markdown"`. A reason containing `_`, `*`, `` ` ``, `[`
+either renders with unintended formatting OR triggers Telegram-400
+"can't parse entities" — user sees no confirmation. C1 Callback (S2)
+plans to re-surface the SAME verbatim text 60 days later inside a
+Markdown envelope — same defect, lower observability.
 
 **S-ENGAGE-1.** Add `_render_journal_text(s) -> str` that either emits
 `parse_mode=None` for blocks containing founder-typed text OR escapes
 the five Markdown specials. Apply at `telegram_bot.py:302` and the C1
 Callback emit. Pin: a reason `a_b*c` round-trips byte-identical and does
 not raise Telegram-400. §X4 verbatim honoured (stored bytes unchanged;
-escape at the rendering boundary only).
+escape at rendering boundary only).
 
 **Asymmetric send-fail.** A Callback Telegram-400 may log
 `ACTION_CALLBACK_FIRED` without `ACTION_TELEGRAM_SEND_FAILED`
@@ -78,24 +74,19 @@ risk on verbatim journal text inside Callback payload.
 
 Wave-2 `0o600` on `set_pre_db_pnl_estimate` CLI
 (`MEETING_UX_SECURITY_FINDINGS.md:39-43`) inherited from
-`tempfile.mkstemp` + `os.replace`. CLI unchanged.
-
-**Callback engine reads `risk_journal.json` heavily — does READ widen
-perms?** Read at `adaptive_risk_engine.py:116-121` is plain `open("r")`
-+ `json.load`. **Read cannot chmod. No widening.** `sentinel_config.json`
-gains no new writer.
-
-Caveat (pre-existing): `risk_journal.json` is *written* via plain
-`open("w")` (`adaptive_risk_engine.py:127-130`) — not
-`state_io.atomic_write_json`. Mode inherits umask (~`0o644`). Callback
-intensifies READ only; cannot widen. Flagged to wider Phase-1.
+`tempfile.mkstemp` + `os.replace`; CLI unchanged. **Callback reads
+`risk_journal.json` heavily — does READ widen perms?** Read at
+`adaptive_risk_engine.py:116-121` is plain `open("r")` + `json.load`.
+**Read cannot chmod. No widening.** `sentinel_config.json` gains no new
+writer. Pre-existing caveat: `risk_journal.json` *write* is plain
+`open("w")` (`adaptive_risk_engine.py:127-130`); mode inherits umask.
+Callback intensifies READ only — cannot widen.
 
 Anti-noise: "Sentinel Bot מחובר" banner (`main.py:165`) emits Telegram
-only, **no audit row** (zero `audit_logger|log_action` hits in
+only — **no audit row** (zero `audit_logger|log_action` hits in
 `main.py`). Engagement adds no restart-tied audit emit. F8 80-char
 `text_preview` cap (`audit_logger.py:55-62`) remains binding on
-Callback-failure deadletters — defense-in-depth against accidental
-journal-text leak via stderr.
+Callback-failure deadletters.
 
 ## Confirmed-preserved invariants (CLAUDE.md red lines)
 
@@ -114,16 +105,16 @@ journal-text leak via stderr.
 ## Sign-off
 
 — SECURITY, Wave-4, 21/05/2026. **APPROVE_WITH_CONDITIONS.** S-ENGAGE-1
-(Markdown sanitisation at render boundary) is the only must-fix before
-C1 Phase-1 — one helper, one pinning test. No new auth flow, no new
-secret, no public-readable surface, no audit-rate regime change, no
+(Markdown sanitisation at the render boundary) is the only must-fix
+before C1 Phase-1 — one helper, one pinning test. No new auth flow, no
+new secret, no public-readable surface, no audit-rate regime change, no
 file-permission widening. C3 DEFER inherited from Mark.
 
 **Top three security concerns:** (1) S-ENGAGE-1 Markdown injection on
-journal-text render (`telegram_bot.py:302`; future C1 Callback emit) —
+journal-text render (`telegram_bot.py:302`; future C1 Callback) —
 must-fix; (2) asymmetric Callback send-fail visibility — Telegram-400
 may log `ACTION_CALLBACK_FIRED` without `ACTION_TELEGRAM_SEND_FAILED`,
 pin regression test; (3) pre-existing `risk_journal.json` plain
 `open("w")` (`adaptive_risk_engine.py:127-130`) — not an engagement
-regression but Callback intensifies read traffic, flag for migration to
+regression but Callback intensifies read traffic; flag for migration to
 `state_io.atomic_write_json`.
