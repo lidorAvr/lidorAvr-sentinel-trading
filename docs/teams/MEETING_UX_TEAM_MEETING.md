@@ -123,3 +123,51 @@ Reply with chosen scope:
 ARCH · DATA · ENGINE · MARK · OPS · SECURITY · UX/Telegram · TESTING — **all 8 approve closure of the 3 meeting-ux/fytd commits as scoped.** Follow-up work is founder choice per the tiered menu above. No item in this consolidation touches the CLAUDE.md red lines.
 
 — Parent (consolidator), 2026-05-21.
+
+---
+
+## LANDED (2026-05-21, post-deploy verified)
+
+**Founder chose `A+B1+B3` (recommended set).** Implemented as 3 sequential
+Mark-gated waves, then deployed to production on the Orange-Pi host via
+the runbook in `docs/DEPLOYMENT_RUNBOOK.md` §2.
+
+### Commits (branch `claude/review-system-audit-FBZ2h`)
+
+| Wave | SHA | Scope | Δ files | Δ lines |
+|---|---|---|---|---|
+| 2A | `d6299d6` | DOC polish (A1+A2+A5+A6) | 3 | +246 |
+| 2B | `1324b3a` | B1 single-source helper + T2 fallback + A3/A4 tests (17 new) | 7 | +294 |
+| 2C | `d16a70b` | B3 audit_log routing + 5 new tests | 4 | +108 |
+
+### Suite state at landing
+- **Pre-meeting:** 2564 passed · 1 skipped · 0 failed · coverage 73.20% (gate 67%).
+- **Post-Wave-2C:** 2586 passed · 1 skipped · 0 failed (+22 tests). Coverage gate intact.
+- CI-equivalent re-verified POST-COMMIT on the clean tree (Sprint-25 pattern).
+
+### Production deployment outcome (host `orangepi3-lts`, 2026-05-21 ~07:08 UTC)
+- Pre-deploy ref snapshotted: `e9872f8` (rollback anchor in `/tmp/sentinel_prev_ref.txt`).
+- Pull: `e9872f8..d16a70b` fast-forward, 21 files / 1566 insertions.
+- `sentinel_config.json` host-managed file NOT clobbered (live NAV `$7,878.92` preserved).
+- 5 images rebuilt (cached layers, ~6s). 5 containers force-recreated.
+- All 5 services flipped from `health: starting` to `(healthy)` within 8 minutes (faster than the 33-minute worst-case healthcheck window).
+
+### Post-deploy smoke verified
+- **B1 helper failsafe** (`{'pre_db_realized_pnl_estimate':'abc'}` → `0.0`): ✅
+- **B1 helper numeric** (`495.67` → `495.67`): ✅
+- **CLI `--show`** displays the live founder declaration `pre_db_realized_pnl_estimate: $+495.67` (the 21/05 declaration survived the deploy): ✅
+- **`telegram_bot_secure_runner`** starting line in logs (CLAUDE.md hard constraint #2 satisfied — admin guard configured, rate limit 8 msgs / 60s, cooldown 90s): ✅
+- **`report_scheduler`** start line in logs (reporting service operational): ✅
+
+### Open follow-up (founder-deferred, NOT landed)
+- **Tier-C C1** — `risk_monitor.py:1242,1270-1305` inline adaptive-alert builder (bypasses `fmt_adaptive_risk_block`; UX U1 P1 — recurs on direction-change alerts).
+- **Tier-C C2** — `LOOP_INTERVAL_SEC=900` vs healthcheck `1980s` autoheal-mask (OPS F2; 6+ "Sentinel Bot מחובר" reconnects in 3 days).
+- **Tier-C C3** — Dev-PIN anti-bruteforce window broadening (SECURITY S1).
+- **OUT items** — UX U3 quick-pick rejection chips, UX U5 הון מת on portfolio-card, ENGINE F5 structured-log bare-except, ENGINE F6 WR/PF stat-bucket stability.
+
+Tier-C reserved for a future founder-confirmed scoped phase per Sprint-25 C2 precedent — each item gets a per-item confirm + byte-locks regenerated.
+
+### Mark §X1/§X2/§X3 status
+Codified in `docs/teams/MARK_MEETING_UX_RULINGS.md`; now binding precedent for every future cleanup of the same shape. The 22 wave-2 tests are the pinning set.
+
+— Parent (consolidator), 2026-05-21 post-deploy. Branch HEAD: `d16a70b`.

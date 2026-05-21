@@ -60,6 +60,13 @@ Responsibilities:
 - `load()` → always returns a safe dict, never raises.
 - Freshness labels: fresh (<24h) / stale (24–48h) / critical (>48h) / unknown.
 - `target_risk_usd(account)` convenience helper.
+- `pre_db_realized_pnl_estimate(account)` — canonical single-source
+  reader for the F-YTD disclaimer (founder note 21/05/2026). Fail-safe
+  by design: missing / null / non-numeric → 0.0. ALL callers
+  (`report_scheduler`, `risk_monitor`, `telegram_portfolio`,
+  `dashboard`) MUST use this helper — never `float(account.get(...,
+  0) or 0)` ad-hoc. See `docs/teams/MEETING_UX_TEAM_MEETING.md` →
+  ARCH-F1 closure.
 - Fallback to $7,500 when config is missing or corrupted.
 
 Rules:
