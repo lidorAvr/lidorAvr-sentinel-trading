@@ -87,6 +87,72 @@ docker compose up -d --force-recreate                  # 5. then the normal recr
 
 From here on `sentinel_config.json` is host-managed (like `.env`). **NEVER run `git reset --hard` or `git checkout .` on the prod host** — they ignore `.gitignore` for the working tree only for *tracked* files, but a hard reset to an old ref + a stale tracked copy elsewhere can still surprise; treat the live NAV as sacred and always `cp` it aside before any history operation.
 
+## 4c. F-YTD pre-deploy disclaimer CLI (founder workflow, host-side)
+
+After Sentinel deployment the Supabase `trades` table is YTD-bound:
+pre-deploy closed campaigns have no rows. The raw broker-reconciliation
+gap is therefore OVERSTATED by the missing pre-deploy realized PnL
+(`docs/DATA_CONTRACTS.md` §"Data history scope"). The founder can
+manually estimate the missing PnL and set it once via the CLI; the
+classifier subtracts it from the raw gap before banding so future
+`/portfolio` refreshes show the residual.
+
+**Sign convention (match the disclaimer to the gap's direction):**
+- Positive raw gap (NAV > expected, pre-deploy GAIN absent from DB) →
+  positive estimate (e.g. `+495.67` zeros a `+$495.67` raw gap; this
+  is the 21/05/2026 founder case).
+- Negative raw gap (NAV < expected, pre-deploy LOSS absent from DB) →
+  negative estimate.
+- Same direction. If signs don't match, the breakdown line will show a
+  *larger* residual than the raw gap — that's the operator's signal to
+  flip the sign.
+
+**Invocation (host shell, NOT in the in-bot dev menu):**
+
+```bash
+cd ~/sentinel_trading
+
+# 1. show current value + reference fields
+python3 scripts/set_pre_db_pnl_estimate.py --show
+
+# 2. set the estimate to neutralise the current raw gap
+python3 scripts/set_pre_db_pnl_estimate.py 495.67       # positive: pre-deploy gain
+# OR
+python3 scripts/set_pre_db_pnl_estimate.py -- -200.50   # negative: pre-deploy loss
+#                                            ^^ note `--` to stop argparse from
+#                                               eating the leading minus sign
+
+# 3. clear (returns to default-0; raw gap surfaces unmodified)
+python3 scripts/set_pre_db_pnl_estimate.py --clear
+```
+
+**If invoked from a different CWD or inside docker exec**, point at
+the config explicitly:
+
+```bash
+SENTINEL_CONFIG_PATH=/app/sentinel_config.json \
+  docker compose exec -T sentinel-bot \
+  python3 /app/scripts/set_pre_db_pnl_estimate.py --show
+```
+
+**Atomicity.** The CLI writes via a temp file at mode 0o600 in the
+same directory as the target, then `os.replace`s it onto the live
+config — atomic on POSIX (same filesystem), crash-safe under the
+`.:/app` bind mount. The live `sentinel_config.json` is `.gitignore`d
+(Sprint-27 W2/O1) so this never collides with `git pull`.
+
+**Effect (live, no service restart needed).** On the next
+`/portfolio` refresh, the recon line either:
+- shows the *softened* clean variant ("מאוזן ✅ אחרי הצהרת היסטוריה
+  לפני-DB ($X.XX: גולמי $Y.YY → מותאם $Z.ZZ)") if the residual fell
+  below Critical, or
+- keeps Mark §3 verbatim wording for the *residual* + appends the
+  disclaimer disclosure if the residual is still Critical.
+
+**Audit.** The CLI prints a before/after diff to stdout; the value
+lives only in `sentinel_config.json` (not in Supabase or Git). To
+review the operator's last set, run `--show` again.
+
 ## 5. Rollback (from docs/SAFE_CHANGE_PROTOCOL.md)
 
 ```bash

@@ -499,13 +499,16 @@ This affects every "all-time" calculation:
   before this section was added.
 
 **Operator workflow.** When the founder reconciles manually with
-the broker, they can SET the following field in `sentinel_config.json`:
+the broker, they can SET the following field in `sentinel_config.json`.
+The example below mirrors the 21/05/2026 founder session — a `+$495.67`
+raw gap (NAV higher than expected) caused by a pre-deploy GAIN absent
+from the DB:
 
 ```json
 {
   "total_deposited": 7500.0,
   "risk_pct_input": 0.5,
-  "pre_db_realized_pnl_estimate": -495.67
+  "pre_db_realized_pnl_estimate": 495.67
 }
 ```
 
@@ -516,12 +519,43 @@ banding, so the surfaced band reflects the residual after the
 disclaimer. The classifier never asserts a cause — it only relaxes the
 band when the founder has explicitly disclaimed history.
 
+**Sign convention — match the disclaimer to the raw gap's direction:**
+- Raw gap is POSITIVE (NAV higher than `deposits + DB-realized + open`):
+  the missing pre-deploy PnL was a GAIN → estimate is POSITIVE (e.g.
+  `+495.67` zeros a `+$495.67` raw gap). This is the 21/05/2026 case.
+- Raw gap is NEGATIVE (NAV lower than expected): the missing pre-deploy
+  PnL was a LOSS → estimate is NEGATIVE (e.g. `-500.00` zeros a `-$500`
+  raw gap).
+- Same direction as the gap, same sign. If the signs don't match, the
+  classifier WORSENS the gap — the `min(|raw|, |adjusted|)` defensive
+  clamp prevents an *escalated* band but the breakdown line will show
+  the larger residual, which is the operator's signal that the sign is
+  wrong.
+
 **Defensive invariant.** The classifier uses
 `min(|raw_gap|, |adjusted_gap|)` for band classification, so an
 over-estimated history can only ever SOFTEN the band, never tighten
 it. If the founder writes `pre_db_realized_pnl_estimate: -10000` when
 the true pre-deploy PnL was only -$500, the system will not falsely
 escalate a non-existent gap into Critical.
+
+**Surfaced fields from `classify_broker_reconciliation`** (per Mark
+§X1 — breakdown must disclose its own source, not silently absorb the
+disclaimer):
+- `raw_gap_usd` — the unmodified gap `NAV - (deposits + DB-realized
+  + open)`. Forensic-clear; never absorbed by the disclaimer.
+- `pre_db_pnl_estimate` — the operator-asserted value (echoed back so
+  the surface can label it as a human declaration, not a system fact).
+- `adjusted_gap_usd` — `raw_gap_usd - pre_db_pnl_estimate`. The
+  residual after the disclaimer.
+- `band` — banded on `min(|raw_gap|, |adjusted_gap|)`.
+- `adjustment_applied` — `True` IFF any non-zero
+  `pre_db_pnl_estimate` was supplied (boolean on existence, not on
+  band change). The cleanup variant ("מאוזן ✅ אחרי הצהרת היסטוריה")
+  fires on a *narrower* predicate: `adjustment_applied AND band !=
+  "Critical Data Gap"`. When the disclaimer was set but the residual
+  is still Critical, Mark §3 verbatim wording persists and the
+  disclaimer is appended as a forensic disclosure line.
 
 **Future improvement.** A full per-trade pre-deploy backfill would
 eliminate the estimate altogether (every closed campaign would have a
