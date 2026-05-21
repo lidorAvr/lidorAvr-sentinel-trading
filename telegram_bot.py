@@ -55,7 +55,7 @@ from telegram_tasks import (handle_open_tasks_entry,  # noqa: E402 — re-export
                             handle_task_add_note)
 
 from telegram_audit_review import handle_my_actions  # noqa: E402 — re-exported for telegram_callbacks lazy import
-from telegram_engagement import handle_gate_receipt, handle_backfill_prompt, handle_backfill_collect_reason, handle_eod_check  # noqa: E402 — engagement Wave-3B B3/B4/B5
+from telegram_engagement import handle_gate_receipt, handle_backfill_prompt, handle_backfill_collect_reason, handle_eod_check, handle_weekly_opener  # noqa: E402 — engagement Wave-3B B3/B4/B5/B1
 
 from telegram_clean_gate import (handle_clean_entry,  # noqa: E402 — re-exported for telegram_callbacks lazy import
                                  finalize_pending_clean)
@@ -784,6 +784,14 @@ def handle_all_messages(message):
         # contained, normal day plain). Phase-1 minimum: no process
         # verdict (D9 disposition is Phase-2 founder-gated).
         handle_eod_check(chat_id)
+        return
+
+    if text == "/weekly_opener":
+        # Engagement Wave-3B B1 — C5-S1 Monday R-distribution opener
+        # (pull surface; push at Mon 16:00 IL is Phase-2 scheduler
+        # work). Mark §C5 specificity gate + §3 sample-honesty: refuses
+        # to compute WR below n=5; mutes the formatter when n_trades==0.
+        handle_weekly_opener(chat_id)
         return
 
     if text in ["🎯 קידום סטופ", "/promote"]:

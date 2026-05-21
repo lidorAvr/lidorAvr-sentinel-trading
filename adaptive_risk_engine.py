@@ -899,6 +899,101 @@ def _log_recommendation(rec: dict) -> None:
         pass
 
 
+def compute_weekly_R_summary(closed_campaigns: list,
+                             *,
+                             window_days: int = 7,
+                             now=None) -> dict:
+    """Engagement Wave-3B B1 — C5-S1 Monday opener ingredient.
+
+    Aggregates R-multiples from the last ``window_days`` trading days.
+    Returns:
+        {
+            'window_days': int,
+            'n_trades':    int,            # closed campaigns in window
+            'total_R':     float,
+            'best_R':      float or None,  # max R in window
+            'worst_R':     float or None,  # min R in window
+            'wins':        int,            # n with R > 0
+            'sample_too_small': bool,      # n < min_sample_for_wr
+            'min_sample_for_wr': int,      # honest threshold (=5)
+        }
+
+    Mark §3 binding (sample-honesty): when n_trades < 5,
+    `sample_too_small=True` so the formatter can refuse to surface a
+    win-rate. Mirror the Sprint-25 stat-bucket honesty discipline —
+    NEVER compute "67% win rate" off 3 trades.
+
+    §X6 fence: no market regime / SPY / QQQ data joined here. This is
+    the founder's R in his window, nothing else.
+
+    Zero-risk campaigns count in `n_trades` but contribute 0 to
+    `total_R` (same convention as compute_todays_R_summary).
+    """
+    from datetime import datetime, timedelta
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("Asia/Jerusalem")
+    except Exception:
+        tz = None
+    if now is None:
+        now = datetime.now(tz) if tz else datetime.now()
+    if tz and getattr(now, "tzinfo", None) is None:
+        now = now.replace(tzinfo=tz)
+    cutoff = now - timedelta(days=int(window_days))
+
+    n_trades = 0
+    wins = 0
+    total_R = 0.0
+    best_R = None
+    worst_R = None
+
+    for c in closed_campaigns or []:
+        cd = c.get("close_date")
+        if cd is None:
+            continue
+        try:
+            if hasattr(cd, "to_pydatetime"):
+                cd_dt = cd.to_pydatetime()
+            elif isinstance(cd, str):
+                cd_dt = datetime.fromisoformat(cd)
+            else:
+                cd_dt = cd
+            if tz and cd_dt.tzinfo is None:
+                cd_il = cd_dt.replace(tzinfo=tz)
+            elif tz:
+                cd_il = cd_dt.astimezone(tz)
+            else:
+                cd_il = cd_dt
+        except Exception:
+            continue
+        if cd_il < cutoff:
+            continue
+        n_trades += 1
+        pnl = float(c.get("total_pnl_usd", 0) or 0)
+        risk = float(c.get("original_campaign_risk", 0) or 0)
+        if risk > 0:
+            r = pnl / risk
+            total_R += r
+            if best_R is None or r > best_R:
+                best_R = r
+            if worst_R is None or r < worst_R:
+                worst_R = r
+        if pnl > 0:
+            wins += 1
+
+    MIN_SAMPLE = 5
+    return {
+        "window_days": int(window_days),
+        "n_trades": n_trades,
+        "total_R": round(total_R, 2),
+        "best_R": round(best_R, 2) if best_R is not None else None,
+        "worst_R": round(worst_R, 2) if worst_R is not None else None,
+        "wins": wins,
+        "sample_too_small": n_trades < MIN_SAMPLE,
+        "min_sample_for_wr": MIN_SAMPLE,
+    }
+
+
 def compute_todays_R_summary(closed_campaigns: list, *, now=None) -> dict:
     """Engagement Wave-3B B5 — EOD verdict ingredient.
 

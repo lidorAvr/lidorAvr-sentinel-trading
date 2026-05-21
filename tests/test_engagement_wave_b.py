@@ -843,3 +843,215 @@ class TestB5HandlerWiring:
         src = self._read("telegram_bot.py")
         assert "/eod_check" in src
         assert "handle_eod_check(" in src
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# B1 — C5-S1 Monday R-distribution opener
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestB1WeeklyRSummary:
+    """compute_weekly_R_summary — window-filtered + sample-honesty +
+    zero-risk preservation."""
+
+    def setup_method(self):
+        from datetime import datetime
+        try:
+            from zoneinfo import ZoneInfo
+            self._tz = ZoneInfo("Asia/Jerusalem")
+        except Exception:
+            self._tz = None
+        import adaptive_risk_engine as are
+        self._are = are
+        if self._tz:
+            self._now = datetime(2026, 5, 25, 14, 0, 0, tzinfo=self._tz)
+        else:
+            self._now = datetime(2026, 5, 25, 14, 0, 0)
+
+    def _c(self, close_dt, pnl, risk):
+        return {
+            "campaign_id": "test",
+            "symbol": "TEST",
+            "total_pnl_usd": pnl,
+            "original_campaign_risk": risk,
+            "close_date": close_dt,
+        }
+
+    def test_empty_window_returns_zero(self):
+        s = self._are.compute_weekly_R_summary([], window_days=7,
+                                                now=self._now)
+        assert s["n_trades"] == 0
+        assert s["total_R"] == 0.0
+        assert s["best_R"] is None
+        assert s["worst_R"] is None
+        assert s["sample_too_small"] is True
+
+    def test_in_window_aggregates(self):
+        from datetime import timedelta
+        days_back = [1, 3, 5]
+        camps = [self._c(self._now - timedelta(days=d), pnl=100.0, risk=50.0)
+                 for d in days_back]
+        s = self._are.compute_weekly_R_summary(camps, window_days=7,
+                                                now=self._now)
+        assert s["n_trades"] == 3
+        assert s["total_R"] == 6.0  # 3 * 2R
+        assert s["best_R"] == 2.0
+        assert s["worst_R"] == 2.0
+
+    def test_excludes_out_of_window(self):
+        from datetime import timedelta
+        camps = [
+            self._c(self._now - timedelta(days=2),  pnl=100.0, risk=50.0),
+            self._c(self._now - timedelta(days=10), pnl=200.0, risk=50.0),  # out
+        ]
+        s = self._are.compute_weekly_R_summary(camps, window_days=7,
+                                                now=self._now)
+        assert s["n_trades"] == 1
+        assert s["total_R"] == 2.0
+
+    def test_sample_too_small_below_5(self):
+        # Mark §3 sample-honesty: n<5 must surface as too-small.
+        from datetime import timedelta
+        camps = [self._c(self._now - timedelta(days=d), pnl=100.0, risk=50.0)
+                 for d in (1, 2, 3)]
+        s = self._are.compute_weekly_R_summary(camps, window_days=7,
+                                                now=self._now)
+        assert s["sample_too_small"] is True
+        assert s["min_sample_for_wr"] == 5
+
+    def test_sample_ok_at_5(self):
+        from datetime import timedelta
+        camps = [self._c(self._now - timedelta(days=d), pnl=100.0, risk=50.0)
+                 for d in (1, 2, 3, 4, 5)]
+        s = self._are.compute_weekly_R_summary(camps, window_days=7,
+                                                now=self._now)
+        assert s["sample_too_small"] is False
+        assert s["n_trades"] == 5
+
+    def test_zero_risk_counts_in_n_not_R(self):
+        # Mark §3: a zero-risk campaign counts as a trade but contributes
+        # 0 to R — never fabricate via div-by-eps.
+        camps = [self._c(self._now, pnl=100.0, risk=0.0)]
+        s = self._are.compute_weekly_R_summary(camps, window_days=7,
+                                                now=self._now)
+        assert s["n_trades"] == 1
+        assert s["total_R"] == 0.0
+        assert s["best_R"] is None  # no R was computable
+        assert s["worst_R"] is None
+
+    def test_wins_count_uses_pnl_not_R(self):
+        # is_win is positive pnl even if risk is 0 (it WAS a winning
+        # campaign).
+        from datetime import timedelta
+        camps = [
+            self._c(self._now,                       pnl=+50.0, risk=0.0),
+            self._c(self._now - timedelta(days=1),   pnl=-30.0, risk=15.0),
+        ]
+        s = self._are.compute_weekly_R_summary(camps, window_days=7,
+                                                now=self._now)
+        assert s["wins"] == 1
+
+
+class TestB1WeeklyOpenerFormatter:
+    """fmt_weekly_R_opener — Mark §C5 specificity gate + §3 sample-
+    honesty + §X6 fence."""
+
+    def setup_method(self):
+        from telegram_formatters import fmt_weekly_R_opener
+        self._fmt = fmt_weekly_R_opener
+
+    def test_empty_window_returns_empty_string(self):
+        # Mark §C5 specificity gate: no trades → MUTE (no "שבוע טוב!"
+        # filler).
+        out = self._fmt({"window_days": 7, "n_trades": 0,
+                          "total_R": 0.0, "best_R": None,
+                          "worst_R": None, "wins": 0,
+                          "sample_too_small": True,
+                          "min_sample_for_wr": 5})
+        assert out == ""
+
+    def test_small_sample_says_so(self):
+        # Mark §3: never compute a WR off 3 trades.
+        out = self._fmt({"window_days": 7, "n_trades": 3,
+                          "total_R": 2.5, "best_R": 1.5,
+                          "worst_R": -0.5, "wins": 2,
+                          "sample_too_small": True,
+                          "min_sample_for_wr": 5})
+        assert "מדגם קטן מדי" in out
+        assert "Win-rate" not in out  # WR suppressed
+
+    def test_full_sample_renders_wr(self):
+        out = self._fmt({"window_days": 7, "n_trades": 10,
+                          "total_R": 4.0, "best_R": 2.0,
+                          "worst_R": -1.0, "wins": 7,
+                          "sample_too_small": False,
+                          "min_sample_for_wr": 5})
+        assert "Win-rate" in out
+        assert "7/10" in out
+        assert "70.0%" in out
+
+    def test_renders_best_and_worst_R(self):
+        out = self._fmt({"window_days": 7, "n_trades": 10,
+                          "total_R": 4.0, "best_R": 2.0,
+                          "worst_R": -1.0, "wins": 7,
+                          "sample_too_small": False,
+                          "min_sample_for_wr": 5})
+        assert "+2.00R" in out
+        assert "-1.00R" in out
+
+    def test_uses_atzlecha_register(self):
+        # E3 binding: the opener uses the personal "אצלך" register.
+        out = self._fmt({"window_days": 7, "n_trades": 10,
+                          "total_R": 4.0, "best_R": 2.0,
+                          "worst_R": -1.0, "wins": 7,
+                          "sample_too_small": False,
+                          "min_sample_for_wr": 5})
+        assert "אצלך" in out
+
+    def test_no_market_commentary(self):
+        # §X6 fence — C5 has the HIGHEST temptation to drift here.
+        out = self._fmt({"window_days": 7, "n_trades": 10,
+                          "total_R": 4.0, "best_R": 2.0,
+                          "worst_R": -1.0, "wins": 7,
+                          "sample_too_small": False,
+                          "min_sample_for_wr": 5})
+        for forbidden in ("SPY", "QQQ", "השוק", "המגזר", "S&P", "Nasdaq"):
+            assert forbidden not in out, (
+                f"§X6 violation: opener leaked market commentary "
+                f"substring {forbidden!r}"
+            )
+
+    def test_no_celebration_vocabulary(self):
+        # §C4 R1 precedent: even a +4R week is fact-stated, not applauded.
+        out = self._fmt({"window_days": 7, "n_trades": 10,
+                          "total_R": 4.0, "best_R": 2.0,
+                          "worst_R": -1.0, "wins": 7,
+                          "sample_too_small": False,
+                          "min_sample_for_wr": 5})
+        for forbidden in ("מהמם", "כל הכבוד", "שבוע מצוין",
+                          "let's go", "amazing"):
+            assert forbidden.lower() not in out.lower()
+
+    def test_singular_vs_plural_trade_word(self):
+        out_one = self._fmt({"window_days": 7, "n_trades": 1,
+                              "total_R": 1.0, "best_R": 1.0,
+                              "worst_R": 1.0, "wins": 1,
+                              "sample_too_small": True,
+                              "min_sample_for_wr": 5})
+        assert "1 עסקה" in out_one
+
+
+class TestB1HandlerWiring:
+    def _read(self, relative_path):
+        import os as _os
+        path = _os.path.join(_os.path.dirname(__file__), "..", relative_path)
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    def test_telegram_engagement_exposes_handler(self):
+        import telegram_engagement
+        assert hasattr(telegram_engagement, "handle_weekly_opener")
+
+    def test_telegram_bot_registers_weekly_opener_command(self):
+        src = self._read("telegram_bot.py")
+        assert "/weekly_opener" in src
+        assert "handle_weekly_opener(" in src

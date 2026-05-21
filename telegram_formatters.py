@@ -157,6 +157,62 @@ _GATE_LABELS_HE = {
 }
 
 
+def fmt_weekly_R_opener(summary: dict) -> str:
+    """Engagement Wave-3B B1 — C5-S1 Monday opener surface.
+
+    Renders the weekly R-summary in E3 register (אצלך-personal, not
+    generic). Mark §3 binding: when `sample_too_small=True`, refuse
+    to surface a win-rate — "מדגם קטן מדי" is the literal-truth
+    line.
+
+    §X6 fence: ZERO market commentary. The opener is about the
+    founder's R in his window, never the market's behavior. C5's
+    Mark §X6 ruling: "any future temptation to name SPY/QQQ levels
+    in S1/S3 is a §X6 violation".
+
+    Mark §C5 binding ("specificity gate"): when the surface cannot
+    produce a number-or-named-pattern line (e.g. n_trades==0), MUTE
+    entirely — never emit a generic "שבוע טוב!" filler.
+    """
+    n = int((summary or {}).get("n_trades", 0) or 0)
+    if n == 0:
+        # Mark §C5 specificity gate: MUTE rather than emit a filler.
+        # The opener earns its surface by having a fact to state.
+        return ""
+
+    total_R = float(summary.get("total_R", 0.0) or 0.0)
+    days = int(summary.get("window_days", 7) or 7)
+    best = summary.get("best_R")
+    worst = summary.get("worst_R")
+    wins = int(summary.get("wins", 0) or 0)
+    sample_too_small = bool(summary.get("sample_too_small", True))
+    min_sample = int(summary.get("min_sample_for_wr", 5) or 5)
+
+    R_label = f"{total_R:+.2f}R"
+    trade_word = "עסקה" if n == 1 else "עסקאות"
+
+    lines = [
+        f"\n{RTL}{SEP}",
+        f"{RTL}📖 *פתיחה — {days} ימים אחורה אצלך*",
+        f"{RTL}{n} {trade_word} נסגרו. סיכום: `{R_label}`.",
+    ]
+    if best is not None and worst is not None:
+        lines.append(
+            f"{RTL}הטובה ביותר: `{best:+.2f}R` · הגרועה ביותר: `{worst:+.2f}R`."
+        )
+    if sample_too_small:
+        # Mark §3 sample-honesty: refuse to compute WR on n<5.
+        lines.append(
+            f"{RTL}מדגם קטן מדי לאחוזי הצלחה (פחות מ-{min_sample})."
+        )
+    else:
+        wr_pct = round(wins * 100.0 / n, 1) if n > 0 else 0.0
+        lines.append(
+            f"{RTL}Win-rate: `{wins}/{n}` ({wr_pct:.1f}%)."
+        )
+    return "\n".join(lines)
+
+
 def fmt_eod_verdict(todays_R_summary: dict,
                     suppression_decision: dict = None) -> str:
     """Engagement Wave-3B B5 — EOD verdict surface.

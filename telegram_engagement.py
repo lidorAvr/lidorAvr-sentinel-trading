@@ -172,6 +172,40 @@ def handle_backfill_collect_reason(chat_id, text):
     bot.send_message(chat_id, msg, parse_mode="Markdown")
 
 
+def handle_weekly_opener(chat_id, window_days: int = 7):
+    """`/weekly_opener` — B1 C5-S1 pull surface (Phase-1).
+
+    Computes the founder's last-7-days R-summary + renders in E3
+    register. Mark §C5 specificity gate: silent when no trades in
+    window. Mark §3 sample-honesty: no win-rate computed below n=5.
+
+    Phase-1 is pull-only; the Monday-16:00-IL push integration is
+    Phase-2 (requires report_scheduler hook + engagement_suppression
+    wiring at the scheduler edge).
+    """
+    try:
+        df = pd.DataFrame(repo.get_all_trades(supabase))
+    except Exception:
+        df = pd.DataFrame()
+    closed = are.compute_closed_campaigns(df) if not df.empty else []
+    summary = are.compute_weekly_R_summary(
+        closed, window_days=window_days
+    )
+    body = tf.fmt_weekly_R_opener(summary)
+    if not body:
+        # Mark §C5 specificity gate: empty window → honest empty-state
+        # at the HANDLER (the formatter returned "" per §C5; the pull
+        # response is still owed because the founder asked).
+        bot.send_message(
+            chat_id,
+            f"{RTL}📖 *פתיחה*\n"
+            f"{RTL}אין עסקאות סגורות ב-`{int(window_days)}` הימים האחרונים.",
+            parse_mode="Markdown",
+        )
+        return
+    bot.send_message(chat_id, body.lstrip("\n"), parse_mode="Markdown")
+
+
 def handle_eod_check(chat_id):
     """`/eod_check` — B5 EOD verdict pull surface.
 
