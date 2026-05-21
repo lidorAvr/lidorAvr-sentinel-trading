@@ -363,20 +363,84 @@ def score_position(features, stage):
         if features.get("stretch_ma20_atr") is not None and features["stretch_ma20_atr"] > 3.0: score -= 4
     return max(0, min(95, score))
 
-def map_score_to_status(score, hard_rule=None, features=None):
-    if hard_rule is not None: return hard_rule["status"]
-    
-    status = "🔴 Broken"
-    if score >= 85: status = "🔥 Power"
-    elif score >= 70: status = "🟢 Healthy"
-    elif score >= 55: status = "🟡 Yellow Flag"
-    elif score >= 40: status = "🟠 Weak"
-    
-    if status == "🟢 Healthy" and features is not None:
-        if features.get("bad_closes_10", 0) > features.get("good_closes_10", 0):
-            status = "🟡 תקין אך במעקב"
-            
-    return status
+def map_score_to_status(score, hard_rule=None, features=None,
+                        age_days=None, open_r=None,
+                        violation_score=None, has_new_high_since_entry=None):
+    """Status-Taxonomy meeting (21/05/2026) — Mark §X7 Verdict-Honesty
+    Clause: a label asserting a position state MUST have an explicit
+    positive predicate; "🔴 Broken" is no longer the default for any
+    low score. Two new claim-split tags:
+
+      👀 מוקדם   — epistemic ("Sentinel doesn't have enough data yet")
+                   fires on fresh, flat positions
+      ❄️ קופא   — kinematic ("not moving, structure intact, re-examine
+                   thesis") fires on old, stalled positions
+
+    "🔴 Broken" is RESERVED for genuine structural failure (price
+    through stop via hard_rule, OR violation_score >= 6, OR
+    score < 40 with no fresh/stalled signal).
+
+    Backwards-compat: when age_days OR open_r is None (legacy callers),
+    BOTH new tags are skipped → output is BYTE-IDENTICAL to pre-meeting.
+    """
+    if hard_rule is not None:
+        return hard_rule["status"]
+
+    f = features or {}
+
+    # Existing score-bands (preserved byte-identical for callers that
+    # don't pass age/R — Sprint-25 byte-lock-baseline invariant).
+    if score >= 85:
+        return "🔥 Power"
+    if score >= 70:
+        if f.get("bad_closes_10", 0) > f.get("good_closes_10", 0):
+            return "🟡 תקין אך במעקב"
+        return "🟢 Healthy"
+    if score >= 55:
+        return "🟡 Yellow Flag"
+    if score >= 40:
+        return "🟠 Weak"
+
+    # score < 40 — was "🔴 Broken" default before §X7. Now check the
+    # claim-split predicates first.
+    has_axes = age_days is not None and open_r is not None
+    if has_axes:
+        vs = (violation_score
+              if violation_score is not None
+              else int(f.get("violation_score", 0) or 0))
+
+        # Tag 1 — 👀 מוקדם (Too Early): fresh, flat, low distribution.
+        # Predicate per ENGINE plan + Mark §X7 (explicit positive gate).
+        if (age_days <= 3
+                and abs(open_r) <= 0.5
+                and f.get("dist_12d", 0) < 3
+                and vs < 3):
+            return "👀 מוקדם"
+
+        # Tag 2 — ❄️ קופא (Stalled / Dead Money): old, no movement,
+        # structure intact. Mirrors compute_position_state DEAD_MONEY
+        # gating at :2140-2145. has_new_high_since_entry default to
+        # features['time_efficiency']=='dead_money' as proxy when not
+        # explicitly provided — the existing kinematic signal already
+        # computed at evaluate_position_engine :433.
+        hnh = (has_new_high_since_entry
+               if has_new_high_since_entry is not None
+               else f.get("has_new_high_since_entry"))
+        no_new_high = (
+            hnh is False
+            or (hnh is None and f.get("time_efficiency") == "dead_money")
+        )
+        if (age_days >= 8
+                and -0.5 <= open_r <= 0.75
+                and no_new_high
+                and vs < 4):
+            return "❄️ קופא"
+
+    # Default fallback — §X7 binding: Broken means actual structural
+    # failure. When age/R unavailable OR position is neither fresh nor
+    # stalled (e.g. proving-window 4-7d with no positive signal),
+    # Broken is the conservative honest call.
+    return "🔴 Broken"
 
 def build_management_action(status, features, stage, current_stop, total_r, mgt_state):
     close, ma10, ma20 = features["close"], features["ma10"], features["ma20"]
@@ -408,6 +472,21 @@ def build_management_action(status, features, stage, current_stop, total_r, mgt_
     elif status == "🔴 Broken":
         if mgt_state == "runner_mode": action, trigger = "שקול סגירת יתרת Runner", "המבנה נשבר לאחר מימוש חלקי"
         else: action, trigger = "יציאה / הידוק מידי", "המבנה נשבר"
+        suggested_stop = current_stop
+    elif status == "👀 מוקדם":
+        # Status-Taxonomy meeting + UX-team voice (E3 register):
+        # epistemic claim only — Sentinel doesn't have enough data yet.
+        # Mark §3 anti-list: invitation not directive. Stop unchanged
+        # (a fresh position should not be tightened just because it's
+        # fresh).
+        action, trigger = "תן לזה לזוז", "עוד לא מספיק ימים להכריע"
+        suggested_stop = current_stop
+    elif status == "❄️ קופא":
+        # Status-Taxonomy meeting + UX-team voice: kinematic claim only —
+        # the position isn't moving, structure intact. Mark §3 anti-list:
+        # the action invites a thesis re-check, never demands an exit.
+        # Stop unchanged — stalling alone is NOT a structural trigger.
+        action, trigger = "לא להוסיף. שווה לבדוק תזה", "אין תנועה — בדוק אם הסיפור עוד תקף"
         suggested_stop = current_stop
     elif status == "⚠️ Climactic":
         if mgt_state == "runner_mode":
@@ -457,7 +536,14 @@ def evaluate_position_engine(symbol, entry_price, entry_date_str, current_stop, 
             return {"ok": True, "error": None, "data": {"status": hard_rule["status"], "sizing_status": sizing_status, "issues": issues, "action": action, "trigger": hard_rule["trigger"], "suggested_stop": current_stop, "score": None, "stage": stage, "features": features, "management_mode": mgmt_mode, "risk_basis": risk_basis, "risk_visibility_score": risk_vis}}
 
         score = score_position(features, stage)
-        status = map_score_to_status(score, features=features)
+        # Status-Taxonomy meeting (21/05/2026) — forward age + R to
+        # map_score_to_status so the new claim-split tags (👀 מוקדם /
+        # ❄️ קופא) can fire on the right predicates. Without this
+        # forwarding, both tags default to skip and behavior is byte-
+        # identical to pre-meeting — but JPM/PLTR stay mislabeled.
+        # ENGINE Top-Risk #1: this is the call-site that wires the fix.
+        status = map_score_to_status(score, features=features,
+                                     age_days=days_held, open_r=total_r)
         mgmt_mode = classify_management_mode(setup_type, symbol)
         risk_basis = classify_risk_basis(current_stop, entry_price, setup_type, target_risk_usd)
         risk_vis = compute_risk_visibility_score(setup_type, current_stop, entry_price, target_risk_usd)
