@@ -676,13 +676,11 @@ def handle_portfolio_room(chat_id):
                 max_open_campaign_risk=_max_open_campaign_risk,
             )
             msg += f"{tf.fmt_broker_reconciliation(_recon)}\n"
-            # F2 (Wave 2 / Meeting 21/05/2026) — per-component breakdown
-            # showing WHERE the gap came from arithmetically. The Mark §3
-            # line above stays verbatim (honest, no-asserted-cause); this
-            # block adds the math + a SIGN-directional hypothesis list so
-            # the founder can narrow the investigation from "5 possible
-            # causes" to "2-3 in this direction".
-            msg += f"{tf.fmt_broker_reconciliation_breakdown(nav=acc_size, total_deposited=_total_deposited, db_net_pnl=_db_net_pnl, open_pnl=total_open_pnl, status=_recon)}\n"
+            # F2 (Wave 2): the per-component breakdown is now RESTRICTED to the
+            # AI Master Context Export (dashboard.py). Founder feedback
+            # 21/05/2026 ~02:30 — the 7-line breakdown was too verbose for
+            # /portfolio (חדר מצב). The Mark §3 single-line summary above
+            # stays; the founder pastes the AI export when investigating.
         except Exception:
             pass
 

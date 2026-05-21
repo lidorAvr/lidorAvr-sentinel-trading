@@ -1051,10 +1051,18 @@ def fmt_broker_reconciliation_breakdown(
         ]
         if agap > 10.0:
             if gap > 0:
+                # Founder note 21/05/2026: the DB only carries YTD trades
+                # (sentinel was deployed mid-year). Positions opened BEFORE
+                # the DB start date have no realized-PnL record on this
+                # side of the equation, so a positive gap is most commonly
+                # explained by that — not by an unrecorded dividend.
+                # List pre-DB history FIRST (most likely explanation).
                 lines.append(
                     "    Direction: NAV exceeds expected. Possible causes "
-                    "(unverified): unrecorded dividend / deposit / refund / "
-                    "broker bonus / commission rebate."
+                    "(unverified): trade history pre-DB start date "
+                    "(Sentinel DB began mid-year — older closed positions "
+                    "carry NO realized-PnL row); unrecorded dividend / "
+                    "deposit / refund / broker bonus / commission rebate."
                 )
             else:
                 lines.append(
@@ -1075,9 +1083,13 @@ def fmt_broker_reconciliation_breakdown(
     ]
     if agap > 10.0:
         if gap > 0:
+            # YTD-history primary hypothesis (founder note 21/05/2026 — see
+            # ai_copy branch above for the full rationale).
             lines.append(
-                f"{RTL}  📈 ה-NAV גבוה מהצפי. ייתכן (לא מאומת): דיבידנד "
-                f"לא רשום, הפקדה לא מתועדת, החזר ברוקר, או החזר עמלה."
+                f"{RTL}  📈 ה-NAV גבוה מהצפי. ייתכן (לא מאומת): היסטוריית "
+                f"מסחר לפני תחילת ה-DB (Sentinel רץ מאמצע השנה — קמפיינים "
+                f"שנסגרו לפני כן לא נכללים ב-PnL הממומש), דיבידנד לא רשום, "
+                f"הפקדה לא מתועדת, או החזר ברוקר."
             )
         else:
             lines.append(

@@ -118,6 +118,25 @@ class TestDirectionalHypotheses:
         assert "דיבידנד" in result or "הפקדה" in result
         assert "משיכה" not in result  # NOT in the positive-gap list
 
+    def test_positive_gap_lists_pre_db_history_as_primary_cause(self):
+        # Founder note 21/05/2026: the DB only carries trades since
+        # Sentinel was deployed (mid-year). A positive gap is most
+        # commonly explained by pre-DB closed positions whose realized
+        # PnL never made it into the DB — NOT by an unrecorded dividend.
+        # The hypothesis text MUST mention this prominently.
+        result = tf.fmt_broker_reconciliation_breakdown(
+            nav=7857.00, total_deposited=7500.00,
+            db_net_pnl=-323.88, open_pnl=184.72,
+            status=_status(),
+        )
+        # The Hebrew text mentions trade history before DB start.
+        assert "היסטוריית מסחר" in result or "DB" in result, (
+            "Positive-gap hypothesis must list pre-DB trade history as a "
+            "candidate cause — that's the most likely explanation for the "
+            "founder's actual production gap, and the system was silently "
+            "blaming dividends/deposits instead."
+        )
+
     def test_negative_gap_surfaces_nav_lower_hypothesis(self):
         # gap = 7000 - 7500 = -$500 < 0 ⇒ "NAV נמוך מהצפי".
         result = tf.fmt_broker_reconciliation_breakdown(
@@ -149,6 +168,18 @@ class TestDirectionalHypotheses:
         )
         assert "NAV exceeds expected" in result
         assert "Reconciliation Breakdown" in result
+
+    def test_ai_copy_positive_gap_mentions_pre_db_history(self):
+        # The AI export's hypothesis must also lead with pre-DB history
+        # so when the founder pastes the export into Claude, the AI sees
+        # the YTD-only constraint upfront.
+        result = tf.fmt_broker_reconciliation_breakdown(
+            nav=7857.00, total_deposited=7500.00,
+            db_net_pnl=-323.88, open_pnl=184.72,
+            status=_status(),
+            ai_copy=True,
+        )
+        assert "pre-DB" in result or "history" in result.lower()
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -194,11 +225,20 @@ class TestHonestyContract:
 # ════════════════════════════════════════════════════════════════════════════
 
 class TestSurfaceWiringF2:
-    def test_telegram_portfolio_calls_breakdown(self):
+    def test_telegram_portfolio_keeps_summary_line_only(self):
+        # Founder feedback 21/05/2026 ~02:30: the 7-line breakdown was too
+        # verbose for /portfolio (חדר מצב). The summary line stays; the
+        # breakdown is now restricted to the AI export. This pins the
+        # one-line-only contract for /portfolio.
         src = _read("telegram_portfolio.py")
-        assert "fmt_broker_reconciliation_breakdown(" in src
-        # Both old and new MUST be called (breakdown complements, never replaces).
+        # The summary line is still called.
         assert "fmt_broker_reconciliation(" in src
+        # The verbose breakdown is NO LONGER wired into /portfolio.
+        assert "fmt_broker_reconciliation_breakdown(" not in src, (
+            "telegram_portfolio.py must NOT call the verbose breakdown — "
+            "founder said it's too long for /portfolio. Restrict the "
+            "breakdown to dashboard AI export only."
+        )
 
     def test_dashboard_calls_breakdown_in_ai_export(self):
         src = _read("dashboard.py")
