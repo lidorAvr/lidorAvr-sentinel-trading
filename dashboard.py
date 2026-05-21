@@ -586,12 +586,20 @@ else:
         _max_open_risk = float(live_df["OriginalRisk"].max()) if (not live_df.empty and "OriginalRisk" in live_df) else 0.0
     except Exception:
         _max_open_risk = 0.0
+    # YTD-history adjustment (founder note 21/05/2026) — see
+    # docs/DATA_CONTRACTS.md "Data history scope" for the contract.
+    # When the founder sets pre_db_realized_pnl_estimate in
+    # sentinel_config.json, the classifier subtracts it from the raw
+    # gap. Defaults to 0 ⇒ byte-identical behaviour for any deployment
+    # that doesn't opt in.
+    _pre_db_est_dash = float(settings.get("pre_db_realized_pnl_estimate", 0) or 0)
     _recon_status = tf.classify_broker_reconciliation(
         current_acc_size, total_deposited, total_pnl_net,
         reconciliation_gap=reconciliation_gap,
         risk_pct_input=risk_pct_input,
         nav_source=_nav_source,
         max_open_campaign_risk=_max_open_risk,
+        pre_db_realized_pnl_estimate=_pre_db_est_dash,
     )
     _recon_line = tf.fmt_broker_reconciliation(_recon_status, ai_copy=True)
     if _recon_status["band"] == "Balanced":
@@ -615,6 +623,7 @@ else:
             total_deposited=float(total_deposited or 0),
             closed_campaigns=_closed_for_rec,
             nav_source=str(settings.get("nav_source", "broker") or "broker"),
+            pre_db_realized_pnl_estimate=float(settings.get("pre_db_realized_pnl_estimate", 0) or 0),
         )
         _risk_rec = are.compute_adaptive_risk(
             _closed_for_rec, risk_pct_input, current_acc_size,

@@ -553,6 +553,7 @@ def build_risk_raise_gate_ctx(
     *, nav: float, total_deposited: float, closed_campaigns: list,
     risk_pct: float, nav_source: str = "broker",
     drawdown_active: bool = False,
+    pre_db_realized_pnl_estimate: float = 0.0,
 ) -> dict:
     """F1 (Meeting 21/05/2026) — single canonical builder of the
     ``risk_raise_gate`` ctx dict consumed by ``compute_adaptive_risk``.
@@ -586,6 +587,7 @@ def build_risk_raise_gate_ctx(
             reconciliation_gap=recon_gap,
             risk_pct_input=float(risk_pct),
             nav_source=str(nav_source or "broker"),
+            pre_db_realized_pnl_estimate=float(pre_db_realized_pnl_estimate or 0),
         )
         ctx["recon_band"] = recon.get("band")
     except Exception:

@@ -909,7 +909,8 @@ def classify_broker_reconciliation(nav: float, base_capital: float,
                                    reconciliation_gap: float,
                                    risk_pct_input: float,
                                    nav_source: str = "broker",
-                                   max_open_campaign_risk: float = 0.0) -> dict:
+                                   max_open_campaign_risk: float = 0.0,
+                                   pre_db_realized_pnl_estimate: float = 0.0) -> dict:
     """Read-only derived reconciliation status (DEC-013 / Mark §3).
 
     ``reconciliation_gap`` is the ALREADY-computed gap from dashboard.py:404-405
@@ -924,11 +925,36 @@ def classify_broker_reconciliation(nav: float, base_capital: float,
       Minor Difference: 10.0 < |gap| <= unit
       Material Gap    : unit < |gap| <= 1.25*unit (±25% sizing band)
       Critical Data Gap: |gap| > 5*unit  OR  |gap| > max open-campaign orig risk
+
+    ``pre_db_realized_pnl_estimate`` (founder note 21/05/2026):
+        The system's DB began carrying trades only when Sentinel was
+        deployed (mid-year). Positions closed BEFORE the DB start date
+        contribute NO realized-PnL row, so the raw gap = NAV - (deposits
+        + DB realized + open) is overstated by the missing pre-DB
+        realized PnL. Founder sets this in sentinel_config.json
+        (`pre_db_realized_pnl_estimate`) once they reconcile manually.
+        When non-zero, the classifier:
+          - Subtracts it from the raw gap to get `adjusted_gap`.
+          - Bands using the SMALLER of |raw_gap| and |adjusted_gap| so
+            an over-estimate cannot push the band UPWARD (defense in
+            depth — the user is allowed to over-disclaim history; the
+            classifier just won't punish them for it).
+          - Returns both `gap` (raw) and `adjusted_gap` (after estimate).
+        Default 0.0 ⇒ behaviour byte-identical to pre-F-YTD.
     """
     gap = float(reconciliation_gap)
     agap = abs(gap)
     unit = base_capital * (risk_pct_input or 0) / 100.0   # one target-risk unit
     crit_anchor = 5.0 * unit                              # Mark §3 5R anchor
+
+    # YTD-history adjustment (founder note 21/05/2026). Subtract the
+    # estimate from the raw gap; band the smaller of the two absolute
+    # values. The MIN(...) guard prevents an over-disclaimed history
+    # from inflating the band — the user's estimate can only ever
+    # SOFTEN, never tighten.
+    pre_db_adj = float(pre_db_realized_pnl_estimate or 0.0)
+    adjusted_gap = gap - pre_db_adj
+    agap_for_band = min(abs(gap), abs(adjusted_gap)) if pre_db_adj != 0 else abs(gap)
 
     # Mark §3 (verbatim band conditions; thresholds = multiples of EXISTING
     # constants — $10 production constant, risk_pct_input unit, 5R anchor):
@@ -938,14 +964,14 @@ def classify_broker_reconciliation(nav: float, base_capital: float,
     #   Critical Data Gap : |gap| > 5*unit  OR  |gap| > any single open-campaign
     #                       original risk
     # Critical is checked FIRST so its explicit condition wins over Material.
-    is_critical = (agap > crit_anchor) or (
-        bool(max_open_campaign_risk) and agap > max_open_campaign_risk)
+    is_critical = (agap_for_band > crit_anchor) or (
+        bool(max_open_campaign_risk) and agap_for_band > max_open_campaign_risk)
 
     if is_critical:
         band, band_he = "Critical Data Gap", "פער נתונים קריטי"
-    elif agap <= _RECON_EQ_THRESHOLD:
+    elif agap_for_band <= _RECON_EQ_THRESHOLD:
         band, band_he = "Balanced", "מאוזן"
-    elif agap <= unit:
+    elif agap_for_band <= unit:
         band, band_he = "Minor Difference", "הפרש מינורי"
     else:
         band, band_he = "Material Gap", "פער מהותי"
@@ -963,6 +989,11 @@ def classify_broker_reconciliation(nav: float, base_capital: float,
         "unit": round(unit, 2),
         "nav_source": nav_source,
         "caveat": caveat,
+        # YTD-history adjustment surfaces (founder note 21/05/2026).
+        # ADDITIVE keys — every existing consumer is byte-identical.
+        "pre_db_pnl_estimate": round(pre_db_adj, 2),
+        "adjusted_gap":        round(adjusted_gap, 2),
+        "adjustment_applied":  pre_db_adj != 0.0,
     }
 
 
@@ -978,11 +1009,23 @@ def fmt_broker_reconciliation(status: dict, *, ai_copy: bool = False) -> str:
     """
     band = status["band"]
     gap = status["gap"]
+    # YTD-history adjustment (founder note 21/05/2026): when the user
+    # opted in via `pre_db_realized_pnl_estimate` in sentinel_config.json,
+    # the BAND is already softened to reflect the adjusted gap. Surface
+    # the disclaimer so a glance at /portfolio explains why the band
+    # eased — never hide the raw gap.
+    adjustment_applied = bool(status.get("adjustment_applied", False))
+    adjusted_gap = float(status.get("adjusted_gap", gap))
+    pre_db_estimate = float(status.get("pre_db_pnl_estimate", 0.0))
     if ai_copy:
         line = (f"Broker Reconciliation Status: {band}. Gap ${gap:,.2f}. "
                 f"Cause unverified — possible deposits/withdrawals/open "
                 f"positions/fees/YTD report window. Manual verification "
                 f"required.")
+        if adjustment_applied:
+            line += (f" [Pre-DB history disclaimer applied: "
+                     f"${pre_db_estimate:+,.2f} → adjusted gap "
+                     f"${adjusted_gap:+,.2f}]")
         if status.get("caveat"):
             line += f" [{status['caveat']}]"
     else:
@@ -990,6 +1033,10 @@ def fmt_broker_reconciliation(status: dict, *, ai_copy: bool = False) -> str:
                 f"פער ${gap:,.2f}. הסיבה לא אומתה — ייתכן "
                 f"הפקדות/משיכות/פוזיציות פתוחות/עמלות/חלון דיווח YTD. "
                 f"דורש אימות ידני.")
+        if adjustment_applied:
+            line += (f" ‏ℹ️ (אחרי הצהרת היסטוריה לפני-DB "
+                     f"${pre_db_estimate:+,.2f} → פער מותאם "
+                     f"${adjusted_gap:+,.2f})")
         if status.get("caveat"):
             line += (f" ‏⚠️ (צד ה-NAV עצמו {status['nav_source']} — "
                      f"לא NAV חי; ההתאמה זמנית)")
@@ -1036,6 +1083,12 @@ def fmt_broker_reconciliation_breakdown(
     gap = float(nav) - expected
     agap = abs(gap)
 
+    # YTD-history adjustment (founder note 21/05/2026). Read from status —
+    # the classifier already computed both the raw and adjusted gap.
+    pre_db_estimate = float(status.get("pre_db_pnl_estimate", 0.0) or 0.0)
+    adjustment_applied = bool(status.get("adjustment_applied", False))
+    adjusted_gap = gap - pre_db_estimate if adjustment_applied else gap
+
     if ai_copy:
         # English breakdown for the AI Master Context Export — Claude
         # consumes the numbers, the directional hypothesis is the
@@ -1047,22 +1100,31 @@ def fmt_broker_reconciliation_breakdown(
             f"    Realized PnL (DB):    ${float(db_net_pnl):+,.2f}",
             f"    Open PnL:             ${float(open_pnl):+,.2f}",
             f"    Expected equity:      ${expected:,.2f}",
-            f"    Gap:                  ${gap:+,.2f}",
+            f"    Gap (raw):            ${gap:+,.2f}",
         ]
-        if agap > 10.0:
-            if gap > 0:
+        if adjustment_applied:
+            lines += [
+                f"    Pre-DB history disclaimer: ${pre_db_estimate:+,.2f}",
+                f"    Gap (adjusted):       ${adjusted_gap:+,.2f}",
+            ]
+        if abs(adjusted_gap) > 10.0:
+            if adjusted_gap > 0:
                 # Founder note 21/05/2026: the DB only carries YTD trades
                 # (sentinel was deployed mid-year). Positions opened BEFORE
                 # the DB start date have no realized-PnL record on this
                 # side of the equation, so a positive gap is most commonly
                 # explained by that — not by an unrecorded dividend.
                 # List pre-DB history FIRST (most likely explanation).
-                lines.append(
-                    "    Direction: NAV exceeds expected. Possible causes "
-                    "(unverified): trade history pre-DB start date "
+                hist_clause = (
+                    "" if adjustment_applied else
+                    "trade history pre-DB start date "
                     "(Sentinel DB began mid-year — older closed positions "
-                    "carry NO realized-PnL row); unrecorded dividend / "
-                    "deposit / refund / broker bonus / commission rebate."
+                    "carry NO realized-PnL row); "
+                )
+                lines.append(
+                    f"    Direction: NAV exceeds expected. Possible causes "
+                    f"(unverified): {hist_clause}unrecorded dividend / "
+                    f"deposit / refund / broker bonus / commission rebate."
                 )
             else:
                 lines.append(
@@ -1079,17 +1141,28 @@ def fmt_broker_reconciliation_breakdown(
         f"{RTL}  ▸ PnL ממומש (DB): `${float(db_net_pnl):+,.2f}`",
         f"{RTL}  ▸ PnL פתוח: `${float(open_pnl):+,.2f}`",
         f"{RTL}  ▸ צפי הון: `${expected:,.2f}`",
-        f"{RTL}  ▸ פער: `${gap:+,.2f}`",
+        f"{RTL}  ▸ פער (גולמי): `${gap:+,.2f}`",
     ]
-    if agap > 10.0:
-        if gap > 0:
+    if adjustment_applied:
+        lines += [
+            f"{RTL}  ▸ הצהרת היסטוריה לפני-DB: `${pre_db_estimate:+,.2f}`",
+            f"{RTL}  ▸ פער מותאם: `${adjusted_gap:+,.2f}`",
+        ]
+    if abs(adjusted_gap) > 10.0:
+        if adjusted_gap > 0:
             # YTD-history primary hypothesis (founder note 21/05/2026 — see
-            # ai_copy branch above for the full rationale).
+            # ai_copy branch above for the full rationale). When the user
+            # already disclaimed history via pre_db_realized_pnl_estimate,
+            # drop the pre-DB clause (they already accounted for it).
+            hist_clause = (
+                "" if adjustment_applied else
+                "היסטוריית מסחר לפני תחילת ה-DB (Sentinel רץ מאמצע השנה "
+                "— קמפיינים שנסגרו לפני כן לא נכללים ב-PnL הממומש), "
+            )
             lines.append(
-                f"{RTL}  📈 ה-NAV גבוה מהצפי. ייתכן (לא מאומת): היסטוריית "
-                f"מסחר לפני תחילת ה-DB (Sentinel רץ מאמצע השנה — קמפיינים "
-                f"שנסגרו לפני כן לא נכללים ב-PnL הממומש), דיבידנד לא רשום, "
-                f"הפקדה לא מתועדת, או החזר ברוקר."
+                f"{RTL}  📈 ה-NAV גבוה מהצפי. ייתכן (לא מאומת): "
+                f"{hist_clause}דיבידנד לא רשום, הפקדה לא מתועדת, "
+                f"או החזר ברוקר."
             )
         else:
             lines.append(

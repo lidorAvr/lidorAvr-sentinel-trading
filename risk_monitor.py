@@ -1233,6 +1233,7 @@ def main():
             total_deposited=float(account_settings.get("total_deposited", 0) or 0),
             closed_campaigns=closed_camps,
             nav_source=str(account_settings.get("nav_source", "broker") or "broker"),
+            pre_db_realized_pnl_estimate=float(account_settings.get("pre_db_realized_pnl_estimate", 0) or 0),
         )
         risk_rec = are.compute_adaptive_risk(closed_camps, current_risk_pct, nav_for_risk,
                                              open_positions=open_positions_for_risk,

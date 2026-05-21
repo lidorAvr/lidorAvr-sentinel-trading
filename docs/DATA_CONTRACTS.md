@@ -478,6 +478,55 @@ Bad:
 - `נראה בסדר כנראה.`
 - `המערכת מעריכה מצב חיובי` without evidence.
 
+## Data history scope (YTD-bound / founder note 21/05/2026)
+
+**The Supabase `trades` table only carries trades from the date Sentinel
+was deployed forward.** Closed campaigns that ran BEFORE the deployment
+date have no row in `trades` at all — neither BUYs nor SELLs nor
+realized PnL.
+
+This affects every "all-time" calculation:
+- **Realized PnL** (`SUM(sells.pnl_usd)`) covers only post-deploy
+  campaigns. Pre-deploy realized PnL is structurally absent.
+- **Broker reconciliation gap** (`NAV - (deposits + realized + open)`)
+  is therefore OVERSTATED by the missing pre-deploy realized PnL.
+  A founder seeing a $495 gap on $7.5K capital should suspect this
+  before assuming a true data corruption.
+- **Win Rate / Expectancy / Profit Factor / Adaptive Risk windows**
+  (S9/M21/L50) are all evaluated on the post-deploy set. The "L50
+  partial sample" honest-disclosure line already discloses this for
+  the heat windows; the reconciliation gap was the surfacing-gap
+  before this section was added.
+
+**Operator workflow.** When the founder reconciles manually with
+the broker, they can SET the following field in `sentinel_config.json`:
+
+```json
+{
+  "total_deposited": 7500.0,
+  "risk_pct_input": 0.5,
+  "pre_db_realized_pnl_estimate": -495.67
+}
+```
+
+The value is the **founder's manual estimate** of pre-deploy realized
+PnL (signed: positive = pre-deploy gains, negative = pre-deploy losses).
+`classify_broker_reconciliation` subtracts this from the raw gap before
+banding, so the surfaced band reflects the residual after the
+disclaimer. The classifier never asserts a cause — it only relaxes the
+band when the founder has explicitly disclaimed history.
+
+**Defensive invariant.** The classifier uses
+`min(|raw_gap|, |adjusted_gap|)` for band classification, so an
+over-estimated history can only ever SOFTEN the band, never tighten
+it. If the founder writes `pre_db_realized_pnl_estimate: -10000` when
+the true pre-deploy PnL was only -$500, the system will not falsely
+escalate a non-existent gap into Critical.
+
+**Future improvement.** A full per-trade pre-deploy backfill would
+eliminate the estimate altogether (every closed campaign would have a
+real row). Until then, the manual estimate is the bridge.
+
 ## Schema change protocol
 
 If adding/removing/changing a field:

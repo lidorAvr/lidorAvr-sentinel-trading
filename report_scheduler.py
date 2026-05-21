@@ -315,11 +315,16 @@ def _compute_risk_rec(df, account: dict) -> dict:
             deposited = float(account.get("total_deposited", 0) or 0)
             db_net = sum(float(c.get("total_pnl_usd", 0) or 0) for c in closed)
             recon_gap = nav - (deposited + db_net)
+            # YTD-history adjustment (founder note 21/05/2026) — same
+            # contract as telegram_portfolio + dashboard; see
+            # docs/DATA_CONTRACTS.md "Data history scope".
+            _pre_db_est_sched = float(account.get("pre_db_realized_pnl_estimate", 0) or 0)
             _recon = _tf.classify_broker_reconciliation(
                 nav, deposited, db_net,
                 reconciliation_gap=recon_gap,
                 risk_pct_input=risk_pct,
                 nav_source=str(account.get("nav_source", "broker") or "broker"),
+                pre_db_realized_pnl_estimate=_pre_db_est_sched,
             )
             gate_ctx["recon_band"] = _recon.get("band")
         except Exception:

@@ -259,6 +259,7 @@ def handle_market_regime(chat_id):
                 total_deposited=float(account_settings.get("total_deposited", 0) or 0),
                 closed_campaigns=closed_camps,
                 nav_source=str(account_settings.get("nav_source", "broker") or "broker"),
+                pre_db_realized_pnl_estimate=float(account_settings.get("pre_db_realized_pnl_estimate", 0) or 0),
             )
             risk_rec = are.compute_adaptive_risk(
                 closed_camps, current_risk_pct, acc_size,
@@ -668,12 +669,22 @@ def handle_portfolio_room(chat_id):
             # the dashboard oracle), sitting directly above a risk-raise rec.
             # Same classifier, same inputs ⇒ both surfaces emit the SAME band.
             # The dashboard oracle (dashboard.py:455-461) remains the reference.
+            # YTD-history adjustment (founder note 21/05/2026): when the
+            # founder set `pre_db_realized_pnl_estimate` in
+            # sentinel_config.json, the classifier subtracts it from the
+            # raw gap so the band reflects the TRUE residual after
+            # disclaiming pre-DB closed-campaign PnL. Defaults to 0 ⇒
+            # byte-identical behaviour for any deployment that doesn't
+            # opt in. See docs/DATA_CONTRACTS.md "Data history scope".
+            _pre_db_est = float(account_settings.get(
+                "pre_db_realized_pnl_estimate", 0) or 0)
             _recon = tf.classify_broker_reconciliation(
                 acc_size, _total_deposited, _db_net_pnl,
                 reconciliation_gap=_recon_gap,
                 risk_pct_input=_risk_pct_in,
                 nav_source=_nav_src,
                 max_open_campaign_risk=_max_open_campaign_risk,
+                pre_db_realized_pnl_estimate=_pre_db_est,
             )
             msg += f"{tf.fmt_broker_reconciliation(_recon)}\n"
             # F2 (Wave 2): the per-component breakdown is now RESTRICTED to the
@@ -718,6 +729,7 @@ def handle_portfolio_room(chat_id):
                 total_deposited=float(account_settings.get("total_deposited", 0) or 0),
                 closed_campaigns=closed_camps,
                 nav_source=str(account_settings.get("nav_source", "broker") or "broker"),
+                pre_db_realized_pnl_estimate=float(account_settings.get("pre_db_realized_pnl_estimate", 0) or 0),
             )
             risk_rec = are.compute_adaptive_risk(
                 closed_camps, current_risk_pct, acc_size,
