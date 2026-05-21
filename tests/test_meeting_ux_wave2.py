@@ -240,3 +240,64 @@ class TestDisclaimerGatesG1Chain:
         # Same fixture → same ctx (idempotency sanity).
         assert ctx_default.get("recon_band") == ctx_explicit_zero.get("recon_band")
         assert ctx_default.get("allow_raise") == ctx_explicit_zero.get("allow_raise")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# B3 — risk-raise rejection routed to audit_log (UX U4 P1 closure)
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestRiskJournalMirroredToAuditLog:
+    """The chat-log evidence (msgs 18837/18896 followed by msg 18964
+    'אין פעולות מתועדות עדיין') showed that risk-raise rejections were
+    logged ONLY to risk_journal.json — a file the `/myactions` reader
+    (`telegram_audit_review`) does not see. Wave 2C wires every
+    `log_risk_journal` call to ALSO write a Supabase audit_log row via
+    `audit_logger.log_action(ACTION_RISK_PCT_CHANGE, ...)`. This test
+    pins all 3 call sites by static inspection — any future drift will
+    fail loudly here before the founder sees the label lie again."""
+
+    def _read(self, relative_path):
+        path = os.path.join(os.path.dirname(__file__), "..", relative_path)
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    def test_telegram_callbacks_audits_confirmed(self):
+        src = self._read("telegram_callbacks.py")
+        # Imports the logger.
+        assert "import audit_logger" in src
+        # Calls log_action with the RISK_PCT_CHANGE constant.
+        assert "audit_logger.log_action(" in src
+        assert "audit_logger.ACTION_RISK_PCT_CHANGE" in src
+        # The 'confirmed' action is recorded in metadata.
+        assert '"action": "confirmed"' in src
+
+    def test_telegram_bot_audits_rejected(self):
+        src = self._read("telegram_bot.py")
+        assert "import audit_logger" in src
+        assert "audit_logger.log_action(" in src
+        assert "audit_logger.ACTION_RISK_PCT_CHANGE" in src
+        assert '"action": "rejected"' in src
+        # The user's rejection reason is preserved in the audit row.
+        assert '"reason": reason' in src
+
+    def test_risk_monitor_audits_manual_override(self):
+        src = self._read("risk_monitor.py")
+        # risk_monitor already imported audit_logger before this wave.
+        assert "import audit_logger" in src
+        assert "audit_logger.log_action(" in src
+        # The manual-override action is captured (this is the path that
+        # fires when risk_pct was edited outside Telegram).
+        assert '"action": "manual_override"' in src
+
+    def test_audit_logger_has_the_expected_constant(self):
+        import audit_logger
+        # Pin the constant name + value so a future rename surfaces.
+        assert hasattr(audit_logger, "ACTION_RISK_PCT_CHANGE")
+        assert audit_logger.ACTION_RISK_PCT_CHANGE == "risk_pct_change"
+
+    def test_audit_review_surface_lists_risk_pct_change(self):
+        # telegram_audit_review must surface ACTION_RISK_PCT_CHANGE in
+        # its allowed-actions filter — otherwise the row exists in
+        # audit_log but `/myactions` would still hide it.
+        src = self._read("telegram_audit_review.py")
+        assert "ACTION_RISK_PCT_CHANGE" in src

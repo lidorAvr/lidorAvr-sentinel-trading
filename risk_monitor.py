@@ -767,6 +767,20 @@ def check_manual_risk_override(state: dict) -> None:
                     "actual_pct_set": current_pct,
                     "nav": ec.get_nav_with_freshness()["nav"],
                 })
+                # B3 (Meeting 21/05/2026 — UX U4 P1 closure): mirror to
+                # Supabase audit_log so `/myactions` surfaces manual
+                # overrides detected outside Telegram. No chat_id —
+                # this was triggered by an external risk_pct edit, not
+                # a user action. Fail-open.
+                audit_logger.log_action(
+                    supabase, audit_logger.ACTION_RISK_PCT_CHANGE,
+                    chat_id=None,
+                    before={"risk_pct": float(last_known)},
+                    after={"risk_pct": current_pct},
+                    metadata={"action": "manual_override",
+                              "direction": "up" if delta > 0 else "down_fast",
+                              "nav": ec.get_nav_with_freshness()["nav"]},
+                )
                 alert = (
                     f"{RTL}⚠️ *זוהתה שינוי ידנית בסיכון*\n"
                     f"{RTL}risk\\_pct שונה מחוץ לטלגרם\n"

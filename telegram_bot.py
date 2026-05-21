@@ -8,6 +8,7 @@ import telegram_formatters as tf
 import adaptive_risk_engine as are
 import addon_risk_engine as addon_eng
 import supabase_repository as repo
+import audit_logger
 from bot_core import bot, supabase, user_state, RTL, ADMIN_ID, TOKEN
 from bot_helpers import (_bot_log, _read_last_log_lines, _write_runner_decision,
                          get_account_settings, get_nav_and_risk,
@@ -278,6 +279,23 @@ def handle_all_messages(message):
             "actual_pct_set": curr_pct,
             "nav": nav,
         })
+        # B3 (Meeting 21/05/2026 — UX U4 P1 closure): mirror the
+        # rejection on Supabase audit_log so `/myactions` surfaces the
+        # user's dismissal (was previously logged only to risk_journal.json
+        # — the audit-review reader does not see that file, so msg 18964
+        # "אין פעולות מתועדות עדיין" was a label-vs-storage divergence).
+        # Fail-open: audit_logger never raises.
+        audit_logger.log_action(
+            supabase, audit_logger.ACTION_RISK_PCT_CHANGE,
+            chat_id=chat_id,
+            before={"risk_pct": curr_pct},
+            after={"risk_pct": curr_pct},  # no actual change — rejected
+            metadata={"action": "rejected",
+                      "recommended_pct": rec_pct,
+                      "direction": "up" if rec_pct > curr_pct else "down_fast",
+                      "reason": reason,
+                      "nav": nav},
+        )
         del user_state[chat_id]
         bot.send_message(
             chat_id,

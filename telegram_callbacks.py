@@ -11,6 +11,7 @@ import telebot
 from datetime import datetime
 import adaptive_risk_engine as are
 import supabase_repository as repo
+import audit_logger
 from bot_core import bot, supabase, user_state, RTL
 from bot_helpers import (_DEV_LOG_FILES, _read_last_log_lines,
                          _write_runner_decision, get_account_settings, get_nav_and_risk)
@@ -266,6 +267,20 @@ def handle_queries(call):
                 "actual_pct_set": rec_pct,
                 "nav": nav,
             })
+            # B3 (Meeting 21/05/2026 — UX U4 P1 closure): also record on
+            # the Supabase audit_log so `/myactions` (telegram_audit_review)
+            # surfaces this — log_risk_journal alone is a local JSON file
+            # the audit-review reader does not see. Fail-open (the
+            # audit_logger never raises) — never block the user's flow.
+            audit_logger.log_action(
+                supabase, audit_logger.ACTION_RISK_PCT_CHANGE,
+                chat_id=chat_id,
+                before={"risk_pct": curr_pct},
+                after={"risk_pct": rec_pct},
+                metadata={"action": "confirmed",
+                          "direction": "up" if rec_pct > curr_pct else "down_fast",
+                          "nav": nav},
+            )
             status = "✅" if success else "⚠️ שגיאת שמירה"
             try:
                 bot.edit_message_text(
